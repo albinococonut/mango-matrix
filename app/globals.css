@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body { background: #F4F5F7; color: #0F1419; }
+  body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+}
+
+@layer components {
+  .card { @apply bg-white rounded-card shadow-card p-5; }
+  .card-title { @apply text-base font-semibold text-mango-ink flex items-center gap-2; }
+  .kpi-label { @apply text-sm text-mango-muted flex items-center gap-1.5; }
+  .kpi-value { @apply text-3xl font-semibold tracking-tight text-mango-ink mt-2; }
+  .delta-up { @apply text-mango-green; }
+  .delta-down { @apply text-mango-red; }
+  .table-row { @apply border-t border-mango-line; }
+  .table-row:first-child { @apply border-t-0; }
+  .pill { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
+  .pill-green { @apply pill bg-emerald-50 text-emerald-700; }
+  .pill-amber { @apply pill bg-amber-50 text-amber-700; }
+  .pill-red { @apply pill bg-rose-50 text-rose-700; }
+  .pill-info { @apply pill bg-blue-50 text-blue-700; }
+}

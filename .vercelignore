@@ -1,0 +1,4 @@
+# Cache files are gigantic and rebuilt at runtime on Vercel; never deploy them.
+data/cache/
+_disabled_routes/
+.next/cache/

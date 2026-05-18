@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Production / Vercel
+build/
+dist/
+.vercel
+
+# Env files (never commit secrets)
+.env
+.env*.local
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Sync caches (huge JSON blobs, regenerated on first run)
+data/cache/*
+!data/cache/.gitkeep
+
+# Disabled/scratch routes (kept locally, not deployed)
+_disabled_routes/
+_disabled_jobs/

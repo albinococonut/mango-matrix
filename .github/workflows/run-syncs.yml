@@ -1,0 +1,43 @@
+name: Run Mango Dashboard Syncs
+
+# We're on Vercel Hobby, which caps Vercel Cron at 1/day. GitHub Actions runs
+# every 15 min and hits the protected sync endpoint instead.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-syncs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger Mango dashboard syncs
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          # Capture body + status. --fail-with-body keeps the body even on non-2xx
+          # so the GH Actions log shows the error JSON, not just "curl: (22)".
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "$SYNC_CRON_URL" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 320)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          # Pretty-print per-job status so it's easy to scan in the run log.
+          if command -v jq >/dev/null 2>&1; then
+            echo "--- Job summary ---"
+            jq -r '.jobs[] | "\(.status | ascii_upcase | .[0:3]) \(.name) (\(.durationMs)ms) \(.message // .error // "")"' /tmp/sync.out || true
+          fi
+          # Fail the workflow only on transport-level errors (auth, server crash).
+          # Per-job failures don't fail the whole workflow — they're logged + you
+          # can see them in the body so other syncs keep running on the next tick.
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Sync endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi
