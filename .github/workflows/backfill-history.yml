@@ -1,0 +1,49 @@
+name: Backfill Tekmetric Weekly Archive
+
+# One-time (resumable) backfill of the permanent weekly revenue archive back to
+# Dec 2021. Manually triggered. Loops the protected backfill endpoint in small
+# batches until { done: true }. Re-running is safe — it resumes from the cursor.
+# Kept OFF the 15-min sweep on purpose (that sweep is duration-sensitive).
+
+on:
+  workflow_dispatch:
+    inputs:
+      weeks:
+        description: "Weeks processed per batch"
+        default: "8"
+      reset:
+        description: "Reset cursor and start over (true/false)"
+        default: "false"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Backfill loop
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          WEEKS: ${{ github.event.inputs.weeks }}
+          RESET: ${{ github.event.inputs.reset }}
+        run: |
+          set -e
+          BASE="${SYNC_CRON_URL/run-syncs/backfill-history}"
+          case "$BASE" in
+            *backfill-history*) ;;
+            *) BASE="https://mango-matrix.vercel.app/api/cron/backfill-history" ;;
+          esac
+          echo "Endpoint: $BASE"
+          W="${WEEKS:-8}"
+          Q="weeks=$W"
+          if [ "$RESET" = "true" ]; then Q="$Q&reset=1"; fi
+          for i in $(seq 1 45); do
+            OUT=$(curl -sS --max-time 290 -X POST "$BASE?$Q" -H "Authorization: Bearer $CRON_SECRET" || echo '{"error":"curl-failed"}')
+            echo "iter $i → $OUT"
+            Q="weeks=$W"   # drop reset after the first call
+            DONE=$(echo "$OUT" | jq -r '.done // false' 2>/dev/null || echo "false")
+            if [ "$DONE" = "true" ]; then echo "✓ Backfill complete."; break; fi
+            sleep 2
+          done
+          echo "--- Final status ---"
+          curl -sS "$BASE"; echo
