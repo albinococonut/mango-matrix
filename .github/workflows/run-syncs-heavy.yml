@@ -1,0 +1,43 @@
+name: Run Mango Dashboard Syncs (Heavy)
+
+# Companion to run-syncs.yml. Vercel caps the sync function at 300s regardless
+# of maxDuration settings, and the full job sweep ran ~5min and 504-timed-out.
+# So the two heavy jobs run here on their own 15-min schedule (offset 7 min
+# from the main sweep to spread Tekmetric load):
+#   - warm-return-customers   (~124s — 18-month history, round-robin 1 shop/tick)
+#   - refresh-booked-rate-strict (~72s — Claude classification across 8 shops)
+# Combined ~196s, comfortably under the 300s cap.
+
+on:
+  schedule:
+    # 7,22,37,52 past the hour — offset from the main sweep's 0,15,30,45.
+    - cron: "7-59/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-syncs-heavy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger heavy Mango dashboard syncs
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?only=warm-return-customers,refresh-booked-rate-strict" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 290)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          if command -v jq >/dev/null 2>&1; then
+            echo "--- Job summary ---"
+            jq -r '.jobs[] | "\(.status | ascii_upcase | .[0:3]) \(.name) (\(.durationMs)ms) \(.message // .error // "")"' /tmp/sync.out || true
+          fi
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Heavy sync endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi

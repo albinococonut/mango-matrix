@@ -21,11 +21,14 @@ jobs:
           set -e
           # Capture body + status. --fail-with-body keeps the body even on non-2xx
           # so the GH Actions log shows the error JSON, not just "curl: (22)".
+          # Skip the two heavy jobs (run by run-syncs-heavy.yml on a separate
+          # schedule) so this sweep stays well under Vercel's 300s function
+          # cap. Without the split the full sweep ran ~5min and 504-timed-out.
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
-            -X POST "$SYNC_CRON_URL" \
+            -X POST "${SYNC_CRON_URL}?skip=warm-return-customers,refresh-booked-rate-strict" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            --max-time 820)
+            --max-time 290)
           echo "HTTP $HTTP_CODE"
           cat /tmp/sync.out
           echo
