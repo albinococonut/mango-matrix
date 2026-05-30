@@ -1,0 +1,52 @@
+name: Run Mango Dashboard Syncs (Call Conversion)
+
+# Split out of run-syncs-heavy.yml on 2026-05-30. Previously this job
+# (refresh-booked-rate-strict, ~82s typical) shared a 300s function window
+# with warm-return-customers (~120s typical). Combined ~200s left only ~100s
+# of headroom — when Anthropic slowed down or one shop's lead transcript
+# classification stacked, the function hit Vercel's 300s cap and the GH
+# Actions curl timed out at 290s with 0 bytes received.
+#
+# Running alone, this job has ~210s of headroom for occasional Anthropic
+# latency spikes without tipping the workflow into failure mail.
+#
+# This is the cron that warms the booked_rate_week_to_date_strict cache that
+# the Trophy Tally + Golden Mango both read for the Call Conversion category.
+# If this workflow is failing, Call Conversion shows the previous tick's data
+# and the Golden Mango's Conversion ranking goes stale.
+
+on:
+  schedule:
+    # 2,17,32,47 past the hour — offset from main sweep (0,15,30,45) and
+    # return-customers (7,22,37,52) so the three never compete for
+    # Tekmetric / Anthropic capacity.
+    - cron: "2-59/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-syncs-conversion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger refresh-booked-rate-strict Mango dashboard sync
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?only=refresh-booked-rate-strict" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 290)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          if command -v jq >/dev/null 2>&1; then
+            echo "--- Job summary ---"
+            jq -r '.jobs[] | "\(.status | ascii_upcase | .[0:3]) \(.name) (\(.durationMs)ms) \(.message // .error // "")"' /tmp/sync.out || true
+          fi
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Conversion sync endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi

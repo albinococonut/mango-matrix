@@ -1,16 +1,25 @@
-name: Run Mango Dashboard Syncs (Heavy)
+name: Run Mango Dashboard Syncs (Return Customers)
 
 # Companion to run-syncs.yml. Vercel caps the sync function at 300s regardless
-# of maxDuration settings, and the full job sweep ran ~5min and 504-timed-out.
-# So the two heavy jobs run here on their own 15-min schedule (offset 7 min
-# from the main sweep to spread Tekmetric load):
-#   - warm-return-customers   (~124s — 18-month history, round-robin 1 shop/tick)
-#   - refresh-booked-rate-strict (~72s — Claude classification across 8 shops)
-# Combined ~196s, comfortably under the 300s cap.
+# of maxDuration settings.
+#
+# Originally this workflow ran BOTH heavy jobs together (warm-return-customers
+# ~120s + refresh-booked-rate-strict ~82s ≈ 200s baseline). That's fine on a
+# healthy tick but only ~100s of headroom — if Tekmetric goes flaky on the 18-
+# month history pull OR Anthropic is slow on Claude classification, combined
+# runtime tips over the 300s cap and curl times out at 290s with 0 bytes
+# received (curl: 28). That was filling the inbox with failure emails on
+# every flaky-upstream tick.
+#
+# Fix: split into two workflows. This one runs ONLY warm-return-customers.
+# refresh-booked-rate-strict moved to run-syncs-conversion.yml. Each workflow
+# has ~180s of headroom to absorb a slow upstream tick.
 
 on:
   schedule:
-    # 7,22,37,52 past the hour — offset from the main sweep's 0,15,30,45.
+    # 7,22,37,52 past the hour — offset from the main sweep's 0,15,30,45 and
+    # the conversion workflow's 2,17,32,47 so the three never collide on
+    # Tekmetric / Anthropic capacity.
     - cron: "7-59/15 * * * *"
   workflow_dispatch:
 
@@ -19,14 +28,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Trigger heavy Mango dashboard syncs
+      - name: Trigger warm-return-customers Mango dashboard sync
         env:
           SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -e
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
-            -X POST "${SYNC_CRON_URL}?only=warm-return-customers,refresh-booked-rate-strict" \
+            -X POST "${SYNC_CRON_URL}?only=warm-return-customers" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
             --max-time 290)
