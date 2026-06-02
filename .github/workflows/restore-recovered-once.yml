@@ -1,0 +1,23 @@
+name: Restore Recovered (one-time)
+# ONE-TIME run to restore auto-reopened "Recovered" to-do rows.
+# Dispatch manually from GitHub Actions UI once, then delete this file.
+on:
+  workflow_dispatch:
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call restore endpoint
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          BASE="${SYNC_CRON_URL/run-syncs/webhooks\/restore-recovered}"
+          echo "Calling $BASE"
+          OUT=$(curl -sS --max-time 120 -X POST "$BASE" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "$OUT" | python3 -m json.tool 2>/dev/null || echo "$OUT"
+          RESTORED=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('restoredCount',0))" 2>/dev/null || echo "?")
+          echo "Restored: $RESTORED rows"
