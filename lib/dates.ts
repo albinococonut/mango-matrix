@@ -26,8 +26,9 @@ export const CHAIN_TZ = 'America/Denver';            // chart/labels timezone
 export const TEKMETRIC_REPORT_TZ = 'America/Chicago'; // boundary timezone for revenue match
 
 export type RangeKey =
-  | 'this_week' | 'last_week'
-  | 'this_month' | 'last_month'
+  | 'today'
+  | 'this_week' | 'last_week' | 'next_week'
+  | 'this_month' | 'last_month' | 'next_month'
   | 'this_quarter' | 'last_quarter'
   | 'this_year' | 'last_year'
   | 'last_30_days' | 'last_60_days' | 'last_90_days' | 'last_365_days'
@@ -49,6 +50,25 @@ export function resolveRange(key: RangeKey, now: Date = new Date()): DateRange {
   const zNow = toZonedTime(now, TEKMETRIC_REPORT_TZ);
   let start: Date, end: Date, label: string;
   switch (key) {
+    case 'today':
+      start = startOfDay(zNow);
+      end = zNow;
+      label = 'Today';
+      break;
+    case 'next_week': {
+      const nxt = addWeeks(zNow, 1);
+      start = startOfWeek(nxt, { weekStartsOn: 1 });
+      end = endOfWeek(nxt, { weekStartsOn: 1 });
+      label = 'Next week';
+      break;
+    }
+    case 'next_month': {
+      const nxt = addMonths(zNow, 1);
+      start = startOfMonth(nxt);
+      end = endOfMonth(nxt);
+      label = 'Next month';
+      break;
+    }
     case 'this_week':
       start = startOfWeek(zNow, { weekStartsOn: 1 });
       end = zNow;
@@ -126,7 +146,7 @@ export function resolveRange(key: RangeKey, now: Date = new Date()): DateRange {
     case 'wtd':
       end = zNow;
       start = startOfWeek(zNow, { weekStartsOn: 1 });
-      label = 'Week to date';
+      label = 'Rolling 7 days';
       break;
     case 'ytd':
       end = zNow;

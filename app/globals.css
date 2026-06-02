@@ -2,23 +2,137 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  html, body { background: #F4F5F7; color: #0F1419; }
-  body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+/* ── Design tokens ─────────────────────────────────────────────────────────
+   The palette is stored as RGB *channels* so Tailwind's /opacity modifiers
+   keep working (mango.* / heat.* in tailwind.config resolve to
+   `rgb(var(--token) / <alpha-value>)`). The DEFAULT values below are exactly
+   the historical hex, so every existing page renders identically. A theme is
+   applied by overriding these on a wrapper element — see `.theme-luxury`
+   (used only by /concept2; live pages never get that class). */
+:root {
+  --mg-orange: 245 166 35;
+  --mg-gold: 244 180 0;
+  --mg-amber: 255 183 77;
+  --mg-green: 91 154 107;
+  --mg-red: 209 103 90;
+  --mg-ink: 31 41 55;
+  --mg-muted: 107 114 128;
+  --mg-faint: 154 161 172;
+  --mg-line: 237 231 220;
+  --mg-surface: 255 255 255;
+  --mg-bg: 251 247 240;
+  --mg-info: 224 142 26;
+  --mg-heat-1: 255 249 236;
+  --mg-heat-2: 252 231 178;
+  --mg-heat-3: 246 198 103;
+  --mg-heat-4: 232 154 61;
+  --mg-heat-5: 201 106 16;
+  --mg-heat-fg: 31 41 55;
+  --mg-heat-empty: 251 251 252;
+
+  /* chrome / surfaces */
+  --app-bg: #FBF7F0;
+  --surface-card: #FFFFFF;
+  --card-radius: 16px;
+  --card-blur: 0px;
+  --card-shadow: 0 1px 2px rgba(31,41,55,0.04), 0 1px 3px rgba(31,41,55,0.03), 0 0 0 1px rgba(31,41,55,0.045);
+  --font-heading: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --heading-tracking: -0.01em;
+  --heading-weight: 600;
 }
 
+/* ── Luxury theme — opt-in. Re-skins purely by overriding tokens; no markup
+   changes. Applied only by /concept2, so production stays untouched. ── */
+.theme-luxury {
+  --mg-ink: 34 32 28;
+  --mg-muted: 92 86 78;
+  --mg-faint: 147 140 129;
+  --mg-line: 224 217 206;
+  --mg-surface: 255 255 255;
+  --mg-bg: 241 236 227;
+  /* luminous blue→coral heat spectrum: tier 1 (best) cool → tier 5 (worst)
+     warm. Soft tints so the charcoal cell text stays readable. */
+  --mg-heat-1: 216 234 244;
+  --mg-heat-2: 219 235 227;
+  --mg-heat-3: 238 240 214;
+  --mg-heat-4: 247 226 196;
+  --mg-heat-5: 243 201 188;
+  --mg-heat-fg: 34 32 28;
+  --mg-heat-empty: 246 243 237;
+
+  --app-bg: #F1ECE3;
+  --surface-card: rgba(255,255,255,0.66);
+  --card-radius: 24px;
+  --card-blur: 20px;
+  --card-shadow:
+    0 0 0 1px rgba(255,255,255,0.72),
+    0 1px 0 rgba(255,255,255,0.9) inset,
+    0 18px 48px -28px rgba(40,34,26,0.30),
+    0 2px 8px -4px rgba(40,34,26,0.10);
+  --font-heading: var(--font-display), Georgia, 'Times New Roman', serif;
+  --heading-tracking: -0.02em;
+  --heading-weight: 500;
+}
+
+@layer base {
+  html, body { background: var(--app-bg); color: #1F2937; }
+  body {
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  table { font-variant-numeric: tabular-nums; }
+}
+
+/* Any section shown full-screen on a TV: fill the screen, stay readable. */
+:fullscreen {
+  background: var(--app-bg);
+  overflow: auto;
+  padding: 2.5rem 3rem;
+}
+:fullscreen .gm-fs-btn { display: none; } /* hide the toggle while presenting */
+
 @layer components {
-  .card { @apply bg-white rounded-card shadow-card p-5; }
-  .card-title { @apply text-base font-semibold text-mango-ink flex items-center gap-2; }
-  .kpi-label { @apply text-sm text-mango-muted flex items-center gap-1.5; }
-  .kpi-value { @apply text-3xl font-semibold tracking-tight text-mango-ink mt-2; }
+  /* Modular executive card: surface + radius + shadow + blur are all
+     token-driven, so a theme can turn it to frosted glass without touching
+     any component markup. Defaults match the original card exactly. */
+  .card {
+    @apply p-6;
+    background: var(--surface-card);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    -webkit-backdrop-filter: blur(var(--card-blur));
+    backdrop-filter: blur(var(--card-blur));
+  }
+  .card-title { @apply text-[15px] text-mango-ink flex items-center gap-2; font-family: var(--font-heading); font-weight: var(--heading-weight); }
+  .section-h { @apply text-[17px] text-mango-ink; font-family: var(--font-heading); font-weight: var(--heading-weight); letter-spacing: var(--heading-tracking); }
+  .section-sub { @apply text-[12px] text-mango-muted; }
+  .kpi-label { @apply text-[12px] font-medium text-mango-muted flex items-center gap-1.5; }
+  .kpi-value { @apply text-[2rem] text-mango-ink leading-none; font-family: var(--font-heading); font-weight: var(--heading-weight); letter-spacing: var(--heading-tracking); }
   .delta-up { @apply text-mango-green; }
   .delta-down { @apply text-mango-red; }
   .table-row { @apply border-t border-mango-line; }
   .table-row:first-child { @apply border-t-0; }
-  .pill { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
-  .pill-green { @apply pill bg-emerald-50 text-emerald-700; }
-  .pill-amber { @apply pill bg-amber-50 text-amber-700; }
-  .pill-red { @apply pill bg-rose-50 text-rose-700; }
-  .pill-info { @apply pill bg-blue-50 text-blue-700; }
+  .zebra > *:nth-child(even) { background: rgba(31,41,55,0.018); }
+  .pill { @apply inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium; }
+  .pill-green { @apply pill text-mango-green; background: rgba(63,154,106,0.10); }
+  .pill-amber { @apply pill text-mango-amber; background: rgba(201,122,31,0.10); }
+  .pill-red   { @apply pill text-mango-red;   background: rgba(192,86,62,0.10); }
+  .pill-info  { @apply pill text-mango-info;  background: rgba(224,142,26,0.12); }
+  .legend-dot { @apply inline-block w-2 h-2 rounded-full mr-1.5 align-middle; }
+  /* Current (in-progress) week: faint diagonal stripe overlay. */
+  .partial-week {
+    background-image: repeating-linear-gradient(
+      45deg, rgba(224,142,26,0.07) 0 6px, transparent 6px 12px
+    );
+  }
+}
+
+@layer utilities {
+  .tnum { font-variant-numeric: tabular-nums; }
+  .glass-bar {
+    background: rgba(251,247,240,0.80);
+    backdrop-filter: saturate(180%) blur(12px);
+    -webkit-backdrop-filter: saturate(180%) blur(12px);
+  }
 }

@@ -1,31 +1,39 @@
 'use client';
 
-// Client-side dashboard shell. Receives the verified user role from the server
-// page and conditionally renders executive-only sections. Employee role only
-// sees Trophy Tally and below; executive role sees everything.
+// Dashboard — shared content component for the executive Diagnostic page
+// AND the Employee View page. Layout/sidebar are provided by the parent
+// shell (ExecShell or EmployeeShell), so this component only renders sections.
 //
-// Security note: even if a power user edits the JS to render the executive
-// sections, the underlying executive-only API routes also check role from the
-// signed cookie and return 403 — so no exec data leaks.
+//   category='diagnostic' → render exec-only sections + Golden/Trophies/Operations
+//   category='employee'    → render Golden/Trophies/Operations only (no Header,
+//                            no range selector, no GoogleRatings for non-execs)
+//
+// Security note: even if a power user edits the JS, the executive-only API
+// routes also verify role from the signed cookie and return 403, so no exec
+// data leaks regardless of which UI sections render.
 
 import { useEffect, useState } from 'react';
+import GoldenMangoHero from '@/components/GoldenMangoHero';
 import Header from '@/components/Header';
 import KpiCards from '@/components/KpiCards';
 import RevenueProjectionCard from '@/components/RevenueProjectionCard';
-import ForecastCard from '@/components/ForecastCard';
 import RevenueOpportunityCard from '@/components/RevenueOpportunityCard';
 import PeriodComparison from '@/components/PeriodComparison';
 import ShopComparison from '@/components/ShopComparison';
 import TrophyTally from '@/components/TrophyTally';
 import TrophyTallyYTD from '@/components/TrophyTallyYTD';
+import HighestLeverageByShop from '@/components/HighestLeverageByShop';
 import WeeklyLeaderboard from '@/components/WeeklyLeaderboard';
 import ShopPerformanceTable from '@/components/ShopPerformanceTable';
 import TechProduction from '@/components/TechProduction';
 import FBRLeaderboard from '@/components/FBRLeaderboard';
 import ShopPerformanceHeatmap from '@/components/ShopPerformanceHeatmap';
+import AccountsReceivable from '@/components/AccountsReceivable';
 import AppointmentBookedRate from '@/components/AppointmentBookedRate';
+import TodoRecoveries from '@/components/TodoRecoveries';
 import GoogleRatings from '@/components/GoogleRatings';
 import Comebacks from '@/components/Comebacks';
+import ReturnCustomersLeaderboard from '@/components/ReturnCustomersLeaderboard';
 import type { RangeKey } from '@/lib/dates';
 import type { ShopNum } from '@/lib/shops';
 import type { ChainKpi } from '@/lib/metrics';
@@ -36,22 +44,33 @@ interface MetricsResp {
   daily: Array<{ date: string; revenue: number; cars: number }>;
   dailyByShop: Record<string, Array<{ date: string; revenue: number; cars: number }>>;
 }
-interface ForecastResp {
-  forecast: any; projection: any;
-  openROCount: number; techCount: number; techHoursPerDay: number;
-}
 
-export default function Dashboard({ role }: { role: Role }) {
+type Category = 'diagnostic' | 'employee';
+
+export default function Dashboard({
+  role, category,
+}: { role: Role; category: Category }) {
   const isExec = role === 'executive';
-  const [range, setRange] = useState<RangeKey>('this_month');
+  const showExecSections = isExec && category === 'diagnostic';
+  const [range, setRange] = useState<RangeKey>('this_week');
   const [shop, setShop] = useState<ShopNum | 'all'>('all');
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [metrics, setMetrics] = useState<MetricsResp | null>(null);
-  const [forecast, setForecast] = useState<ForecastResp | null>(null);
+  const [spcMetrics, setSpcMetrics] = useState<MetricsResp | null>(null);
   const [opportunity, setOpportunity] = useState<any | null>(null);
-  const [refreshedAt, setRefreshedAt] = useState<string>('');
-  useEffect(() => { setRefreshedAt(new Date().toLocaleTimeString()); }, [metrics]);
+  // Real data-refresh times per source (from sync-job heartbeats), shown in
+  // Mountain Time so every viewer sees the same value.
+  const [dataStatus, setDataStatus] = useState<{ tekmetric: number | null; whatconverts: number | null; revenueSettledThrough?: string | null } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const pull = () => fetch('/api/extras?view=data-status').then(r => r.json()).then(d => { if (alive) setDataStatus(d); }).catch(() => {});
+    pull();
+    const id = setInterval(pull, 60_000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  const fmtMT = (ms: number | null) =>
+    ms ? new Date(ms).toLocaleTimeString('en-US', { timeZone: 'America/Denver', hour: 'numeric', minute: '2-digit' }) + ' MT' : null;
 
   useEffect(() => {
     if (range === 'custom' && (!customStart || !customEnd)) return;
@@ -62,43 +81,23 @@ export default function Dashboard({ role }: { role: Role }) {
     // /api/metrics is callable by both roles (employee leaderboards need ARO + shop names).
     setMetrics(null);
     fetch(`/api/metrics?${q}`).then((r) => r.json()).then(setMetrics);
-    // forecast + opportunity are executive-only and consolidated behind
-    // /api/exec-metrics?view=. Skip the fetches for employees both to avoid
-    // 403 noise and to make their dashboard load faster.
-    if (isExec) {
-      setForecast(null); setOpportunity(null);
-      fetch(`/api/exec-metrics?view=forecast&${q}`).then((r) => r.json()).then(setForecast);
+    // opportunity is executive-only behind /api/exec-metrics?view=opportunity.
+    // Skip for non-exec or when we're not rendering exec sections to avoid
+    // 403 noise and speed up the page.
+    if (isExec && showExecSections) {
+      setOpportunity(null);
       fetch(`/api/exec-metrics?view=opportunity&${q}`).then((r) => r.json()).then(setOpportunity);
     }
-  }, [range, shop, customStart, customEnd, isExec]);
+  }, [range, shop, customStart, customEnd, isExec, showExecSections]);
 
-  async function logout() {
-    // Server clears the cookie; redirect to /login.
-    await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ logout: true }) });
-    window.location.href = '/login';
-  }
+  // Shop Performance Comparison is always This Week, independent of the filter.
+  useEffect(() => {
+    fetch('/api/metrics?range=this_month').then((r) => r.json()).then(setSpcMetrics).catch(() => {});
+  }, []);
 
   return (
-    <main className="min-h-screen bg-mango-bg px-4 lg:px-8 py-6 max-w-[1400px] mx-auto">
-      <div className="flex items-start justify-between mb-2">
-        <div className="text-xs text-mango-muted">
-          Signed in as <b>{role === 'executive' ? 'Executive' : 'Employee'}</b>
-          <button onClick={logout} className="ml-3 text-mango-orange hover:underline">Sign out</button>
-        </div>
-      </div>
-
-      {/* Brand header: title centered, logo on the right. Visible to both roles. */}
-      <div className="grid grid-cols-3 items-center mb-6">
-        <div />
-        <h1 className="text-3xl font-bold tracking-tight text-center">Mango Matrix</h1>
-        <div className="flex justify-end">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="Mango Automotive" className="h-16 w-auto" />
-        </div>
-      </div>
-
-      {/* ------- EXECUTIVE-ONLY SECTIONS (KPIs, charts, heatmap) ------- */}
-      {isExec && (
+    <>
+      {showExecSections && (
         <>
           <Header
             range={range} setRange={setRange}
@@ -107,46 +106,92 @@ export default function Dashboard({ role }: { role: Role }) {
             customEnd={customEnd} setCustomEnd={setCustomEnd}
           />
 
-          <KpiCards kpi={metrics?.kpi || null} />
+          <section id="projection" className="scroll-mt-6">
+            <RevenueProjectionCard range={range} customStart={customStart} customEnd={customEnd} />
+          </section>
 
-          {forecast && (
-            <RevenueProjectionCard
-              {...forecast.projection}
-              openROCount={forecast.openROCount}
-              techCount={forecast.techCount}
-              techHoursPerDay={forecast.techHoursPerDay}
-            />
-          )}
+          <section id="overview" className="scroll-mt-6">
+            <KpiCards kpi={metrics?.kpi || null} range={range} />
+          </section>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-            {forecast && <ForecastCard forecast={forecast.forecast} />}
-            <RevenueOpportunityCard data={opportunity} />
-          </div>
+          <section id="opportunity" className="scroll-mt-6 mb-8">
+            <RevenueOpportunityCard data={opportunity} kpi={metrics?.kpi ?? null} range={range} />
+          </section>
 
-          <PeriodComparison />
+          <section id="comparison" className="scroll-mt-6">
+            <ShopComparison />
+          </section>
 
-          <ShopComparison />
-          <ShopPerformanceHeatmap />
+          <section id="performance" className="scroll-mt-6">
+            <ShopPerformanceHeatmap />
+          </section>
+
+          <section id="trends" className="scroll-mt-6">
+            <PeriodComparison />
+          </section>
+
+          <section id="receivables" className="scroll-mt-6">
+            <AccountsReceivable />
+          </section>
+
+          <section id="return-customers" className="scroll-mt-6">
+            <ReturnCustomersLeaderboard />
+          </section>
+
+          {/* Past Trophies Earned this Quarter — moved here from Employee
+              view at user request so the YTD trophy ledger sits at the END
+              of the diagnostic. Live week's medals still live on the
+              Employee view under "Pending / Awarded Trophies · This Week";
+              this widget tracks the cumulative quarterly leaderboard. */}
+          <section id="trophies-ytd" className="scroll-mt-6">
+            <TrophyTallyYTD />
+          </section>
         </>
       )}
 
-      {/* ------- VISIBLE TO BOTH ROLES (Trophy Tally and below) ------- */}
-      <TrophyTally />
-      <TrophyTallyYTD />
-      <ShopPerformanceTable kpi={metrics?.kpi || null} range={range} customStart={customStart} customEnd={customEnd} />
-      <WeeklyLeaderboard />
+      {/* Golden Mango · Trophy Standings · Operations belong to Employee View
+          only. They were previously rendered on both Diagnostic and Employee
+          for execs — that duplication is removed. Executives can still see
+          these sections by navigating to the Employee View category. */}
+      {category === 'employee' && (
+        <>
+          <section id="golden" className="scroll-mt-6">
+            <GoldenMangoHero />
+          </section>
 
-      <TechProduction />
+          <section id="trophies" className="scroll-mt-6">
+            <TrophyTally />
+            {/* TrophyTallyYTD relocated to end of Diagnostic — see comment
+                above its current render site. */}
+            <HighestLeverageByShop />
+            <WeeklyLeaderboard />
+          </section>
 
-      <FBRLeaderboard />
-      <Comebacks />
-      <GoogleRatings />
-      <AppointmentBookedRate />
+          <section id="operations" className="scroll-mt-6">
+            <TechProduction />
+            <Comebacks />
+            <FBRLeaderboard />
+            {isExec && <GoogleRatings />}
+            <AppointmentBookedRate />
+            <TodoRecoveries />
+            <ShopPerformanceTable kpi={spcMetrics?.kpi || null} range={'this_month'} customStart={customStart} customEnd={customEnd} isExec={isExec} />
+          </section>
+        </>
+      )}
 
-      <footer className="text-center text-xs text-mango-muted py-6">
-        Mango Matrix · Data via Tekmetric + WhatConverts
-        {refreshedAt && <> · Refreshed at {refreshedAt}</>}
+      <footer className="text-center text-xs text-mango-faint py-8">
+        The Mango Matrix
+        {dataStatus && (
+          <>
+            {' · '}Tekmetric {fmtMT(dataStatus.tekmetric) ?? 'syncing…'}
+            {' · '}WhatConverts {fmtMT(dataStatus.whatconverts) ?? 'syncing…'}
+            {dataStatus.revenueSettledThrough && <>{' · '}Revenue settled through {dataStatus.revenueSettledThrough}</>}
+          </>
+        )}
+        <div className="mt-1 text-[11px] text-mango-faint/80">
+          * USPS / Post-Office fleet revenue is included in revenue totals, but excluded from all other metrics (car count, GP, ARO, close rate, leaderboards).
+        </div>
       </footer>
-    </main>
+    </>
   );
 }

@@ -86,6 +86,81 @@ export async function classifyTranscript(transcript: string): Promise<Classifica
   }
 }
 
+// -------- Missed Conversion Callbacks scorer --------
+//
+// Runs ONLY on the subset of calls that were eligible but did NOT convert.
+// Asks: "of the customers who didn't book, which ones were realistically
+// salvageable if we called them back?" — produces an actionable callback queue.
+//
+// We score AFTER `classifyTranscript` has marked a call as not-booked, so
+// the input set is already trimmed of spam / wrong-numbers / dropped calls.
+// Result is cached per `lead_id` (a stable, immutable identifier) so the
+// score is computed exactly once per call across the call's lifetime.
+
+const SALVAGEABILITY_SYSTEM_PROMPT = `You analyze a phone call transcript from an auto-repair shop where the customer did NOT book an appointment. The call has already passed basic eligibility filters (not spam, not a wrong number, not dropped). Your job is to judge whether the customer is realistically SALVAGEABLE with a callback — i.e. there was real demand and the call ended without a booking because of fixable advisor or process reasons, not because the customer was outside the shop's market.
+
+Return a single JSON object with these fields:
+- "probability": number 0-1. Conservative. Reserve >0.6 for calls with clear positive intent (specific problem, asked about availability/pricing, expressed urgency, trust signals). Use 0.2-0.4 for tepid interest. Use <0.2 when the conversation showed real friction the callback won't overcome (already booked elsewhere, out-of-area, abusive).
+- "reason": one short sentence explaining what specifically caused the call to end without a booking. Examples: "Advisor quoted price but did not offer a time", "Customer was price shopping and conversation ended without commitment", "Customer asked about availability but no urgency was created", "Customer hesitated and advisor did not offer financing".
+- "angle": one short sentence suggesting how the callback should be approached. Examples: "Offer specific same-day appointment slot", "Ask if they got their issue resolved elsewhere; if not, offer financing", "Lead with availability and a specific time", "Confirm pricing and create urgency around safety implications".
+
+Exclude (return probability 0) if any of these are clear: customer is out-of-area, customer was abusive, customer was already booked at another shop, customer was asking about a vehicle or service the shop doesn't handle, request was impossible.
+
+Respond with ONLY the JSON object. No prose around it.`;
+
+export interface SalvageScore {
+  probability: number;          // 0..1
+  reason: string;
+  angle: string;
+}
+
+export async function scoreSalvageability(transcript: string): Promise<SalvageScore> {
+  const text = transcript.length > 6000 ? transcript.slice(0, 6000) + '\n[...]' : transcript;
+  const resp = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 300,
+    system: SALVAGEABILITY_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: `Transcript:\n\n${text}` }],
+  });
+  const raw = (resp.content[0] as any).text as string;
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return { probability: 0, reason: 'no json in response', angle: '' };
+  try {
+    const obj = JSON.parse(m[0]);
+    const p = typeof obj.probability === 'number' ? Math.max(0, Math.min(1, obj.probability)) : 0;
+    return {
+      probability: p,
+      reason: String(obj.reason || '').slice(0, 240),
+      angle: String(obj.angle || '').slice(0, 240),
+    };
+  } catch {
+    return { probability: 0, reason: 'invalid json', angle: '' };
+  }
+}
+
+export async function scoreSalvageabilityBatch(leads: Lead[], concurrency = 6): Promise<Map<number, SalvageScore>> {
+  const results = new Map<number, SalvageScore>();
+  const queue = leads.slice();
+  let errors = 0;
+  let lastError: string | undefined;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (queue.length) {
+      const lead = queue.shift()!;
+      try {
+        const s = await scoreSalvageability(lead.call_transcription || '');
+        results.set(lead.lead_id, s);
+      } catch (e: any) {
+        errors++;
+        lastError = e?.message || 'unknown';
+        results.set(lead.lead_id, { probability: 0, reason: `error: ${lastError}`, angle: '' });
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (errors > 0) console.error(`[salvageability] ${errors}/${leads.length} errored. Last: ${lastError}`);
+  return results;
+}
+
 /** Run with bounded concurrency to stay polite. */
 export async function classifyBatch(leads: Lead[], concurrency = 8): Promise<Map<number, Classification>> {
   const results = new Map<number, Classification>();

@@ -1,37 +1,66 @@
 'use client';
 
-// This Week's Leaderboard. Two columns — Revenue and GP%. Always Mon→today,
-// independent of the page filter. Ranked by % toward goal (revenue) and
-// raw GP% vs the 58% target. Per-shop weekly goal labels shown inline.
+// This Week's Leaderboard. Two columns — Revenue and GP%. Always THIS WEEK
+// (Mon → today, week-to-date — NOT a rolling 7-day window), independent of the
+// page filter. Ranked by % toward goal (revenue) and raw GP% vs the 58%
+// target. Per-shop weekly goal labels shown inline.
 
 import { useEffect, useState } from 'react';
 import { DollarSign } from 'lucide-react';
-import { SHOP_BY_NUM } from '@/lib/shops';
-import { bandTextColor, gpBandColor, loadGoals, GoalsByShop, prorateRevenueGoal, revenueBandColor } from '@/lib/goals';
-import { resolveRange } from '@/lib/dates';
+import { SHOP_BY_NUM, SHOPS } from '@/lib/shops';
+import { bandTextColor, gpBandColor, loadGoals, GoalsByShop, revenueBandColor, weeklyMinuteProratedGoal } from '@/lib/goals';
 import { usd, pct } from '@/lib/format';
 import { TrophyIcon } from './Trophy';
 
-interface ShopMetrics { shopNum: string; shopName: string; revenue: number; gpPct: number }
+interface ShopMetrics { shopNum: string; shopName: string; revenue: number; gpPct: number; tickets: number; approvedDollars: number }
 const GP_GOAL = 0.58;
 
 export default function WeeklyLeaderboard() {
   const [metrics, setMetrics] = useState<ShopMetrics[] | null>(null);
   const [goals, setGoals] = useState<GoalsByShop>({});
+  // `dataAt` is the instant the revenue fetch resolved. Proration is
+  // evaluated AT THIS INSTANT so the goal-denominator can't drift past the
+  // numerator: if the revenue is 30 min stale, the prorated goal also
+  // reflects 30 min ago. Updates only when the fetch updates.
+  const [dataAt, setDataAt] = useState<Date | null>(null);
   useEffect(() => { setGoals(loadGoals()); }, []);
   useEffect(() => {
+    // THIS WEEK = Mon → today (week-to-date), the standard Monday-based
+    // `this_week` range — NOT a rolling 7-day window.
     fetch('/api/metrics?range=this_week').then(r => r.json()).then(d => {
       if (!d?.kpi?.byShop) return;
-      setMetrics(d.kpi.byShop.map((s: any) => ({ shopNum: s.shopNum, shopName: s.shopName, revenue: s.revenue, gpPct: s.gpPct })));
+      // chainKpi only returns shops that have a counted RO in the window, so
+      // early in the week most shops are missing. Show ALL shops — ones with no
+      // posted ROs yet render at zero (display only; no calc change).
+      const byNum = new Map<string, any>(
+        d.kpi.byShop.map((s: any) => [s.shopNum, s]),
+      );
+      setMetrics(SHOPS.map(shop => {
+        const s = byNum.get(shop.num);
+        return {
+          shopNum: shop.num,
+          shopName: shop.name,
+          revenue: s?.revenue ?? 0,
+          gpPct: s?.gpPct ?? 0,
+          tickets: s?.cars ?? 0,
+          // Approved Sales = sum of authorized job subtotals on counted ROs
+          // this week. "What's in the bank" the shops + CFO track daily.
+          approvedDollars: s?.approvedDollars ?? 0,
+        };
+      }));
+      setDataAt(new Date());
     });
   }, []);
 
-  // Prorate the weekly goal by working-days elapsed so mid-week comparisons are fair.
-  const win = resolveRange('this_week');
+  // Minute-level proration evaluated AT the data-fetch instant (dataAt),
+  // not "now". Keeps goal denominator and revenue numerator on the same
+  // clock — if revenue is 30 min stale, the prorated goal reflects 30 min
+  // ago too. Per-shop local timezone (Yuma = America/Phoenix; everyone
+  // else = America/Denver) determines workday boundaries.
   const proratedRevenueGoal = (shopNum: string): number | undefined => {
-    const g = goals[shopNum]?.revenueWeekly;
-    if (!g) return undefined;
-    return prorateRevenueGoal(g, 'this_week', win.start, win.end);
+    const raw = goals[shopNum]?.revenueWeekly;
+    if (!raw || !dataAt) return undefined;
+    return weeklyMinuteProratedGoal(shopNum, raw, dataAt);
   };
 
   if (!metrics) return <div className="card animate-pulse h-[380px] mb-6" />;
@@ -62,9 +91,20 @@ export default function WeeklyLeaderboard() {
         <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: meta?.color }} />
         <div className="w-28 shrink-0">
           <div className="font-medium text-sm leading-tight">{r.shopName}</div>
-          {kind === 'revenue' && r.weeklyGoal && (
-            <div className="text-[10px] text-mango-muted">Goal {usd(r.weeklyGoal)}/wk</div>
-          )}
+          {/* Always render the second + third lines (non-breaking space when
+              empty) so revenue rows — which carry goal + approved sub-labels —
+              stay the exact same height as GP rows, keeping the two columns
+              equal height. */}
+          <div className="text-[10px] text-mango-muted leading-tight">
+            {kind === 'revenue'
+              ? (r.weeklyGoal ? `Goal ${usd(r.weeklyGoal)}/wk` : ' ')
+              : `${r.tickets} ${r.tickets === 1 ? 'ticket' : 'tickets'}`}
+          </div>
+          <div className="text-[10px] text-mango-muted leading-tight">
+            {kind === 'revenue'
+              ? <>Approved <span className="font-semibold text-mango-ink tnum">{usd(r.approvedDollars)}</span></>
+              : ' '}
+          </div>
         </div>
         <div className="flex-1 h-2.5 bg-mango-line/40 rounded-full overflow-hidden" title={`${progressLabel} of ${kind === 'revenue' ? 'weekly goal' : '58% target'}`}>
           <div className="h-full rounded-full" style={{ width: fillPct, background: pillBg }} />
@@ -79,9 +119,9 @@ export default function WeeklyLeaderboard() {
     <div className="card mb-6">
       <div className="flex items-center gap-2 mb-1">
         <DollarSign className="w-5 h-5 text-mango-green" />
-        <h2 className="text-lg font-semibold">This week's progress to goal and gp% target</h2>
+        <h2 className="text-lg font-semibold">Progress to Goal &amp; GP% Target — This Week</h2>
       </div>
-      <p className="text-xs text-mango-muted mb-4">Mon → today. Ranked by progress toward goal — pills colored using the same 6-band scale as the heatmap.</p>
+      <p className="text-xs text-mango-muted mb-4">This week vs progress toward full weekly goal. Ranked by progress toward goal — pills colored using the same 6-band scale as the heatmap.</p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div>

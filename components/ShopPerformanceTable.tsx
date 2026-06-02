@@ -89,12 +89,14 @@ function GoalsModal({ goals, onClose, onSave }: { goals: GoalsByShop; onClose: (
 
 type SortKey = 'rank' | 'shop' | 'revenue' | 'cars' | 'aro' | 'closeRate' | 'gpDollars' | 'gpPct' | 'partsGpPct' | 'laborGpPct' | 'discounts';
 
-export default function ShopPerformanceTable({ kpi, range, customStart, customEnd }: { kpi: ChainKpi | null; range: RangeKey; customStart?: string; customEnd?: string }) {
+export default function ShopPerformanceTable({ kpi, range, customStart, customEnd, isExec = false }: { kpi: ChainKpi | null; range: RangeKey; customStart?: string; customEnd?: string; isExec?: boolean }) {
   const [goalsOpen, setGoalsOpen] = useState(false);
   const [goals, setGoals] = useState<GoalsByShop>({});
-  // Default = leaderboard: highest revenue-vs-goal ratio is #1.
+  // Default = leaderboard: highest revenue-vs-prorated-goal ratio is #1, so the
+  // shops closest to (or above) goal sit at the top and red laggards at the
+  // bottom. 'desc' on the 'rank' key sorts ratio high→low (see rows useMemo).
   const [sortKey, setSortKey] = useState<SortKey>('rank');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => { setGoals(loadGoals()); }, []);
 
@@ -164,20 +166,28 @@ export default function ShopPerformanceTable({ kpi, range, customStart, customEn
   const totalRevenue = kpi.totalRevenue;
   const totalCars = kpi.totalCars;
   const avgAro = totalCars ? totalRevenue / totalCars : 0;
-  const avgClose = kpi.byShop.length ? kpi.byShop.reduce((s, r) => s + r.closeRate, 0) / kpi.byShop.length : 0;
+  // Averages over shops WITH activity only — chainKpi now pads byShop to
+  // all 8 shops (zero rows for inactive shops) so the table always shows
+  // every shop. Without this filter the chain averages would be diluted by
+  // those zero rows (e.g. 65% GP across 2 active shops → 16% across 8).
+  const activeShops = kpi.byShop.filter(r => r.revenue > 0 || r.cars > 0);
+  const avgClose = activeShops.length ? activeShops.reduce((s, r) => s + r.closeRate, 0) / activeShops.length : 0;
   const totalGp = kpi.byShop.reduce((s, r) => s + r.gpDollars, 0);
-  const avgGpPct = kpi.byShop.length ? kpi.byShop.reduce((s, r) => s + r.gpPct, 0) / kpi.byShop.length : 0;
-  const avgPartsGpPct = kpi.byShop.length ? kpi.byShop.reduce((s, r) => s + r.partsGpPct, 0) / kpi.byShop.length : 0;
-  const avgLaborGpPct = kpi.byShop.length ? kpi.byShop.reduce((s, r) => s + r.laborGpPct, 0) / kpi.byShop.length : 0;
+  const avgGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.gpPct, 0) / activeShops.length : 0;
+  const avgPartsGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.partsGpPct, 0) / activeShops.length : 0;
+  const avgLaborGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.laborGpPct, 0) / activeShops.length : 0;
   const totalDiscounts = kpi.byShop.reduce((s, r) => s + r.discounts, 0);
 
   return (
     <div className="card mb-6">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">Shop Performance Comparison</h2>
-        <button onClick={() => setGoalsOpen(true)} className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 border border-mango-line rounded-lg bg-white hover:border-mango-orange">
-          <Settings2 className="w-4 h-4" /> Edit Goals
-        </button>
+        <h2 className="text-lg font-semibold">Shop Performance Comparison — Month to Date</h2>
+        {/* Goal editing is executive-only. Employees never see this button. */}
+        {isExec && (
+          <button onClick={() => setGoalsOpen(true)} className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 border border-mango-line rounded-lg bg-white hover:border-mango-orange">
+            <Settings2 className="w-4 h-4" /> Edit Goals
+          </button>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -222,6 +232,12 @@ export default function ShopPerformanceTable({ kpi, range, customStart, customEn
                     <div className="font-semibold">{usd(r.revenue)}</div>
                   )}
                   {revGoal && <div className="text-[10px] text-mango-muted mt-0.5">{((info?.revRatio ?? 0)*100).toFixed(0)}% of {usd(revGoal)} prorated goal</div>}
+                  {/* Approved Sales — authorized job dollars on counted ROs.
+                      "What's in the bank" the shops and CFO watch throughout
+                      the day. Reads from ShopKpi.approvedDollars. */}
+                  {r.approvedDollars !== undefined && (
+                    <div className="text-[10px] text-mango-muted mt-0.5">Approved Sales: <span className="font-semibold text-mango-ink tnum">{usd(r.approvedDollars)}</span></div>
+                  )}
                 </td>
                 <td className="py-3 px-2 font-medium">{num(r.cars)}</td>
                 <td className="py-3 px-2">

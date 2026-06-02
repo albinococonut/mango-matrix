@@ -1,0 +1,61 @@
+# v2 surgical refinement — LOO-CV gated, no new features beyond pace_ratio_vs_t12 at Tue
+
+cp           before p80   LOO p80   in-samp p80   overfit?  coefs (held-out fit)
+----------------------------------------------------------------------------------------------------
+thu_close         24.6%      6.4%          6.2%         OK  k_approved=0.994  k_pace=0.282  b=+665
+fri_mid           15.3%      3.2%          3.2%         OK  k_approved=0.999  b=+961
+tue_close         28.2%     20.0%         19.9%         OK  b=+3,232  k_pace=0.297  k_appr=0.842  k_appt=+302.2  k_ratio=-0.172
+
+# Half-split stability check (early-6wks vs late-6wks fits — coefs should be similar)
+  thu_close:
+     k_appr      early     +0.955    late     +1.040
+     k_pace      early     +0.370    late     +0.178  ⚠ drift
+     b           early   +199.554    late  +1264.162  ⚠ drift
+  fri_mid:
+     k_appr      early     +0.981    late     +1.018
+     b           early  +1072.955    late   +854.888
+  tue_close:
+     b           early  +3874.337    late  +4132.643
+     k_pace      early     +0.388    late     +0.177  ⚠ drift
+     k_appr      early     +0.713    late     +0.919
+     k_appt      early   +248.281    late   +373.719  ⚠ drift
+     k_ratio     early     -0.218    late     -0.117
+
+# Recommended new bands (band = held-out LOO p80, slightly conservative)
+cp           old conf  new conf     band
+  mon_am           66%       66%  ± 34.0%
+  mon_close        73%       73%  ± 27.0%
+  tue_close        72%       79%  ± 21.0%
+  wed_close        81%       81%  ± 19.0%
+  thu_close        75%       93%  ±  7.0%
+  fri_mid          85%       96%  ±  4.0%
+  fri_close        85%       85%  ± 15.0%
+
+# Per-shop residual at Tue/Thu/Fri-mid AFTER refit (held-out LOO residual%)
+  tue_close: 
+     shop 001: mean residual  +8.0%  n=12
+     shop 002: mean residual  -0.2%  n=12
+     shop 003: mean residual  +5.5%  n=12
+     shop 004: mean residual  -7.4%  n=12
+     shop 005: mean residual  -8.6%  n=12
+     shop 006: mean residual  -7.4%  n=12
+     shop 007: mean residual  -8.8%  n=12
+     shop 009: mean residual +19.3%  n=12
+  thu_close: 
+     shop 001: mean residual  +4.5%  n=12
+     shop 002: mean residual  +0.0%  n=12
+     shop 003: mean residual  +3.2%  n=12
+     shop 004: mean residual  -2.2%  n=12
+     shop 005: mean residual  -1.9%  n=12
+     shop 006: mean residual  -2.2%  n=12
+     shop 007: mean residual  -2.0%  n=12
+     shop 009: mean residual  -0.0%  n=12
+  fri_mid: 
+     shop 001: mean residual  +2.5%  n=12
+     shop 002: mean residual  -0.3%  n=12
+     shop 003: mean residual  -0.2%  n=12
+     shop 004: mean residual  -1.8%  n=12
+     shop 005: mean residual  -0.2%  n=12
+     shop 006: mean residual  -0.5%  n=12
+     shop 007: mean residual  -1.7%  n=12
+     shop 009: mean residual  +0.5%  n=12

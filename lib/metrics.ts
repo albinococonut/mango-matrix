@@ -24,6 +24,13 @@ export interface ShopKpi {
   partsGpPct: number;
   laborGpPct: number;
   discounts: number;
+  // Average Work Recommended per RO — sum of every job's subtotal (authorized
+  // OR declined) divided by RO count. Real number, not derived from ARO / CR.
+  awro: number;           // dollars
+  presentedDollars: number; // dollars — sum of all job subtotals (for chain rollup)
+  // Approved Sales — sum of AUTHORIZED job subtotals only. Matches the
+  // "Approved Sales" line in the corporate weekly review spreadsheet.
+  approvedDollars: number;
 }
 
 export interface ChainKpi {
@@ -64,14 +71,42 @@ export function chainKpi(orders: RepairOrder[]): ChainKpi {
     if (!meta) continue;
     byShop.push(shopKpi(meta, list));
   }
+  // Pad missing shops with zero rows so consumers (Shop Performance table,
+  // Employee leaderboards, concept2 grids, etc.) ALWAYS see all 8 shops.
+  // Without this, early Monday morning the table would only show shops that
+  // had already closed a ticket today, dropping the others off the page —
+  // and a manager comparing performance can't see the absent shops at all.
+  for (const meta of SHOPS) {
+    if (!byShopGroups.has(meta.num)) {
+      byShop.push(shopKpi(meta, []));
+    }
+  }
   // Chain totals: per-shop primary rows + secondary ROs (e.g. Yuma-B revenue/cars
   // count toward the chain even though Yuma-B isn't a separate row).
   const secondaryRevenueDollars = secondaryOnly
     .filter(isCountedRO)
     .reduce((s, o) => s + c2d(o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal), 0);
   const secondaryCars = secondaryOnly.filter(isCountedRO).length;
-  const totalRevenue = byShop.reduce((s, k) => s + k.revenue, 0) + secondaryRevenueDollars;
+  // REVENUE-ONLY USPS add-back. The USPS / Post-Office fleet is excluded from
+  // every operational metric (cars, GP, ARO, close rate, leaderboards) via
+  // isCountedRO, but its REVENUE must still reconcile to Tekmetric's Net
+  // Sales. Pull that revenue from wherever it lives — the Yuma primary
+  // instance (excluded customer IDs) AND the Yuma-B secondary instance — and
+  // add it ONLY to the revenue figure (never to cars/ARO/GP/close).
+  const uspsRevenue = orders.reduce((s, o) =>
+    (COUNTED_STATUSES.has(o.repairOrderStatus?.code) && EXCLUDED_CUSTOMER_IDS.has(o.customerId))
+      ? s + c2d(o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal)
+      : s, 0);
+  // Clean (USPS-excluded) revenue drives ARO; reported revenue adds USPS back.
+  const cleanRevenue = byShop.reduce((s, k) => s + k.revenue, 0) + secondaryRevenueDollars;
+  const totalRevenue = cleanRevenue + uspsRevenue;
   const totalCars = byShop.reduce((s, k) => s + k.cars, 0) + secondaryCars;
+  // Attribute USPS revenue to the Yuma row's headline revenue only — its
+  // cars / ARO / GP% stay clean (USPS still excluded from those).
+  if (uspsRevenue > 0) {
+    const yuma = byShop.find(k => k.shopNum === '006');
+    if (yuma) yuma.revenue += uspsRevenue;
+  }
   // Close rate: only count jobs on revenue-realized ROs so we match Tekmetric's denominator
   const closeNum = orders.reduce((s, o) => isCountedRO(o) ? s + o.jobs.filter(j => j.authorized).length : s, 0);
   const closeDen = orders.reduce((s, o) => isCountedRO(o) ? s + o.jobs.length : s, 0);
@@ -80,7 +115,7 @@ export function chainKpi(orders: RepairOrder[]): ChainKpi {
   return {
     totalRevenue,
     totalCars,
-    averageAro: totalCars ? totalRevenue / totalCars : 0,
+    averageAro: totalCars ? cleanRevenue / totalCars : 0, // ARO excludes USPS
     closeRate: closeDen ? closeNum / closeDen : 0,
     byShop: byShop.sort((a, b) => (order.get(a.shopNum) ?? 99) - (order.get(b.shopNum) ?? 99)),
   };
@@ -110,6 +145,20 @@ export function isCountedRO(o: RepairOrder): boolean {
 }
 
 /**
+ * Name-based USPS / post office detector. The Return-Customers, churn, and
+ * avg-visits-per-year metrics excluded these IDs implicitly when they were
+ * captured in EXCLUDED_CUSTOMER_IDS, but USPS holds multiple accounts across
+ * shops with different customer IDs that aren't all in the hard-coded list.
+ * Applied by name match so any new USPS account is filtered automatically as
+ * soon as its name is resolved into the customer-name cache.
+ */
+export function isPostOfficeName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.toLowerCase();
+  return n.includes('usps') || n.includes('post office') || n.includes('postal service');
+}
+
+/**
  * Per-shop labor cost rate (median tech hourly rate, pulled from Tekmetric /employees).
  * Used to compute labor cost = laborHours * rate. Keeps GP$ aligned to what Tekmetric's
  * UI shows by including tech wages. If Mango changes shop labor rates, refresh these.
@@ -135,21 +184,28 @@ export function shopKpi(shop: Shop, orders: RepairOrder[]): ShopKpi {
   let approvedJobs = 0;
   let totalJobs = 0;
   let laborHours = 0; // sum of hours on authorized jobs (drives labor cost)
+  let subletSalesCents = 0; // sublet cost proxy (Tekmetric Total Cost includes sublet cost)
+  let presentedDollarsCents = 0; // sum of every job's subtotal — authorized OR declined (drives AWRO)
+  let approvedDollarsCents = 0;  // sum of AUTHORIZED job subtotals only (drives "Approved Sales")
 
   for (const o of orders) {
     if (!isCountedRO(o)) continue;
     roCount++;
     // ex-tax revenue
     revenueCents += (o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal);
+    subletSalesCents += o.subletSales;
     laborSalesCents += o.laborSales;
     partsSalesCents += o.partsSales;
     discountCents += o.discountTotal;
     for (const j of o.jobs) {
       totalJobs++;
+      // AWRO counts every job presented to the customer, regardless of approval.
+      presentedDollarsCents += j.subtotal || 0;
       if (j.authorized) approvedJobs++;
       // Only count parts cost and labor hours on AUTHORIZED jobs. Declined-job parts
       // never get billed to the customer and never get sold, so they don't belong in cost.
       if (!j.authorized) continue;
+      approvedDollarsCents += j.subtotal || 0;
       for (const p of j.parts) partsCostCents += p.cost * p.quantity;
       laborHours += j.laborHours || 0;
     }
@@ -161,12 +217,18 @@ export function shopKpi(shop: Shop, orders: RepairOrder[]): ShopKpi {
   const cars = roCount;
   const laborRate = LABOR_RATE_BY_SHOP[shop.num] ?? 50;
   const laborCost = laborHours * laborRate;
-  // GP$ = revenue − parts cost − labor cost (matches Tekmetric Custom Financial report)
-  const gpDollars = revenue - partsCost - laborCost;
+  // Sublet cost proxy: the Tekmetric RO API exposes subletSales but no sublet
+  // *cost*, while Tekmetric's Total Cost (and thus GP) includes sublet cost.
+  // Sublet is typically near pass-through, so subletSales is a close proxy and
+  // closes most of the prior GP% gap. (True sublet cost = follow-up option 2.)
+  const subletCost = c2d(subletSalesCents);
+  // GP$ = revenue − parts cost − labor cost − sublet cost (matches Tekmetric Custom Financial report)
+  const gpDollars = revenue - partsCost - laborCost - subletCost;
   // Parts GP% = (partsSales - partsCost) / partsSales
   const partsGpPct = partsSales > 0 ? (partsSales - partsCost) / partsSales : 0;
   // Labor GP% = (laborSales - laborCost) / laborSales
   const laborGpPct = laborSales > 0 ? (laborSales - laborCost) / laborSales : 0;
+  const presentedDollars = c2d(presentedDollarsCents);
   return {
     shopId: shop.tekmetricId,
     shopNum: shop.num,
@@ -180,6 +242,9 @@ export function shopKpi(shop: Shop, orders: RepairOrder[]): ShopKpi {
     partsGpPct,
     laborGpPct,
     discounts: c2d(discountCents),
+    awro: roCount ? presentedDollars / roCount : 0,
+    presentedDollars,
+    approvedDollars: c2d(approvedDollarsCents),
   };
 }
 
@@ -208,17 +273,22 @@ export function dailySeries(orders: RepairOrder[]): DailyPoint[] {
 }
 
 export function dailyByShop(orders: RepairOrder[]): Record<string, DailyPoint[]> {
-  const groups = new Map<number, RepairOrder[]>();
+  // Group by shop NUMBER (not Tekmetric shopId) so a shop with a secondary
+  // instance (e.g. Yuma = 7492 + 18346) combines both into one series.
+  // Previously this keyed by shopId and did out[meta.num] = …, which
+  // OVERWROTE the primary instance's series with the secondary's — that's
+  // why Yuma was missing a chunk of its data.
+  const groups = new Map<string, RepairOrder[]>();
   for (const o of orders) {
-    const a = groups.get(o.shopId) ?? [];
+    const meta = SHOP_BY_TEKMETRIC_ID[o.shopId];
+    if (!meta) continue;
+    const a = groups.get(meta.num) ?? [];
     a.push(o);
-    groups.set(o.shopId, a);
+    groups.set(meta.num, a);
   }
   const out: Record<string, DailyPoint[]> = {};
-  for (const [shopId, list] of groups) {
-    const meta = SHOP_BY_TEKMETRIC_ID[shopId];
-    if (!meta) continue;
-    out[meta.num] = dailySeries(list);
+  for (const [num, list] of groups) {
+    out[num] = dailySeries(list);
   }
   return out;
 }

@@ -33,7 +33,21 @@ export function loadGoals(): GoalsByShop {
   try {
     const stored = localStorage.getItem(GOALS_STORAGE_KEY);
     if (!stored) return DEFAULT_GOALS;
-    return { ...DEFAULT_GOALS, ...JSON.parse(stored) };
+    const parsed = JSON.parse(stored) as GoalsByShop;
+    // Deep merge: per-shop fields fall back to DEFAULT_GOALS so a partial
+    // override (e.g. saving `{ '007': {} }` from a stale UI state) doesn't
+    // blank out an entire shop's goals. JSON-stored undefined keys are absent
+    // from `parsed`, so they fall back to defaults; an explicit numeric zero
+    // does override.
+    const merged: GoalsByShop = {};
+    for (const shop of Object.keys(DEFAULT_GOALS)) {
+      merged[shop] = { ...DEFAULT_GOALS[shop], ...(parsed[shop] || {}) };
+    }
+    // Forward-compat: include any shops only present in stored data.
+    for (const shop of Object.keys(parsed)) {
+      if (!merged[shop]) merged[shop] = parsed[shop];
+    }
+    return merged;
   } catch { return DEFAULT_GOALS; }
 }
 
@@ -94,13 +108,28 @@ export function isWorkingDay(d: Date): boolean {
   return !set.has(d.toISOString().slice(0, 10));
 }
 
-/** Count working days in [start, end] inclusive. */
+/** Count working days in [start, end] inclusive (excludes weekends + holidays). */
 export function workingDaysBetween(start: Date, end: Date): number {
   const s = new Date(start.getFullYear(), start.getMonth(), start.getDate());
   const e = new Date(end.getFullYear(), end.getMonth(), end.getDate());
   let count = 0;
   for (let d = new Date(s); d <= e; d = addDays(d, 1)) {
     if (isWorkingDay(d)) count++;
+  }
+  return count;
+}
+
+/** Mon-Fri count in [start, end] inclusive, IGNORING holidays — the "normal"
+ *  full-staffing denominator. Used so a week with a holiday still divides by 5,
+ *  which drops the prorated goal to 4/5: we don't expect to earn a holiday's
+ *  revenue, so a 4-day week shouldn't be judged against a 5-day target. */
+export function weekdaysBetween(start: Date, end: Date): number {
+  const s = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const e = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  let count = 0;
+  for (let d = new Date(s); d <= e; d = addDays(d, 1)) {
+    const dow = getDay(d);
+    if (dow !== 0 && dow !== 6) count++;
   }
   return count;
 }
@@ -113,10 +142,12 @@ export function revenueGoalForRange(g: ShopGoal | undefined, range: RangeKey): n
   switch (range) {
     case 'this_week':
     case 'last_week':
+    case 'next_week':
     case 'wtd':
       return g.revenueWeekly;
     case 'this_month':
     case 'last_month':
+    case 'next_month':
       return g.revenueMonthly;
     case 'this_quarter':
     case 'last_quarter':
@@ -173,23 +204,88 @@ export function prorateRevenueGoal(
 ): number {
   const bounds = fullPeriodBounds(range, now);
   if (!bounds) return goal; // past-complete or non-prorate-able range
-  const totalDays = workingDaysBetween(bounds.start, bounds.end);
+  // Denominator counts ALL weekdays (Mon-Fri) ignoring holidays — the "normal"
+  // full-staffing week. Numerator counts only true working days (holidays
+  // excluded). So a 4-day holiday week prorates to 4/5 of the full goal: we
+  // don't expect to earn a holiday's revenue, so we shouldn't judge a 4-day
+  // week against a 5-day target.
+  const totalDays = weekdaysBetween(bounds.start, bounds.end);
   const elapsedThrough = now < bounds.end ? now : bounds.end;
   const doneDays = workingDaysBetween(bounds.start, elapsedThrough);
   if (totalDays === 0) return goal;
   return goal * (doneDays / totalDays);
 }
 
+// --- Minute-level weekly proration ----------------------------------------
+//
+// Shops work 8:00am-5:30pm local time, Mon-Fri. The day-level proration in
+// prorateRevenueGoal() counts whole working days, which jumps in 20% steps on
+// a 5-day week. For the live "this week" leaderboard we want the goal to
+// creep up as the day progresses — minute by minute — so a shop that's
+// posted real revenue early in the day isn't compared against a goal that
+// assumes the entire day is already gone.
+//
+// Per-shop timezone matters because Yuma runs on America/Phoenix (no DST).
+// During Mountain DST (most of the year) Yuma's wall clock is 1 hour BEHIND
+// the rest of the chain — so 5:30pm in El Paso is 4:30pm in Yuma.
+
+import { toZonedTime } from 'date-fns-tz';
+import { SHOP_BY_NUM, type ShopNum } from '@/lib/shops';
+
+const WORK_START_HOUR = 8;        // 8:00 AM local
+const WORK_END_HOUR_DEC = 17.5;   // 5:30 PM local (decimal hours)
+const WORK_MIN_PER_DAY = Math.round((WORK_END_HOUR_DEC - WORK_START_HOUR) * 60); // 570
+const WORK_MIN_PER_WEEK = 5 * WORK_MIN_PER_DAY;                                  // 2850
+
+/** Minutes worked on `localDay` up to `localNow`. Returns 0 on weekends/
+ *  holidays, 0 before 8am local, 570 after 5:30pm local. */
+function workMinutesInLocalDay(localDay: Date, localNow: Date): number {
+  if (!isWorkingDay(localDay)) return 0;
+  const dayStart = new Date(localDay); dayStart.setHours(WORK_START_HOUR, 0, 0, 0);
+  const dayEnd   = new Date(localDay); dayEnd.setHours(17, 30, 0, 0);
+  if (localNow.getTime() <= dayStart.getTime()) return 0;
+  if (localNow.getTime() >= dayEnd.getTime())   return WORK_MIN_PER_DAY;
+  return (localNow.getTime() - dayStart.getTime()) / 60000;
+}
+
+/** Fraction of the work-week elapsed for a shop, evaluated at `now` in the
+ *  shop's local timezone. 0 on Mon before 8am; 1 anytime after Fri 5:30pm or
+ *  on Sat/Sun. */
+export function weeklyMinuteProrationRatio(shopNum: string, now: Date = new Date()): number {
+  const tz = SHOP_BY_NUM[shopNum as ShopNum]?.timezone || 'America/Denver';
+  const localNow = toZonedTime(now, tz);
+  const monday = startOfWeek(localNow, { weekStartsOn: 1 });
+  let elapsed = 0;
+  for (let i = 0; i < 5; i++) {
+    const day = addDays(monday, i);
+    elapsed += workMinutesInLocalDay(day, localNow);
+  }
+  return Math.min(1, elapsed / WORK_MIN_PER_WEEK);
+}
+
+/** Apply minute-level weekly proration to a full weekly revenue goal. */
+export function weeklyMinuteProratedGoal(shopNum: string, fullWeeklyGoal: number, now: Date = new Date()): number {
+  return fullWeeklyGoal * weeklyMinuteProrationRatio(shopNum, now);
+}
+
 // --- Color bands -----------------------------------------------------------
 
-/** 6-band color spread for revenue (% of goal). */
+/** Color spread for revenue (% of prorated goal).
+ *  Relaxed from the prior bands (which made anything <75% red) so shops
+ *  pacing within the realistic operational range aren't punished visually:
+ *    ≥ 100%   bright green   (at or above pace)
+ *    ≥  95%   green-yellow   (essentially on pace)
+ *    ≥  75%   yellow         (watch — within 25% of pace)
+ *    ≥  65%   orange         (problem — 25-35% behind)
+ *    <  65%   red            (critical — >35% behind)
+ *  Same source-of-truth used by ShopPerformanceTable, ShopPerformanceHeatmap,
+ *  WeeklyLeaderboard. */
 export function revenueBandColor(ratio: number | null): string {
   if (ratio === null) return '#F4F5F7';
   if (ratio >= 1.00) return '#5BAA59';
-  if (ratio >= 0.98) return '#A8CE5A';
-  if (ratio >= 0.90) return '#F5E580';
-  if (ratio >= 0.85) return '#F4B65C';
-  if (ratio >= 0.75) return '#ED8E3A';
+  if (ratio >= 0.95) return '#A8CE5A';
+  if (ratio >= 0.75) return '#F5E580';
+  if (ratio >= 0.65) return '#F4B65C';
   return '#C9412A';
 }
 

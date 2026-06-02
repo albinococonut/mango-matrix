@@ -6,15 +6,19 @@
 // shop palette. A summary banner totals revenue lost across all shops.
 
 import { useEffect, useState } from 'react';
-import { TrendingDown, TrendingUp, CalendarDays } from 'lucide-react';
+import { TrendingDown, TrendingUp, CalendarDays, ChevronDown, ChevronUp, Users } from 'lucide-react';
 import { pct, num, usd } from '@/lib/format';
 import { TrophyIcon } from './Trophy';
 import { SHOP_BY_NUM } from '@/lib/shops';
+import { WindowToggle } from './AppointmentBookedRate';
+import { MissedRebooksShopList } from './MissedRebooks';
+
+type WindowKind = 'rolling' | 'this_week';
 
 interface ShopRow {
   shopNum: string;
   shopName: string;
-  fbr: { eligibleROs: number; forwardBookedROs: number; fbrPct: number };
+  fbr: { eligibleROs: number; forwardBookedROs: number; fbrPct: number; avgMonthsToRebook?: number | null };
   kar: { expectedAppts: number; keptAppts: number; karPct: number };
   ramping: boolean;
   woWDelta?: number;
@@ -35,24 +39,36 @@ export default function FBRLeaderboard() {
   const [rows, setRows] = useState<ShopRow[] | null>(null);
   const [summary, setSummary] = useState<SummaryStrip | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Per-shop ARO from this-week metrics — used to estimate Revenue Lost on
-  // not-rebooked customers. Each unrebooked customer is a missed future ticket.
+  const [windowKind, setWindowKind] = useState<WindowKind>('this_week');
+  // Which shop's missed-rebook customer list is open. Only one open at a
+  // time to keep the row layout scannable. Only shows on rolling-7d view
+  // (the missed-rebook cache is rolling-7 only).
+  const [expandedShop, setExpandedShop] = useState<string | null>(null);
+  // Per-shop ARO — used to estimate Revenue Lost on not-rebooked customers.
+  // Pulls from the window matching the toggle so ARO denominator and the
+  // re-book counts agree.
   const [aroByShop, setAroByShop] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    fetch('/api/metrics?range=this_week').then(r => r.json()).then(d => {
+    const aroRange = windowKind === 'this_week' ? 'this_week' : 'last_7_days';
+    fetch(`/api/metrics?range=${aroRange}`).then(r => r.json()).then(d => {
       const map: Record<string, number> = {};
       for (const s of (d?.kpi?.byShop || [])) map[s.shopNum] = s.aro;
       setAroByShop(map);
     }).catch(() => {});
-  }, []);
+  }, [windowKind]);
 
   useEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    setRows(null); setSummary(null); setError(null);
+    const fbrUrl = windowKind === 'this_week'
+      ? '/api/fbr?view=leaderboard_wtd'
+      : '/api/fbr?view=leaderboard';
     async function load() {
       setError(null);
       try {
-        const res = await fetch('/api/fbr?view=leaderboard');
+        const res = await fetch(fbrUrl);
         if (!res.ok) {
           if (!cancelled) setError(`Server returned ${res.status}. The first load can take a few minutes — give it a moment and refresh.`);
           return;
@@ -60,6 +76,13 @@ export default function FBRLeaderboard() {
         const d = await res.json();
         if (cancelled) return;
         if (d.error) { setError(d.error); return; }
+        if (d.warming) {
+          // Durable Redis cache not yet seeded (true cold start only — once any
+          // shop is warmed the numbers persist and we never re-enter this).
+          // Silently retry; the skeleton stays up, no "calculating" message.
+          retryTimer = setTimeout(load, 30_000);
+          return;
+        }
         const shops: ShopRow[] = d.shops || [];
         setRows(shops);
         const chainElig = shops.reduce((s, r) => s + (r.fbr?.eligibleROs ?? 0), 0);
@@ -78,8 +101,8 @@ export default function FBRLeaderboard() {
       }
     }
     load();
-    return () => { cancelled = true; };
-  }, []);
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [windowKind]);
 
   // Chain-wide revenue lost = sum across shops of (missed customers × that shop's ARO).
   const totalRevenueLost = (rows || []).reduce((sum, r) => {
@@ -90,18 +113,23 @@ export default function FBRLeaderboard() {
   const totalMissed = (rows || []).reduce((sum, r) =>
     sum + Math.max(0, (r.fbr?.eligibleROs ?? 0) - (r.fbr?.forwardBookedROs ?? 0)), 0);
 
+  const windowLabel = windowKind === 'this_week' ? 'This Week' : 'Rolling 7 Days';
+  const windowCopy  = windowKind === 'this_week' ? 'this week (Mon → today)' : 'the last 7 days';
   return (
     <div className="card mb-6">
-      <div className="flex items-center gap-2 mb-1">
-        <CalendarDays className="w-5 h-5 text-mango-info" />
-        <h2 className="text-lg font-semibold">Re-Book Customers at Checkout — Last week</h2>
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="w-5 h-5 text-mango-info" />
+          <h2 className="text-lg font-semibold">Customers who Re-Booked — {windowLabel}</h2>
+        </div>
+        <WindowToggle value={windowKind} onChange={setWindowKind} />
       </div>
-      <p className="text-xs text-mango-muted mb-4">% of closed retail tickets last week where the customer has a future appointment on the calendar.</p>
+      <p className="text-xs text-mango-muted mb-4">% of closed retail tickets in {windowCopy} where the customer booked a future appointment — at checkout or within 14 days of leaving (callback bookings count).</p>
 
       {rows && totalRevenueLost > 0 && (
         <div className="mb-4 p-3 rounded-lg bg-mango-red/10 border border-mango-red/30 flex items-center justify-between">
           <div>
-            <div className="text-xs text-mango-muted uppercase tracking-wide font-medium">Total revenue lost last week</div>
+            <div className="text-xs text-mango-muted uppercase tracking-wide font-medium">Total future revenue lost by not rebooking ({windowCopy})</div>
             <div className="text-2xl font-bold text-mango-red tabular-nums">{usd(totalRevenueLost)}</div>
           </div>
           <div className="text-right text-xs text-mango-muted">
@@ -113,8 +141,8 @@ export default function FBRLeaderboard() {
 
       {summary && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-          <SummaryCard label="Chain Re-Book Rate (last week)" value={pct(summary.chainFbr)} delta={summary.chainFbr - summary.chainFbrPriorWeek} />
-          <SummaryCard label="Chain KAR (kept appts)" value={pct(summary.chainKar)} />
+          <SummaryCard label={`Company Re-Book Rate (${windowLabel.toLowerCase()})`} value={pct(summary.chainFbr)} delta={summary.chainFbr - summary.chainFbrPriorWeek} />
+          <SummaryCard label="Company KAR (kept appts)" value={pct(summary.chainKar)} />
           <SummaryCard label="180d Return Rate" value={summary.chainReturn180d ? pct(summary.chainReturn180d) : '—'} hint="Monthly refresh" />
           <SummaryCard label="Tickets closed (eligible)" value={num(summary.ticketsThisWeek)} />
         </div>
@@ -137,36 +165,60 @@ export default function FBRLeaderboard() {
             const missed = Math.max(0, (r.fbr?.eligibleROs ?? 0) - (r.fbr?.forwardBookedROs ?? 0));
             const revLost = missed * aro;
             return (
-              <div key={r.shopNum} className="grid grid-cols-12 items-center gap-3 p-3 bg-mango-bg/40 rounded-lg hover:bg-mango-bg/80 cursor-pointer">
-                <div className="col-span-1 text-mango-muted font-semibold flex items-center gap-1.5">
-                  {i + 1}{i < 3 && <TrophyIcon rank={(i + 1) as 1 | 2 | 3} size={14} />}
-                </div>
-                <div className="col-span-3 flex items-center gap-2">
-                  <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ background: shopColor }} />
-                  <div>
-                    <div className="font-semibold leading-tight">{r.shopName}</div>
-                    <div className="text-xs text-mango-muted">Shop {r.shopNum}{r.ramping ? ' · Ramping' : ''}</div>
+              <div key={r.shopNum}>
+                <div className="grid grid-cols-12 items-center gap-3 p-3 bg-mango-bg/40 rounded-lg hover:bg-mango-bg/80">
+                  <div className="col-span-1 text-mango-muted font-semibold flex items-center gap-1.5">
+                    {i + 1}{i < 3 && <TrophyIcon rank={(i + 1) as 1 | 2 | 3} size={14} />}
+                  </div>
+                  <div className="col-span-3 flex items-center gap-2">
+                    <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ background: shopColor }} />
+                    <div>
+                      <div className="font-semibold leading-tight">{r.shopName}</div>
+                      <div className="text-xs text-mango-muted">Shop {r.shopNum}{r.ramping ? ' · Ramping' : ''}</div>
+                    </div>
+                  </div>
+                  <div className="col-span-2 text-2xl font-bold tabular-nums" style={{ color: shopColor }}>{pct(r.fbr.fbrPct)}</div>
+                  <div className="col-span-2">
+                    <div className="relative h-2.5 bg-mango-line rounded-full overflow-hidden">
+                      <div className="h-full" style={{ width: `${barPct}%`, background: shopColor }} />
+                      <div className="absolute top-0 h-full w-px bg-mango-ink" style={{ left: `${(TARGET / (TARGET * 1.5)) * 100}%` }} />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-mango-muted mt-0.5">
+                      <span>0%</span>
+                      <span>Target {pct(TARGET, 0)}</span>
+                      <span>{pct(TARGET * 1.5, 0)}</span>
+                    </div>
+                  </div>
+                  <div className="col-span-1 text-right text-xs text-mango-muted" title="Booked / Eligible">
+                    {num(r.fbr.forwardBookedROs)}/{num(r.fbr.eligibleROs)}
+                  </div>
+                  <div className="col-span-2 text-right" title="Mean months from RO close to the rebooked appointment's scheduled start">
+                    <div className="text-xs text-mango-muted">Avg time to rebook</div>
+                    <div className="font-bold text-sm tabular-nums text-mango-ink">
+                      {r.fbr.avgMonthsToRebook != null ? `${r.fbr.avgMonthsToRebook.toFixed(1)} mo` : '—'}
+                    </div>
+                  </div>
+                  <div className="col-span-1 text-right" title={`${missed} not rebooked × ARO ${usd(aro)}`}>
+                    <div className="text-xs text-mango-muted">Rev. lost</div>
+                    <div className="font-bold text-mango-red text-sm tabular-nums">{aro ? usd(revLost) : '—'}</div>
                   </div>
                 </div>
-                <div className="col-span-2 text-2xl font-bold tabular-nums" style={{ color: shopColor }}>{pct(r.fbr.fbrPct)}</div>
-                <div className="col-span-3">
-                  <div className="relative h-2.5 bg-mango-line rounded-full overflow-hidden">
-                    <div className="h-full" style={{ width: `${barPct}%`, background: shopColor }} />
-                    <div className="absolute top-0 h-full w-px bg-mango-ink" style={{ left: `${(TARGET / (TARGET * 1.5)) * 100}%` }} />
+                {windowKind === 'rolling' && missed > 0 && (
+                  <div className="mt-1 flex items-center justify-end pr-2">
+                    <button
+                      onClick={() => setExpandedShop(expandedShop === r.shopNum ? null : r.shopNum)}
+                      className="inline-flex items-center gap-1 text-[11px] text-mango-muted hover:text-mango-orange"
+                      title="Show the customers who didn't rebook this week"
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      {missed} customers didn't rebook
+                      {expandedShop === r.shopNum ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </button>
                   </div>
-                  <div className="flex justify-between text-[10px] text-mango-muted mt-0.5">
-                    <span>0%</span>
-                    <span>Target {pct(TARGET, 0)}</span>
-                    <span>{pct(TARGET * 1.5, 0)}</span>
-                  </div>
-                </div>
-                <div className="col-span-1 text-right text-xs text-mango-muted" title="Booked / Eligible">
-                  {num(r.fbr.forwardBookedROs)}/{num(r.fbr.eligibleROs)}
-                </div>
-                <div className="col-span-2 text-right" title={`${missed} not rebooked × ARO ${usd(aro)}`}>
-                  <div className="text-xs text-mango-muted">Revenue lost</div>
-                  <div className="font-bold text-mango-red text-sm tabular-nums">{aro ? usd(revLost) : '—'}</div>
-                </div>
+                )}
+                {windowKind === 'rolling' && expandedShop === r.shopNum && (
+                  <MissedRebooksShopList shopNum={r.shopNum} />
+                )}
               </div>
             );
           })}

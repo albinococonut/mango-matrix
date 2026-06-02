@@ -1,16 +1,46 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BarChart2, ChevronDown } from 'lucide-react';
 import { usd } from '@/lib/format';
 import LineChartBlock from './charts/LineChartBlock';
 import type { ComparisonMode, RangeKey } from '@/lib/dates';
 
-interface Resp {
-  current: { series: { date: string; revenue: number }[]; total: number; label?: string };
-  comparison: { series: { date: string; revenue: number }[]; total: number; label?: string };
-  change: number;
+// Each weekly bucket carries every metric; `totals` is the period-level
+// aggregate. Matches the /api/period-comparison v2 response.
+interface WeekBucket {
+  weekStart: string;
+  revenue: number; gpDollars: number; gpPct: number; cars: number; aro: number;
+  closeRate: number; comebacks: number; hours: number;
+  conversion: number | null; rebook: number | null;
 }
+type Totals = Omit<WeekBucket, 'weekStart'>;
+interface Period { label?: string; weeks: WeekBucket[]; totals: Totals }
+interface Resp { current: Period; comparison: Period }
+
+type MetricKey = 'revenue' | 'gpPct' | 'gpDollars' | 'cars' | 'aro' | 'closeRate' | 'conversion' | 'rebook' | 'comebacks' | 'hours';
+// Daily / Weekly / Monthly. Daily suppresses Conversion + Re-Book (those
+// only exist at weekly granularity in the snapshot store). Monthly rolls
+// up weekly snapshot means into the matching month.
+type Granularity = 'daily' | 'weekly' | 'monthly';
+const GRANULARITIES: { value: Granularity; label: string }[] = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+];
+type Fmt = 'usd' | 'pct' | 'num' | 'hrs';
+const METRICS: { key: MetricKey; label: string; fmt: Fmt }[] = [
+  { key: 'revenue',    label: 'Revenue',         fmt: 'usd' },
+  { key: 'gpPct',      label: 'GP %',            fmt: 'pct' },
+  { key: 'gpDollars',  label: 'GP $',            fmt: 'usd' },
+  { key: 'cars',       label: 'Cars',            fmt: 'num' },
+  { key: 'aro',        label: 'ARO',             fmt: 'usd' },
+  { key: 'closeRate',  label: 'Close Rate',      fmt: 'pct' },
+  { key: 'conversion', label: 'Call Conversion', fmt: 'pct' },
+  { key: 'rebook',     label: 'Re-Book',         fmt: 'pct' },
+  { key: 'comebacks',  label: 'Comebacks',       fmt: 'num' },
+  { key: 'hours',      label: 'Hours',           fmt: 'hrs' },
+];
 
 const RANGES: { value: RangeKey; label: string }[] = [
   { value: 'this_week',      label: 'This Week' },
@@ -34,10 +64,19 @@ const COMPARISON_OPTIONS: { value: ComparisonMode; label: string }[] = [
   { value: 'custom',                 label: 'Custom Range' },
 ];
 
+function fmtVal(fmt: Fmt, v: number | null): string {
+  if (v == null) return '—';
+  if (fmt === 'usd') return usd(v);
+  if (fmt === 'pct') return v.toFixed(1) + '%';
+  if (fmt === 'hrs') return Math.round(v).toLocaleString() + 'h';
+  return Math.round(v).toLocaleString();
+}
+
 export default function PeriodComparison() {
   const [data, setData] = useState<Resp | null>(null);
-  const [noWeekends, setNoWeekends] = useState(true);
-  const [range, setRange] = useState<RangeKey>('this_year');
+  const [metric, setMetric] = useState<MetricKey>('revenue');
+  const [range, setRange] = useState<RangeKey>('this_month');
+  const [granularity, setGranularity] = useState<Granularity>('weekly');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [comparison, setComparison] = useState<ComparisonMode>('same_period_last_year');
@@ -47,66 +86,44 @@ export default function PeriodComparison() {
   useEffect(() => {
     if (range === 'custom' && (!customStart || !customEnd)) return;
     if (comparison === 'custom' && (!compStart || !compEnd)) return;
-    const p: Record<string, string> = { range, compare: comparison };
-    if (noWeekends) p.no_weekends = '1';
+    const p: Record<string, string> = { range, compare: comparison, granularity };
     if (range === 'custom') { p.start = customStart; p.end = customEnd; }
     if (comparison === 'custom') { p.compStart = compStart; p.compEnd = compEnd; }
     const q = new URLSearchParams(p);
     setData(null);
     fetch(`/api/period-comparison?${q}`)
       .then((r) => r.json())
-      .then((j) => setData(j && j.current && j.comparison ? j : null));
-  }, [noWeekends, range, customStart, customEnd, comparison, compStart, compEnd]);
+      .then((j) => setData(j && j.current && j.comparison ? j : null))
+      .catch(() => setData(null));
+    // metric is intentionally NOT a dependency — the API returns every metric,
+    // so switching the dropdown is instant (no refetch).
+  }, [range, customStart, customEnd, comparison, compStart, compEnd, granularity]);
 
-  // For long ranges (month / quarter / year / 30-365-day windows) we aggregate to
-  // WEEKLY buckets so we're not comparing a Friday to a Monday — revenue is
-  // structurally lopsided by day-of-week and a daily line is noisy.
-  // For week-length ranges we keep daily, but line up by day-of-week so Mon ↔ Mon.
-  const isWeekRange = range === 'this_week' || range === 'last_week';
-  const isDailyRange = isWeekRange; // (could expand later)
-  const dayKey = (iso: string) => {
-    const [y, m, d] = iso.split('-').map(Number);
-    return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
-  };
-  const weekIndex = (series: { date: string }[], i: number) => {
-    if (series.length === 0) return 0;
-    const [y0, m0, d0] = series[0].date.split('-').map(Number);
-    const start = new Date(Date.UTC(y0, m0 - 1, d0));
-    const [y, m, d] = series[i].date.split('-').map(Number);
-    const cur = new Date(Date.UTC(y, m - 1, d));
-    return Math.floor((cur.getTime() - start.getTime()) / (7 * 86400_000));
-  };
-  function aggregateWeekly(s: { date: string; revenue: number }[]) {
-    const m = new Map<number, number>();
-    s.forEach((p, i) => {
-      const k = weekIndex(s, i);
-      m.set(k, (m.get(k) || 0) + p.revenue);
-    });
-    return [...m.entries()].sort((a, b) => a[0] - b[0]).map(([k, rev]) => ({ x: `Wk ${k + 1}`, y: rev }));
-  }
-  const curRaw = data?.current?.series ?? [];
-  const preRaw = data?.comparison?.series ?? [];
-  let curr: { x: string; y: number }[] = [];
-  let prior: { x: string; y: number }[] = [];
-  if (isDailyRange) {
-    // Bucket by day-of-week label so Mon lines up with Mon.
-    const dowOrder = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    const sumByDow = (s: { date: string; revenue: number }[]) => {
-      const m = new Map<string, number>();
-      for (const p of s) m.set(dayKey(p.date), (m.get(dayKey(p.date)) || 0) + p.revenue);
-      return dowOrder
-        .filter(d => m.has(d))
-        .map(d => ({ x: d, y: m.get(d) || 0 }));
-    };
-    curr = sumByDow(curRaw);
-    const priorMap = new Map(sumByDow(preRaw).map(p => [p.x, p.y]));
-    prior = curr.map(c => ({ x: c.x, y: priorMap.get(c.x) ?? 0 }));
-  } else {
-    curr = aggregateWeekly(curRaw);
-    const priorWeekly = aggregateWeekly(preRaw);
-    // Align each prior week N to current week N on the x-axis.
-    prior = curr.map((c, i) => ({ x: c.x, y: priorWeekly[i]?.y ?? 0 }));
-  }
+  const meta = METRICS.find(m => m.key === metric)!;
+
+  // Align comparison bucket N to current bucket N on the x-axis. Label
+  // prefix matches the granularity so the axis reads correctly: Day 1,
+  // Day 2 … for daily; Wk 1, Wk 2 … for weekly; Mo 1, Mo 2 … for monthly.
+  const { curr, prior } = useMemo(() => {
+    const cw = data?.current?.weeks ?? [];
+    const pw = data?.comparison?.weeks ?? [];
+    const val = (w: WeekBucket | undefined) => (w ? (w[metric] ?? 0) : 0);
+    const prefix = granularity === 'daily' ? 'Day' : granularity === 'monthly' ? 'Mo' : 'Wk';
+    const curr = cw.map((w, i) => ({ x: `${prefix} ${i + 1}`, y: val(w) }));
+    const prior = cw.map((_, i) => ({ x: `${prefix} ${i + 1}`, y: val(pw[i]) }));
+    return { curr, prior };
+  }, [data, metric, granularity]);
+
+  const curTotal = data?.current?.totals?.[metric] ?? null;
+  const compTotal = data?.comparison?.totals?.[metric] ?? null;
+  // Ratio metrics → show point delta (e.g. +3.2 pts). Others → relative %.
+  const isRatio = meta.fmt === 'pct';
+  const delta = (() => {
+    if (curTotal == null || compTotal == null) return null;
+    if (isRatio) return { kind: 'pts' as const, v: curTotal - compTotal };
+    if (compTotal === 0) return null;
+    return { kind: 'rel' as const, v: (curTotal - compTotal) / compTotal };
+  })();
 
   return (
     <div className="card mb-6">
@@ -116,10 +133,27 @@ export default function PeriodComparison() {
           <h2 className="text-lg font-semibold">Period Comparison</h2>
         </div>
         <div className="flex items-center gap-2 text-sm flex-wrap">
+          {/* Metric dropdown — same metrics as Shop Performance */}
+          <div className="relative">
+            <select value={metric} onChange={(e) => setMetric(e.target.value as MetricKey)}
+              className="appearance-none pl-3 pr-9 py-1.5 bg-white border border-mango-line rounded-lg text-sm font-medium cursor-pointer focus:outline-none focus:border-mango-orange">
+              {METRICS.map(m => (<option key={m.key} value={m.key}>{m.label}</option>))}
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
+          </div>
           <div className="relative">
             <select value={range} onChange={(e) => setRange(e.target.value as RangeKey)}
               className="appearance-none pl-3 pr-9 py-1.5 bg-white border border-mango-line rounded-lg text-sm font-medium cursor-pointer focus:outline-none focus:border-mango-orange">
               {RANGES.map(r => (<option key={r.value} value={r.value}>{r.label}</option>))}
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
+          </div>
+          {/* Granularity toggle — daily / weekly / monthly. Daily mode
+              suppresses Conversion + Re-Book (weekly-keyed snapshots). */}
+          <div className="relative">
+            <select value={granularity} onChange={(e) => setGranularity(e.target.value as Granularity)}
+              className="appearance-none pl-3 pr-9 py-1.5 bg-white border border-mango-line rounded-lg text-sm font-medium cursor-pointer focus:outline-none focus:border-mango-orange">
+              {GRANULARITIES.map(g => (<option key={g.value} value={g.value}>{g.label}</option>))}
             </select>
             <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
           </div>
@@ -149,10 +183,6 @@ export default function PeriodComparison() {
                 className="px-2 py-1.5 border border-mango-line rounded-lg text-sm" />
             </div>
           )}
-          <button onClick={() => setNoWeekends(!noWeekends)}
-            className={`px-3 py-1.5 border rounded-lg text-sm font-medium ${noWeekends ? 'bg-mango-ink text-white border-mango-ink' : 'bg-white border-mango-line'}`}>
-            No Weekends
-          </button>
         </div>
       </div>
 
@@ -167,27 +197,33 @@ export default function PeriodComparison() {
           <LineChartBlock
             height={280}
             xType="category"
+            formatValue={(n) => fmtVal(meta.fmt, n)}
             series={[
-              { key: 'current', label: `Current`, color: '#3B82F6', data: curr },
-              { key: 'prior',   label: `Comparison`, color: '#0F1419', data: prior, dashed: true },
+              { key: 'current', label: `Current · ${meta.label}`, color: '#3B82F6', data: curr },
+              { key: 'prior',   label: `Comparison · ${meta.label}`, color: '#0F1419', data: prior, dashed: true },
             ]}
           />
           <div className="text-[10px] text-mango-muted mt-1 text-center">
-            {isWeekRange ? 'Aligned by day of week (Mon ↔ Mon).' : 'Aggregated by week so Friday vs Monday comparisons aren\'t skewed.'}
+            {granularity === 'daily' ? 'Daily buckets, comparison aligned day-over-day.' : granularity === 'monthly' ? 'Monthly buckets, comparison aligned month-over-month.' : 'Weekly buckets, comparison aligned week-over-week.'}
+            {(metric === 'conversion' || metric === 'rebook') && granularity === 'daily' && ' · Call Conversion / Re-Book are not tracked at daily granularity — switch to Weekly or Monthly to see those.'}
+            {(metric === 'conversion' || metric === 'rebook') && granularity !== 'daily' && ' Call Conversion / Re-Book history accumulates from when weekly tracking began; earlier buckets may be blank.'}
           </div>
           <div className="grid grid-cols-3 gap-4 mt-4">
             <div className="card">
-              <div className="text-xs text-mango-muted">Current Period</div>
-              <div className="text-xl font-bold mt-1">{usd(data.current.total)}</div>
+              <div className="text-xs text-mango-muted">Current Period · {meta.label}</div>
+              <div className="text-xl font-bold mt-1">{fmtVal(meta.fmt, curTotal)}</div>
             </div>
             <div className="card">
-              <div className="text-xs text-mango-muted">Comparison Period</div>
-              <div className="text-xl font-bold mt-1">{usd(data.comparison.total)}</div>
+              <div className="text-xs text-mango-muted">Comparison Period · {meta.label}</div>
+              <div className="text-xl font-bold mt-1">{fmtVal(meta.fmt, compTotal)}</div>
             </div>
             <div className="card">
               <div className="text-xs text-mango-muted">Change</div>
-              <div className={`text-xl font-bold mt-1 ${data.change >= 0 ? 'text-mango-green' : 'text-mango-red'}`}>
-                {data.change >= 0 ? '↗ +' : '↘ '}{(data.change * 100).toFixed(1)}%
+              <div className={`text-xl font-bold mt-1 ${delta == null ? 'text-mango-muted' : delta.v >= 0 ? 'text-mango-green' : 'text-mango-red'}`}>
+                {delta == null ? '—'
+                  : delta.kind === 'pts'
+                    ? `${delta.v >= 0 ? '↗ +' : '↘ '}${delta.v.toFixed(1)} pts`
+                    : `${delta.v >= 0 ? '↗ +' : '↘ '}${(delta.v * 100).toFixed(1)}%`}
               </div>
             </div>
           </div>

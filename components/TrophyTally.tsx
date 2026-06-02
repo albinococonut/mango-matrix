@@ -7,8 +7,30 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Award } from 'lucide-react';
+import { toZonedTime } from 'date-fns-tz';
 import { SHOPS } from '@/lib/shops';
 import { TrophyIcon } from './Trophy';
+
+/**
+ * Trophy phase by clock:
+ *   - "awarded":  Mon 6:00 PM MT → Tue 7:30 AM MT (~13.5 h celebration
+ *                 window after the weekly awards ceremony)
+ *   - "pending":  Tue 7:30 AM MT → next Mon 6:00 PM MT (most of the
+ *                 week — competition is open, trophies accumulating)
+ * The page polls this every minute so it flips at the boundary without a
+ * manual refresh.
+ */
+function trophyPhase(now: Date = new Date()): 'pending' | 'awarded' {
+  const mt = toZonedTime(now, 'America/Denver');
+  const dow = mt.getDay();      // 0 = Sun, 1 = Mon, 2 = Tue
+  const minutes = mt.getHours() * 60 + mt.getMinutes();
+  // Monday from 6 PM onward → awarded
+  if (dow === 1 && minutes >= 18 * 60) return 'awarded';
+  // Tuesday before 7:30 AM → still in the post-ceremony window
+  if (dow === 2 && minutes < 7 * 60 + 30) return 'awarded';
+  // Everything else (Tue 7:30 AM → next Mon 6 PM) → pending
+  return 'pending';
+}
 
 interface ShopMetrics { shopNum: string; shopName: string; revenue: number; gpPct: number }
 interface TechRow { technicianId: number; shopNum: string; shopName: string; efficiency: number; billedHours: number }
@@ -17,16 +39,22 @@ interface ComebackRow { shopNum: string; shopName: string; comebackJobs: number 
 interface GoogleRow { shopNum: string; shopName: string; fiveStar: number; recentTotal: number }
 interface ConversionRow { shopNum: string; shopName: string; bookedRatePct: number }
 
-type Category = 'revenue' | 'gp' | 'tech' | 'rebook' | 'comebacks' | 'reviews' | 'conversion';
+type Category = 'revenue' | 'gp' | 'tech' | 'rebook' | 'comebacks' | 'reviews' | 'conversion' | 'todo';
+// Pending Trophies uses Mon→today MT only. Re-Books and Call Conversion are
+// now fetched from dedicated week-to-date endpoints (cron-derived from the
+// SAME trailing-7 raw fetches, no extra Tekmetric/WhatConverts cost). Reviews
+// stay excluded until Google Business Profile API access is wired up — the
+// current Google Places v1 data is too unreliable for trophy awards.
 const CATEGORIES: { key: Category; label: string }[] = [
-  { key: 'revenue',    label: 'Revenue' },
-  { key: 'gp',         label: 'GP%' },
-  { key: 'tech',       label: 'Top Tech' },
-  { key: 'rebook',     label: 'Most Re-Books' },
-  { key: 'comebacks',  label: 'Fewest Comebacks' },
-  { key: 'reviews',    label: 'Most New 5★ Reviews' },
-  { key: 'conversion', label: 'Highest Call Conversion' },
+  { key: 'revenue',         label: 'Revenue' },
+  { key: 'gp',              label: 'GP%' },
+  { key: 'tech',            label: 'Top Tech' },
+  { key: 'rebook',          label: 'Most Re-Books' },
+  { key: 'comebacks',       label: 'Fewest Comebacks' },
+  { key: 'conversion',      label: 'Highest Call Conversion' },
+  { key: 'todo',            label: 'Most To-Do Items Checked Off' },
 ];
+interface TodoRecRow { shopNum: string; shopName: string; count: number }
 
 export default function TrophyTally() {
   const [metrics, setMetrics] = useState<ShopMetrics[] | null>(null);
@@ -35,7 +63,16 @@ export default function TrophyTally() {
   const [comebacks, setComebacks] = useState<ComebackRow[] | null>(null);
   const [reviews, setReviews] = useState<GoogleRow[] | null>(null);
   const [conversion, setConversion] = useState<ConversionRow[] | null>(null);
+  const [todoRec, setTodoRec] = useState<TodoRecRow[] | null>(null);
   const [selectedShop, setSelectedShop] = useState<string | null>(null);
+  // Phase ticks each minute so the page flips at the 7:30 AM / 6 PM Mon
+  // boundaries without a manual refresh.
+  const [phase, setPhase] = useState<'pending' | 'awarded'>(() => trophyPhase());
+  useEffect(() => {
+    const id = setInterval(() => setPhase(trophyPhase()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const isAwarded = phase === 'awarded';
 
   useEffect(() => {
     const safe = async <T,>(url: string): Promise<T | null> => {
@@ -46,23 +83,35 @@ export default function TrophyTally() {
       setMetrics(d.kpi.byShop.map((s: any) => ({ shopNum: s.shopNum, shopName: s.shopName, revenue: s.revenue, gpPct: s.gpPct })));
     });
     safe<any>('/api/tech-production?range=this_week').then(d => setTechs(d?.rows || []));
-    safe<any>('/api/fbr?view=leaderboard').then(d => setFbr(d?.shops || []));
+    // WTD endpoints: Mon→today subset of the same trailing-7 raw fetches.
+    // Existing trailing-7 endpoints (`view=leaderboard`, `&strict=1`) are
+    // still used elsewhere in the dashboard and are untouched.
+    safe<any>('/api/fbr?view=leaderboard_wtd').then(d => setFbr(d?.shops || []));
     safe<any>('/api/extras?view=comebacks&range=this_week').then(d => setComebacks(d?.shops || []));
     safe<any>('/api/extras?view=google-ratings').then(d => setReviews(d?.shops || []));
-    safe<any>('/api/extras?view=booked-rate&strict=1').then(d => setConversion(d?.shops || []));
+    safe<any>('/api/extras?view=booked-rate&wtd=1').then(d => setConversion(d?.shops || []));
+    safe<any>('/api/extras?view=todo-recoveries&window=this_week').then(d => setTodoRec(d?.shops || []));
   }, []);
 
   const rankings = useMemo(() => {
-    const r: Record<Category, string[]> = { revenue: [], gp: [], tech: [], rebook: [], comebacks: [], reviews: [], conversion: [] };
+    const r: Record<Category, string[]> = { revenue: [], gp: [], tech: [], rebook: [], comebacks: [], reviews: [], conversion: [], todo: [] };
     if (metrics)    r.revenue   = [...metrics].sort((a, b) => b.revenue - a.revenue).map(x => x.shopNum);
     if (metrics)    r.gp        = [...metrics].sort((a, b) => b.gpPct - a.gpPct).map(x => x.shopNum);
     if (techs)      r.tech      = [...techs].sort((a, b) => b.efficiency - a.efficiency).map(x => x.shopNum);
     if (fbr)        r.rebook    = [...fbr].sort((a, b) => (b.fbr?.fbrPct ?? 0) - (a.fbr?.fbrPct ?? 0)).map(x => x.shopNum);
     if (comebacks)  r.comebacks = [...comebacks].sort((a, b) => a.comebackJobs - b.comebackJobs).map(x => x.shopNum);
-    if (reviews)    r.reviews   = [...reviews].sort((a, b) => b.fiveStar - a.fiveStar).map(x => x.shopNum);
+    // Only award the reviews trophy when we actually have review totals. While
+    // GBP API access is pending (all fiveStar = 0) the category is skipped
+    // entirely; it auto-resumes the moment any shop has a non-zero total.
+    if (reviews && reviews.some(x => (x.fiveStar ?? 0) > 0)) {
+      r.reviews = [...reviews].sort((a, b) => b.fiveStar - a.fiveStar).map(x => x.shopNum);
+    }
     if (conversion) r.conversion = [...conversion].sort((a, b) => b.bookedRatePct - a.bookedRatePct).map(x => x.shopNum);
+    // To-Do recoveries — rank DESC by count, drop shops with 0 so a fully
+    // empty cohort doesn't back into bronze.
+    if (todoRec) r.todo = [...todoRec].filter(x => (x.count ?? 0) > 0).sort((a, b) => (b.count ?? 0) - (a.count ?? 0)).map(x => x.shopNum);
     return r;
-  }, [metrics, techs, fbr, comebacks, reviews, conversion]);
+  }, [metrics, techs, fbr, comebacks, reviews, conversion, todoRec]);
 
   const trophies = useMemo(() => {
     const out: Record<string, { gold: number; silver: number; bronze: number; by: Partial<Record<Category, 1 | 2 | 3>> }> = {};
@@ -90,54 +139,74 @@ export default function TrophyTally() {
 
   return (
     <>
-      <div className="card mb-6 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #FFF7E6 0%, #FFFFFF 60%, #FFF1F4 100%)' }}>
-        <div className="absolute inset-0 pointer-events-none opacity-60" style={{
-          backgroundImage: 'radial-gradient(circle at 12% 18%, #F5C51844 0 6px, transparent 7px), radial-gradient(circle at 88% 22%, #EC489944 0 5px, transparent 6px), radial-gradient(circle at 25% 82%, #10B98144 0 4px, transparent 5px), radial-gradient(circle at 76% 80%, #3B82F644 0 5px, transparent 6px), radial-gradient(circle at 50% 12%, #F9731644 0 4px, transparent 5px)',
-          backgroundSize: 'cover',
-        }} />
+      <div className="card mb-8 relative overflow-hidden"
+        style={{ background: 'linear-gradient(140deg,#FFFCF4 0%,#FDF6E7 55%,#FCF1DC 100%)', boxShadow: 'inset 0 0 0 1px rgba(201,162,39,0.22), 0 1px 3px rgba(31,41,55,0.04)' }}>
+        <div className="absolute inset-x-0 top-0 h-[3px]" style={{ background: 'linear-gradient(90deg, transparent, #C9A227, transparent)' }} />
         <div className="relative">
-          <div className="flex items-center gap-3 mb-2">
-            <Award className="w-9 h-9 text-mango-orange drop-shadow" />
+          <div className="flex items-center gap-2.5 mb-1">
+            <span className="inline-flex items-center justify-center w-9 h-9 rounded-full"
+              style={{ background: 'rgba(201,162,39,0.12)', boxShadow: 'inset 0 0 0 1px rgba(201,162,39,0.28)' }}>
+              <Award className="w-[18px] h-[18px]" style={{ color: '#C9A227' }} />
+            </span>
             <div>
-              <h2 className="text-2xl font-bold tracking-tight">🏆 Trophy Tally — This Week</h2>
-              <p className="text-sm text-mango-muted mt-0.5">
-                🥇 Gold · 🥈 Silver · 🥉 Bronze across Revenue · GP% · Top Tech · Most Re-Books · Fewest Comebacks · Most 5★ Reviews · Highest Call Conversion. <span className="text-mango-orange font-medium">Click any shop to see what they won.</span>
+              <h2 className="section-h">{isAwarded ? 'Awarded' : 'Pending'} Trophies · This Week</h2>
+              <p className="section-sub mt-0.5">
+                {isAwarded
+                  ? 'Trophies for the week are locked in. New week begins Tuesday 7:30 AM MT.'
+                  : 'This week (Mon → today), finishing 1st / 2nd / 3rd in a category earns a 🥇/🥈/🥉 — most trophies leads.'}
               </p>
             </div>
           </div>
+          <p className="text-[11px] font-medium text-mango-faint mb-2">
+            Counted this week: {CATEGORIES.map(c => c.label).join(' · ')}
+            <span className="text-mango-faint/70"> · (5★ Reviews paused — Google Business Profile API access pending)</span>
+          </p>
           {/* Top 3 — big spotlight cards in a 3-up grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-5">
             {summary.slice(0, 3).map((s, rank) => {
               const total = s.gold + s.silver + s.bronze;
-              const borderColor = rank === 0 ? '#F5C518' : rank === 1 ? '#9CA3AF' : '#C2814B';
-              const isFirst = rank === 0;
+              const rankColor = rank === 0 ? '#F5C518' : rank === 1 ? '#9CA3AF' : '#C2814B';
               return (
                 <button key={s.shop.num} onClick={() => setSelectedShop(s.shop.num)}
-                  className="group relative flex flex-col items-stretch gap-3 p-4 bg-white/90 backdrop-blur rounded-2xl hover:-translate-y-0.5 transition-all cursor-pointer overflow-hidden"
-                  style={{
-                    border: `3px solid ${borderColor}`,
-                    boxShadow: isFirst
-                      ? '0 0 0 1px rgba(245,197,24,0.5), 0 8px 30px rgba(245,197,24,0.35)'
-                      : rank === 1
-                        ? '0 4px 14px rgba(156,163,175,0.25)'
-                        : '0 4px 14px rgba(194,129,75,0.25)',
-                  }}>
-                  {/* #1-only: animated diagonal sparkle band + corner sparkles */}
-                  {isFirst && (
-                    <>
-                      <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl">
-                        <div className="absolute -inset-y-4 -left-1/4 w-1/2 opacity-60" style={{
-                          background: 'linear-gradient(115deg, transparent 0%, rgba(255,235,150,0.55) 40%, rgba(255,255,255,0.85) 50%, rgba(255,235,150,0.55) 60%, transparent 100%)',
-                          filter: 'blur(2px)',
-                          transform: 'skewX(-12deg)',
-                          animation: 'trophy-shimmer 3.5s ease-in-out infinite',
-                        }} />
-                      </div>
-                      <div className="absolute top-1.5 right-2 text-xl select-none pointer-events-none animate-pulse" title="Champion this week">✨</div>
-                      <div className="absolute bottom-1.5 left-2 text-base select-none pointer-events-none" style={{ animation: 'sparkle-twinkle 2s ease-in-out infinite 0.7s' }}>✨</div>
-                      <div className="absolute top-1.5 left-12 text-xs select-none pointer-events-none" style={{ animation: 'sparkle-twinkle 2.2s ease-in-out infinite 1.4s' }}>✨</div>
-                    </>
-                  )}
+                  className="group relative flex flex-col items-stretch gap-3 p-4 rounded-2xl hover:-translate-y-0.5 transition-all cursor-pointer overflow-hidden"
+                  style={
+                    isAwarded
+                      // AWARDED look: solid border, full saturation, stronger
+                      // rank tint — feels "locked in" / celebratory.
+                      ? {
+                          background: '#FFFFFF',
+                          border: `1.5px solid ${rankColor}`,
+                          boxShadow: `0 2px 6px rgba(31,41,55,0.05), 0 0 0 3px ${rankColor}1A`,
+                        }
+                      // PENDING look: not awarded yet — desaturated/greyed with
+                      // only a faint hint of the rank color so it's still
+                      // identifiable, soft dashed border, no celebration FX.
+                      : {
+                          background: '#FBFAF7',
+                          border: `1.5px dashed ${rankColor}80`,
+                          boxShadow: '0 1px 2px rgba(31,41,55,0.04)',
+                          filter: 'saturate(0.7)',
+                        }
+                  }>
+                  {/* rank tint wash — stronger when awarded, faint when pending */}
+                  <div className="absolute inset-0 pointer-events-none rounded-2xl"
+                    style={{ background: isAwarded ? `${rankColor}22` : `${rankColor}14` }} />
+                  {/* status indicator — spinner+Pending OR static check+Awarded */}
+                  <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10">
+                    {isAwarded ? (
+                      <>
+                        <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold text-white"
+                          style={{ background: rankColor }}>✓</span>
+                        <span className="text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ color: rankColor }}>Awarded</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="trophy-spin inline-block w-3.5 h-3.5 rounded-full"
+                          style={{ border: `2px solid ${rankColor}55`, borderTopColor: rankColor }} />
+                        <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-mango-faint">Pending</span>
+                      </>
+                    )}
+                  </div>
                   <div className="relative flex items-center gap-2">
                     <span className="inline-block w-3 h-3 rounded-full ring-2 ring-white shrink-0" style={{ background: s.shop.color }} />
                     <div className="text-left flex-1 min-w-0">
@@ -191,6 +260,9 @@ export default function TrophyTally() {
               </div>
             </div>
           )}
+          <p className="text-[11px] text-mango-muted/70 mt-5 pt-3 border-t border-mango-line/50">
+            Board order uses a weighted score: gold = 100, silver = 10, bronze = 1. Click any shop to see exactly which categories it placed in. “Most 5★ Reviews” is paused while Google Business Profile API access is pending and returns automatically once review totals are available.
+          </p>
           <style jsx>{`
             @keyframes trophy-shimmer {
               0%   { transform: translateX(-50%) skewX(-12deg); }
@@ -201,6 +273,9 @@ export default function TrophyTally() {
               0%, 100% { opacity: 0.3; transform: scale(0.7); }
               50%      { opacity: 1;   transform: scale(1.15); }
             }
+            .trophy-spin { animation: trophy-spin 0.9s linear infinite; }
+            @keyframes trophy-spin { to { transform: rotate(360deg); } }
+            @media (prefers-reduced-motion: reduce) { .trophy-spin { animation: none; } }
           `}</style>
         </div>
       </div>
@@ -219,7 +294,7 @@ export default function TrophyTally() {
                   <span className="inline-block w-4 h-4 rounded-full ring-2 ring-mango-line" style={{ background: s.shop.color }} />
                   <div>
                     <div className="text-xl font-bold">{s.shop.name}</div>
-                    <div className="text-xs text-mango-muted">This week's trophies</div>
+                    <div className="text-xs text-mango-muted">Pending trophies this week</div>
                   </div>
                 </div>
                 <button onClick={() => setSelectedShop(null)} className="text-mango-muted hover:text-mango-ink text-2xl leading-none">×</button>

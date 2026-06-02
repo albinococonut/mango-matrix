@@ -1,0 +1,63 @@
+# Calibration on last 12 completed weeks: 2026-02-23 → 2026-05-11
+# 8 shops × 12 weeks = up to 96 walk-forward replays per checkpoint
+# Stated confidence is calibrated when in-range % ≈ stated conf %.
+
+checkpoint      n    MAPE  in-range   stated     calibrated?
+----------------------------------------------------------------------
+mon_close      96   22.1%      49%      84%   OVERCONFIDENT (-35pp)
+tue_close      96   18.8%      45%      88%   OVERCONFIDENT (-43pp)
+wed_close      96   11.4%      44%      92%   OVERCONFIDENT (-48pp)
+thu_close      96   14.6%       3%      96%   OVERCONFIDENT (-93pp)
+fri_mid        96    9.8%       4%      98%   OVERCONFIDENT (-94pp)
+fri_close      96    0.2%      89%     100%   OVERCONFIDENT (-11pp)
+mon_am         96   31.9%      42%      82%   OVERCONFIDENT (-40pp)
+
+--- per-shop MAPE at mon_close (last 12 weeks) ---
+  shop 001: MAPE  20.8%   n=12
+  shop 002: MAPE  15.5%   n=12
+  shop 003: MAPE   9.7%   n=12
+  shop 004: MAPE  26.7%   n=12
+  shop 005: MAPE  33.7%   n=12
+  shop 006: MAPE  18.8%   n=12
+  shop 007: MAPE  29.9%   n=12
+  shop 009: MAPE  21.6%   n=12
+
+--- per-shop MAPE at tue_close (last 12 weeks) ---
+  shop 001: MAPE  24.1%   n=12
+  shop 002: MAPE  11.9%   n=12
+  shop 003: MAPE  14.4%   n=12
+  shop 004: MAPE  23.9%   n=12
+  shop 005: MAPE  13.7%   n=12
+  shop 006: MAPE  15.0%   n=12
+  shop 007: MAPE  27.7%   n=12
+  shop 009: MAPE  19.8%   n=12
+
+--- per-shop MAPE at wed_close (last 12 weeks) ---
+  shop 001: MAPE  10.5%   n=12
+  shop 002: MAPE   9.6%   n=12
+  shop 003: MAPE  12.6%   n=12
+  shop 004: MAPE  13.0%   n=12
+  shop 005: MAPE   7.1%   n=12
+  shop 006: MAPE  10.2%   n=12
+  shop 007: MAPE  13.3%   n=12
+  shop 009: MAPE  14.5%   n=12
+
+--- per-shop MAPE at thu_close (last 12 weeks) ---
+  shop 001: MAPE  14.8%   n=12
+  shop 002: MAPE  13.9%   n=12
+  shop 003: MAPE  18.5%   n=12
+  shop 004: MAPE  13.1%   n=12
+  shop 005: MAPE  11.5%   n=12
+  shop 006: MAPE  17.3%   n=12
+  shop 007: MAPE  12.5%   n=12
+  shop 009: MAPE  15.3%   n=12
+
+--- suggested confidence (empirical, from this 12wk test) ---
+checkpoint     stated  empirical    suggested band ±%
+  mon_close        84%      77.9%   ± 35.4% (80th-pctile error)
+  tue_close        88%      81.2%   ± 31.5% (80th-pctile error)
+  wed_close        92%      88.6%   ± 18.5% (80th-pctile error)
+  thu_close        96%      85.4%   ± 19.7% (80th-pctile error)
+  fri_mid          98%      90.2%   ± 13.3% (80th-pctile error)
+  fri_close       100%      99.8%   ±  0.0% (80th-pctile error)
+  mon_am           82%      68.1%   ± 47.8% (80th-pctile error)

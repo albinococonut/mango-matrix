@@ -3,8 +3,14 @@ import { ComparisonMode, customRange, resolveComparisonRange, resolveRange, Rang
 import { rosForChain, rosForShopNum } from '@/lib/dataAccess';
 import { chainKpi, dailyByShop, dailySeries } from '@/lib/metrics';
 import { ShopNum, SHOP_BY_NUM } from '@/lib/shops';
+import { readCache, writeCache, isFresh } from '@/lib/cache';
 
 export const dynamic = 'force-dynamic';
+// Serve the computed payload from durable Redis so a page refresh doesn't
+// recompute/refetch (Shop Performance Comparison, KPI cards, Weekly Leaderboard
+// all hit this). The cron keeps the underlying ROs warm; this just stops the
+// per-refresh reload. Only the simple range case is cached (not custom/compare).
+const RESP_FRESH_MS = 20 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
   const range = (req.nextUrl.searchParams.get('range') as RangeKey) || 'this_month';
@@ -29,6 +35,15 @@ export async function GET(req: NextRequest) {
   } else {
     w = resolveRange(range);
   }
+  // Cacheable only for the plain range case (no custom range, no comparison).
+  const cacheable = !compare && !(range === 'custom');
+  const respKey = cacheable ? `metrics_${range}_${shop || 'all'}` : null;
+  if (respKey) {
+    const cached = await readCache<any>(respKey);
+    if (cached && (await isFresh(respKey, RESP_FRESH_MS))) {
+      return NextResponse.json({ ...cached, cached: true });
+    }
+  }
   try {
     const ros =
       shop && shop !== 'all' && SHOP_BY_NUM[shop]
@@ -38,15 +53,22 @@ export async function GET(req: NextRequest) {
     const kpi = chainKpi(ros);
     const daily = dailySeries(ros);
     const perShop = dailyByShop(ros);
-    return NextResponse.json({
+    const payload = {
       range,
       shop: shop || 'all',
       window: { startISO: w.startISO, endISO: w.endISO, label: w.label },
       kpi,
       daily,
       dailyByShop: perShop,
-    });
+    };
+    if (respKey) await writeCache(respKey, payload);
+    return NextResponse.json(payload);
   } catch (e: any) {
+    // On compute failure, fall back to stale cache if we have any.
+    if (respKey) {
+      const stale = await readCache<any>(respKey);
+      if (stale) return NextResponse.json({ ...stale, stale: true });
+    }
     return NextResponse.json({ error: e?.message || 'metrics fetch failed' }, { status: 500 });
   }
 }

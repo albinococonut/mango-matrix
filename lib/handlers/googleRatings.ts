@@ -1,18 +1,27 @@
-// Google Ratings leaderboard: per-shop current rating + last-7-day review counts.
-// Uses Google Places API v1 (places.googleapis.com). Cached 4 hours.
+// Google Ratings — per-shop cumulative star rating + total review count.
+// Backed by Google Places API v1 (Place Details w/ Atmosphere field mask).
+//
+// COST CONTROL: the handler is READ-ONLY. The refresh is handled exclusively
+// by the warm-google-ratings sync job (lib/syncJobs.ts), which runs once
+// per day at 3 AM Mountain. Net: 8 Places calls/day → ~$4–5/month, vs the
+// up-to-6×/day-per-shop pattern the old on-demand handler produced.
+//
+// New per-review windowed counts (rolling 7d, this week) come from a
+// completely separate Zapier-fed cache (lib/handlers/zapierReviews.ts) and
+// are merged client-side in components/GoogleRatings.tsx. This file's
+// job is just rating + total + the Google-relevance-sorted sample of 5.
 
 import { NextResponse } from 'next/server';
 import { SHOPS } from '@/lib/shops';
-import { isFresh, readCache, writeCache } from '@/lib/cache';
+import { readCache, writeCache } from '@/lib/cache';
 
 export const dynamic = 'force-dynamic';
-const CACHE_KEY = 'google_ratings';
-const FRESH_MS = 4 * 60 * 60 * 1000;
+export const GOOGLE_RATINGS_CACHE_KEY = 'google_ratings';
 const API = 'https://places.googleapis.com/v1/places';
 const FIELDS = 'id,displayName,rating,userRatingCount,reviews';
 
 interface PlaceReview {
-  publishTime?: string;  // ISO
+  publishTime?: string;
   rating?: number;
   text?: { text: string };
   authorAttribution?: { displayName: string };
@@ -21,6 +30,20 @@ interface PlaceDetails {
   rating?: number;
   userRatingCount?: number;
   reviews?: PlaceReview[];
+}
+
+interface ShopRatingRow {
+  shopNum: string;
+  shopName: string;
+  rating: number | null;
+  total: number;
+  placeId?: string;
+  reviews?: Array<{ publishTime: string; rating: number; text: string; author: string }>;
+}
+
+export interface GoogleRatingsPayload {
+  computedAt: string;
+  shops: ShopRatingRow[];
 }
 
 async function fetchPlace(placeId: string): Promise<PlaceDetails | null> {
@@ -37,54 +60,60 @@ async function fetchPlace(placeId: string): Promise<PlaceDetails | null> {
   return r.json();
 }
 
-export async function handle() {
-  if (await isFresh(CACHE_KEY, FRESH_MS)) {
-    const cached = await readCache(CACHE_KEY);
-    if (cached) return NextResponse.json(cached);
-  }
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  try {
-    const results = [];
-    for (const shop of SHOPS) {
-      if (!shop.googlePlaceId) {
-        results.push({ shopNum: shop.num, shopName: shop.name, rating: null, total: 0, recentTotal: 0, fiveStar: 0, belowFive: 0 });
-        continue;
-      }
-      const p = await fetchPlace(shop.googlePlaceId);
-      if (!p) {
-        results.push({ shopNum: shop.num, shopName: shop.name, rating: null, total: 0, recentTotal: 0, fiveStar: 0, belowFive: 0 });
-        continue;
-      }
-      const allReviews = (p.reviews || []).map(rv => ({
-        publishTime: rv.publishTime || '',
-        rating: rv.rating || 0,
-        text: rv.text?.text || '',
-        author: rv.authorAttribution?.displayName || 'Anonymous',
-      }));
-      const recent = allReviews.filter(rv => rv.publishTime && new Date(rv.publishTime).getTime() >= cutoff);
-      const fiveStar = recent.filter(rv => rv.rating === 5).length;
-      const belowFive = recent.filter(rv => rv.rating > 0 && rv.rating < 5).length;
-      results.push({
-        shopNum: shop.num,
-        shopName: shop.name,
-        rating: p.rating ?? null,
-        total: p.userRatingCount ?? 0,
-        recentTotal: recent.length,
-        fiveStar,
-        belowFive,
-        placeId: shop.googlePlaceId,
-        // Up to the 5 reviews Google returns. We surface them in the popup so the user
-        // can read what was posted. NOTE: Places v1 sorts these by "relevance" (not date),
-        // so "last 7 days" counts may undercount. For accurate 7-day windows we'd need
-        // the Google Business Profile API (OAuth + shop-owner auth required).
-        reviews: allReviews,
-      });
+/**
+ * Hit Google Places once for every shop with a known googlePlaceId. Writes
+ * the full payload to KV under GOOGLE_RATINGS_CACHE_KEY. Called by the
+ * daily cron — never by the read handler.
+ */
+export async function refreshGoogleRatings(): Promise<GoogleRatingsPayload> {
+  const results: ShopRatingRow[] = [];
+  for (const shop of SHOPS) {
+    if (!shop.googlePlaceId) {
+      results.push({ shopNum: shop.num, shopName: shop.name, rating: null, total: 0 });
+      continue;
     }
-    const payload = { computedAt: new Date().toISOString(), shops: results };
-    await writeCache(CACHE_KEY, payload);
-    return NextResponse.json(payload);
-  } catch (e: any) {
-    console.error('[google-ratings] failed:', e);
-    return NextResponse.json({ error: e?.message || 'google-ratings failed' }, { status: 500 });
+    const p = await fetchPlace(shop.googlePlaceId);
+    if (!p) {
+      results.push({ shopNum: shop.num, shopName: shop.name, rating: null, total: 0, placeId: shop.googlePlaceId });
+      continue;
+    }
+    const reviews = (p.reviews || []).map(rv => ({
+      publishTime: rv.publishTime || '',
+      rating: rv.rating || 0,
+      text: rv.text?.text || '',
+      author: rv.authorAttribution?.displayName || 'Anonymous',
+    }));
+    results.push({
+      shopNum: shop.num,
+      shopName: shop.name,
+      rating: p.rating ?? null,
+      total: p.userRatingCount ?? 0,
+      placeId: shop.googlePlaceId,
+      reviews,
+    });
   }
+  const payload: GoogleRatingsPayload = { computedAt: new Date().toISOString(), shops: results };
+  await writeCache(GOOGLE_RATINGS_CACHE_KEY, payload);
+  return payload;
+}
+
+/**
+ * Read-only handler. Serves whatever the daily warm last wrote to KV. If
+ * nothing's there yet (cold env, first deploy), returns an empty payload
+ * so the UI shows "—" rather than erroring.
+ */
+export async function handle() {
+  const cached = await readCache<GoogleRatingsPayload>(GOOGLE_RATINGS_CACHE_KEY);
+  if (cached) return NextResponse.json(cached);
+  const empty: GoogleRatingsPayload = {
+    computedAt: new Date().toISOString(),
+    shops: SHOPS.map(shop => ({
+      shopNum: shop.num,
+      shopName: shop.name,
+      rating: null,
+      total: 0,
+      placeId: shop.googlePlaceId,
+    })),
+  };
+  return NextResponse.json(empty);
 }

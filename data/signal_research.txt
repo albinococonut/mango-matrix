@@ -1,0 +1,182 @@
+# Signal-quality research per checkpoint
+# Each row uses ONLY data available at that checkpoint (walk-forward).
+# n per checkpoint: up to 8 shops × 12 weeks = 96 replays
+
+## mon_am  (current band ±34.0% to hit 80% coverage)
+   residual sign:  median -9,275   mean -9,341   (+ = under-projection)
+   residual$ correlations with features:
+      booked_appts           r = -0.418
+      calls_so_far           r = -0.120
+      gp_so_far_pct          r = +0.114
+      aro_so_far             r = -0.111
+      rev_so_far             r = -0.104
+   single-feature addition that most tightens p80 band:
+      add booked_appts                 coef -445.923  →  p80 ± 26.7%  (Δ  -7.2pp)
+      add ENG:booked_per_car           coef -411.438  →  p80 ± 27.1%  (Δ  -6.8pp)
+      add aro_so_far                   coef -3.290  →  p80 ± 33.4%  (Δ  -0.6pp)
+      add rev_so_far                   coef -1.516  →  p80 ± 33.4%  (Δ  -0.6pp)
+      add gp_so_far_pct                coef +3.024  →  p80 ± 33.6%  (Δ  -0.4pp)
+      add elapsed_biz_frac             coef +2806.519  →  p80 ± 33.6%  (Δ  -0.4pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001: -18.1%  (n=12)
+      shop 002: -22.8%  (n=12)
+      shop 003: -15.8%  (n=12)
+      shop 004: -19.6%  (n=12)
+      shop 005: -30.9%  (n=12)
+      shop 006: -21.2%  (n=12)
+      shop 007: -21.2%  (n=12)
+      shop 009:  +3.2%  (n=12)
+
+## mon_close  (current band ±27.4% to hit 80% coverage)
+   residual sign:  median -4,369   mean -4,158   (+ = under-projection)
+   residual$ correlations with features:
+      rev_so_far             r = -0.622
+      aro_so_far             r = -0.389
+      cars_so_far            r = -0.350
+      calls_so_far           r = -0.340
+      booked_appts           r = -0.207
+   single-feature addition that most tightens p80 band:
+      add ENG:pace_ratio_vs_t12        coef -8044.094  →  p80 ± 25.0%  (Δ  -2.5pp)
+      add calls_booked_so_far          coef -389.381  →  p80 ± 27.9%  (Δ  +0.4pp)
+      add gp_so_far_pct                coef -15.601  →  p80 ± 28.2%  (Δ  +0.8pp)
+      add booked_appts                 coef -187.331  →  p80 ± 28.3%  (Δ  +0.9pp)
+      add ENG:booked_per_car           coef +727.113  →  p80 ± 29.0%  (Δ  +1.6pp)
+      add cars_so_far                  coef -746.834  →  p80 ± 29.1%  (Δ  +1.7pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001:  -7.1%  (n=12)
+      shop 002: -11.2%  (n=12)
+      shop 003:  -1.3%  (n=12)
+      shop 004: -14.5%  (n=12)
+      shop 005: -23.7%  (n=12)
+      shop 006: -12.2%  (n=12)
+      shop 007: -14.1%  (n=12)
+      shop 009: +23.6%  (n=12)
+
+## tue_close  (current band ±28.2% to hit 80% coverage)
+   residual sign:  median -26   mean -551   (+ = under-projection)
+   residual$ correlations with features:
+      rev_so_far             r = -0.631
+      aro_so_far             r = -0.473
+      approved_unbilled      r = +0.349
+      gp_so_far_pct          r = -0.325
+      cars_so_far            r = -0.236
+   single-feature addition that most tightens p80 band:
+      add ENG:pace_ratio_vs_t12        coef -14184.440  →  p80 ± 17.5%  (Δ -10.7pp)
+      add gp_so_far_pct                coef -48.583  →  p80 ± 25.6%  (Δ  -2.6pp)
+      add ENG:approved_per_car         coef +3.157  →  p80 ± 25.9%  (Δ  -2.3pp)
+      add ENG:booked_per_car           coef +2303.914  →  p80 ± 27.4%  (Δ  -0.8pp)
+      add approved_unbilled            coef +0.315  →  p80 ± 27.8%  (Δ  -0.5pp)
+      add booked_appts                 coef -70.377  →  p80 ± 29.1%  (Δ  +0.9pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001:  -0.1%  (n=12)
+      shop 002:  +0.3%  (n=12)
+      shop 003: +11.1%  (n=12)
+      shop 004:  -0.4%  (n=12)
+      shop 005:  -8.8%  (n=12)
+      shop 006:  -2.7%  (n=12)
+      shop 007: -11.4%  (n=12)
+      shop 009: +30.6%  (n=12)
+
+## wed_close  (current band ±18.6% to hit 80% coverage)
+   residual sign:  median -248   mean +166   (+ = under-projection)
+   residual$ correlations with features:
+      approved_unbilled      r = +0.517
+      rev_so_far             r = -0.460
+      aro_so_far             r = -0.360
+      gp_so_far_pct          r = -0.203
+      cars_so_far            r = -0.177
+   single-feature addition that most tightens p80 band:
+      add ENG:pace_ratio_vs_t12        coef -8392.202  →  p80 ± 16.0%  (Δ  -2.6pp)
+      add ENG:approved_per_car         coef +5.613  →  p80 ± 16.9%  (Δ  -1.6pp)
+      add approved_unbilled            coef +0.332  →  p80 ± 16.9%  (Δ  -1.6pp)
+      add ENG:booked_per_car           coef +4964.523  →  p80 ± 18.1%  (Δ  -0.5pp)
+      add gp_so_far_pct                coef -23.569  →  p80 ± 18.4%  (Δ  -0.1pp)
+      add booked_appts                 coef +51.742  →  p80 ± 18.5%  (Δ  -0.1pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001:  -1.4%  (n=12)
+      shop 002:  -2.6%  (n=12)
+      shop 003:  +9.3%  (n=12)
+      shop 004:  +0.3%  (n=12)
+      shop 005:  -5.7%  (n=12)
+      shop 006:  +4.6%  (n=12)
+      shop 007:  -5.6%  (n=12)
+      shop 009: +12.8%  (n=12)
+
+## thu_close  (current band ±24.6% to hit 80% coverage)
+   residual sign:  median +5,317   mean +5,799   (+ = under-projection)
+   residual$ correlations with features:
+      approved_unbilled      r = +0.704
+      booked_appts           r = +0.342
+      cars_so_far            r = +0.257
+      rev_so_far             r = +0.154
+      aro_so_far             r = -0.043
+   single-feature addition that most tightens p80 band:
+      add approved_unbilled            coef +0.323  →  p80 ± 12.1%  (Δ -12.5pp)
+      add ENG:shop_t12_median          coef +0.092  →  p80 ± 12.7%  (Δ -11.9pp)
+      add cars_so_far                  coef +62.083  →  p80 ± 16.0%  (Δ  -8.6pp)
+      add ENG:approved_per_car         coef +6.623  →  p80 ± 17.3%  (Δ  -7.3pp)
+      add booked_appts                 coef +259.573  →  p80 ± 17.4%  (Δ  -7.2pp)
+      add ENG:booked_per_car           coef +8075.642  →  p80 ± 19.2%  (Δ  -5.4pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001: +17.5%  (n=12)
+      shop 002: +16.8%  (n=12)
+      shop 003: +23.3%  (n=12)
+      shop 004: +16.0%  (n=12)
+      shop 005: +13.2%  (n=12)
+      shop 006: +21.7%  (n=12)
+      shop 007: +15.0%  (n=12)
+      shop 009: +19.0%  (n=12)
+
+## fri_mid  (current band ±15.3% to hit 80% coverage)
+   residual sign:  median +3,774   mean +3,851   (+ = under-projection)
+   residual$ correlations with features:
+      approved_unbilled      r = +0.904
+      cars_so_far            r = +0.130
+      rev_so_far             r = +0.112
+      calls_booked_so_far    r = -0.081
+      aro_so_far             r = +0.048
+   single-feature addition that most tightens p80 band:
+      add approved_unbilled            coef +0.349  →  p80 ±  4.3%  (Δ -11.0pp)
+      add ENG:approved_per_car         coef +8.651  →  p80 ±  8.3%  (Δ  -7.0pp)
+      add ENG:shop_t12_median          coef +0.049  →  p80 ±  9.0%  (Δ  -6.3pp)
+      add cars_so_far                  coef +20.917  →  p80 ± 12.0%  (Δ  -3.3pp)
+      add rev_so_far                   coef +0.022  →  p80 ± 13.4%  (Δ  -1.9pp)
+      add ENG:pace_ratio_vs_t12        coef -1062.087  →  p80 ± 14.0%  (Δ  -1.3pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001:  +9.9%  (n=12)
+      shop 002: +10.7%  (n=12)
+      shop 003: +11.0%  (n=12)
+      shop 004: +10.0%  (n=12)
+      shop 005:  +8.6%  (n=12)
+      shop 006: +16.4%  (n=12)
+      shop 007: +10.1%  (n=12)
+      shop 009: +12.7%  (n=12)
+
+## fri_close  (current band ±0.0% to hit 80% coverage)
+   residual sign:  median +0   mean -73   (+ = under-projection)
+   residual$ correlations with features:
+      approved_unbilled      r = -0.925
+      cars_so_far            r = +0.252
+      calls_booked_so_far    r = +0.190
+      rev_so_far             r = +0.145
+      aro_so_far             r = -0.142
+   single-feature addition that most tightens p80 band:
+      add ENG:approved_per_car         coef -4.434  →  p80 ±  0.0%  (Δ  -0.0pp)
+      add approved_unbilled            coef -0.151  →  p80 ±  0.0%  (Δ  -0.0pp)
+      add ENG:booked_per_car           coef +3919.653  →  p80 ±  0.1%  (Δ  +0.1pp)
+      add ENG:pace_ratio_vs_t12        coef +61.070  →  p80 ±  0.1%  (Δ  +0.1pp)
+      add booked_appts                 coef +60.739  →  p80 ±  0.1%  (Δ  +0.1pp)
+      add gp_so_far_pct                coef -0.776  →  p80 ±  0.1%  (Δ  +0.1pp)
+   per-shop systematic over/under-projection (mean residual%):
+      shop 001:  +0.0%  (n=12)
+      shop 002:  +0.0%  (n=12)
+      shop 003:  +0.0%  (n=12)
+      shop 004:  -0.5%  (n=12)
+      shop 005:  -0.0%  (n=12)
+      shop 006:  -0.7%  (n=12)
+      shop 007:  -0.2%  (n=12)
+      shop 009:  -0.1%  (n=12)
+
+
+## Why Wed > Thu — test blended Thu formula
+   current Thu p80 ± 24.6%  | best grid: approved×1.0  +  pace×0.3  →  p80 ±  6.4%  mean   4.2%

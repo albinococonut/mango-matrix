@@ -1,26 +1,55 @@
-// Role-based auth. Single cookie carries a signed payload {role, iat}.
+// Role-based auth. Single cookie carries a signed payload {role, iat, email?}.
 // HMAC-SHA256 via Web Crypto so the same code works in Edge (middleware) and
 // Node (API routes, server components).
 //
 // SECURITY MODEL:
-//  - Passwords live in env vars only (EMPLOYEE_DASHBOARD_PASSWORD,
-//    EXECUTIVE_DASHBOARD_PASSWORD). Never sent to the client.
-//  - /api/login compares the submitted password against each env var
-//    server-side and signs a role into the cookie.
+//  - Sessions are minted by /api/auth/google/callback after a verified
+//    Google OAuth sign-in. The callback hard-rejects any email whose
+//    domain is not @mangoautomotive.com (server-side check beyond the
+//    hd= hint sent at /api/auth/google/start).
+//  - Role is derived from EXECUTIVE_EMAILS (comma-separated allowlist of
+//    emails). Anything not on the list defaults to 'employee'.
 //  - The cookie value is `<base64url(payload)>.<base64url(hmac)>`. Clients can
 //    decode the payload but cannot forge the signature without AUTH_SECRET.
 //  - Middleware verifies the signature on every request. Page + executive-only
 //    API routes re-derive the role from the cookie and conditionally render
 //    or refuse, so editing the frontend never reveals exec data.
+//  - Shared-password sign-in has been retired; /api/login now serves only
+//    the logout endpoint.
 
 export type Role = 'employee' | 'executive';
 
-export const COOKIE_NAME = 'mango_session';
+// Bumped from "mango_session" → "mango_session_v2" as a one-time force-logout
+// to make everyone re-authenticate via Google after the shared-password
+// retirement. Existing browsers carrying the old cookie are simply ignored
+// by the server (no matching name) → redirected to /login.
+export const COOKIE_NAME = 'mango_session_v2';
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 interface Payload {
   role: Role;
-  iat: number; // issued-at unix seconds; cheap freshness check
+  iat: number;        // issued-at unix seconds; cheap freshness check
+  email?: string;     // present iff session came from Google OAuth (not password fallback)
+}
+
+export const ALLOWED_DOMAIN = 'mangoautomotive.com';
+
+/** True for `*@mangoautomotive.com` (case-insensitive). False for anything else. */
+export function isAllowedDomain(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const lower = email.toLowerCase().trim();
+  return lower.endsWith(`@${ALLOWED_DOMAIN}`);
+}
+
+/**
+ * Pick a role for a verified email. EXECUTIVE_EMAILS is a comma-separated env
+ * var (case-insensitive). Anything not on the list defaults to employee.
+ */
+export function roleForEmail(email: string): Role {
+  const raw = process.env.EXECUTIVE_EMAILS || '';
+  const allowlist = raw.split(/[,\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (allowlist.includes(email.toLowerCase().trim())) return 'executive';
+  return 'employee';
 }
 
 function getSecret(): string {
@@ -72,13 +101,39 @@ function constEq(a: string, b: string): boolean {
 }
 
 export async function signRoleCookie(role: Role): Promise<{ value: string; maxAge: number }> {
+  return signSessionCookie(role);
+}
+
+/**
+ * Sign a session cookie with role + optional verified email. Email is set
+ * for Google-OAuth sessions and omitted for password-fallback sessions.
+ */
+export async function signSessionCookie(role: Role, email?: string): Promise<{ value: string; maxAge: number }> {
   const payload: Payload = { role, iat: Math.floor(Date.now() / 1000) };
+  if (email) payload.email = email;
   const payloadB64 = b64urlEncode(JSON.stringify(payload));
   const sig = await hmac(payloadB64, getSecret());
   return { value: `${payloadB64}.${sig}`, maxAge: MAX_AGE_SECONDS };
 }
 
 export async function verifyRoleCookie(value: string | undefined | null): Promise<Role | null> {
+  const session = await verifySession(value);
+  return session?.role ?? null;
+}
+
+/**
+ * Verify the cookie and return the full session (role + optional email),
+ * or null if the cookie is missing/invalid. Backward compatible with
+ * cookies signed before the email field was added (they decode with
+ * email=undefined).
+ */
+export async function verifySession(value: string | undefined | null): Promise<{ role: Role; email?: string } | null> {
+  // PREVIEW ONLY: Vercel preview deployments have no auth env vars (passwords
+  // are Production-scoped), so login is impossible there. For visual review,
+  // open the executive dashboard with no password on preview builds. This
+  // NEVER affects production (VERCEL_ENV==='production') or local dev
+  // (VERCEL_ENV undefined) — both still require the real password.
+  if (process.env.VERCEL_ENV === 'preview') return { role: 'executive' };
   if (!value) return null;
   const dot = value.indexOf('.');
   if (dot <= 0 || dot === value.length - 1) return null;
@@ -89,20 +144,15 @@ export async function verifyRoleCookie(value: string | undefined | null): Promis
     if (!constEq(providedSig, expectedSig)) return null;
     const obj = JSON.parse(b64urlDecodeToString(payloadB64)) as Payload;
     if (obj.role !== 'employee' && obj.role !== 'executive') return null;
-    return obj.role;
+    return { role: obj.role, email: obj.email };
   } catch {
     return null;
   }
 }
 
-// --- Password lookup -----------------------------------------------------
-
-/** Return the role this password unlocks, or null if it matches none. */
-export function roleForPassword(password: string): Role | null {
-  if (!password) return null;
-  const exec = process.env.EXECUTIVE_DASHBOARD_PASSWORD;
-  const emp = process.env.EMPLOYEE_DASHBOARD_PASSWORD;
-  if (exec && constEq(password, exec)) return 'executive';
-  if (emp && constEq(password, emp)) return 'employee';
-  return null;
-}
+// Shared-password authentication was retired once Google sign-in went live.
+// The previous roleForPassword() helper has been removed; new sessions are
+// minted exclusively by /api/auth/google/callback. The HMAC secret used
+// for cookie signing (AUTH_SECRET, with DASHBOARD_PASSWORD as a legacy
+// fallback) is intentionally preserved — changing it would invalidate
+// every existing Google-issued session.

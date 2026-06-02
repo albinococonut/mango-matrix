@@ -1,57 +1,42 @@
 'use client';
 
-// Shop Performance Heatmap: rows = shops, columns = last 12 weeks.
-// Two metrics: Revenue (vs weekly goal, current week prorated by working days)
-// and GP% (fixed 58% target with banded thresholds).
+// Shop Performance Heatmap — one universal warm-amber tonal system. Each cell
+// leads with percent-to-goal (large) and shows the raw number as quiet
+// context. Good weeks stay subtle; problems darken naturally. The in-progress
+// week is marked (blue outline + stripe + "Partial Week"), never alarming.
 
 import { useEffect, useMemo, useState } from 'react';
 import { addDays, endOfDay, format, isAfter, startOfDay } from 'date-fns';
-import { ChevronDown, Grid3x3 } from 'lucide-react';
-import { SHOPS, SHOP_BY_NUM } from '@/lib/shops';
-import { bandTextColor, gpBandColor, GoalsByShop, loadGoals, revenueBandColor, workingDaysBetween } from '@/lib/goals';
+import { Grid3x3 } from 'lucide-react';
+import { GoalsByShop, loadGoals, workingDaysBetween } from '@/lib/goals';
+import {
+  HEAT, tierColor, LEGEND, Tier,
+  pctTier, gpTier, closeTier, convTier, comebackTier, rebookTier, ratingTier,
+} from '@/lib/heatmap';
 
 interface Cell {
-  revenue: number;
-  cars: number;
-  aro: number;
-  closeRate: number;
-  gpDollars: number;
-  gpPct: number;
-  partsGpPct: number;
-  laborGpPct: number;
-  discounts: number;
+  revenue: number; cars: number; aro: number; closeRate: number;
+  gpDollars: number; gpPct: number; partsGpPct: number; laborGpPct: number;
+  discounts: number; comebacks?: number; comebackDollars?: number; billedHours?: number;
+  rebook?: number; conversion?: number; rating?: number;
 }
-interface ShopRow {
-  shopNum: string;
-  shopName: string;
-  cells: (Cell | null)[];
-}
-type Metric = 'revenue' | 'gpPct';
+interface ShopRow { shopNum: string; shopName: string; cells: (Cell | null)[] }
+type Metric = 'revenue' | 'gpPct' | 'cars' | 'aro' | 'gpDollars' | 'closeRate' | 'comebacks' | 'billedHours' | 'rebook' | 'conversion' | 'rating';
+const METRICS: { key: Metric; label: string }[] = [
+  { key: 'revenue', label: 'Revenue' },
+  { key: 'gpPct', label: 'GP %' },
+  { key: 'gpDollars', label: 'GP $' },
+  { key: 'cars', label: 'Cars' },
+  { key: 'aro', label: 'ARO' },
+  { key: 'closeRate', label: 'Close Rate' },
+  { key: 'conversion', label: 'Call Conversion' },
+  { key: 'rebook', label: 'Re-Book' },
+  { key: 'comebacks', label: 'Comebacks' },
+  { key: 'billedHours', label: 'Hours' },
+  { key: 'rating', label: 'Google Rating' },
+];
 
-// Diagnose why this week's revenue is below its goal — pick the biggest lever.
-function diagnose(c: Cell | null, goalRevenue: number | undefined, peers: (Cell | null)[]): string | null {
-  if (!c || !goalRevenue) return null;
-  if (c.revenue >= goalRevenue) return null;
-  const recent = peers.filter((x): x is Cell => !!x).slice(-5).filter(x => x !== c);
-  const avg = (key: keyof Cell) => recent.length ? recent.reduce((s, r) => s + (r[key] as number), 0) / recent.length : 0;
-  const avgCars = avg('cars');
-  const avgAro = avg('aro');
-  const avgDisc = avg('discounts');
-  const drop = (key: keyof Cell, current: number) => {
-    const a = avg(key);
-    return a > 0 ? ((current - a) / a) : 0;
-  };
-  const carDelta = drop('cars', c.cars);
-  const aroDelta = drop('aro', c.aro);
-  const discDelta = avgDisc > 0 ? (c.discounts - avgDisc) / avgDisc : 0;
-  const candidates: { severity: number; msg: string }[] = [];
-  if (carDelta < -0.05) candidates.push({ severity: -carDelta, msg: `Car count ${c.cars} vs ${avgCars.toFixed(0)} avg (${(carDelta*100).toFixed(0)}%) — check call conversion + incoming call volume.` });
-  if (aroDelta < -0.05) candidates.push({ severity: -aroDelta, msg: `ARO $${c.aro.toFixed(0)} vs $${avgAro.toFixed(0)} avg (${(aroDelta*100).toFixed(0)}%) — smaller ticket sizes this week.` });
-  if (discDelta > 0.15) candidates.push({ severity: discDelta, msg: `Discounts $${c.discounts.toFixed(0)} vs $${avgDisc.toFixed(0)} avg (+${(discDelta*100).toFixed(0)}%) — heavier discounting this week.` });
-  if (candidates.length === 0) return `Revenue ${((c.revenue / goalRevenue) * 100).toFixed(0)}% of goal. No single lever stands out — likely fewer tech-hours produced.`;
-  candidates.sort((a, b) => b.severity - a.severity);
-  return candidates[0].msg;
-}
+const fmtK = (n: number) => '$' + Math.round(n / 1000) + 'k';
 
 export default function ShopPerformanceHeatmap() {
   const [data, setData] = useState<{ weeks: string[]; shops: ShopRow[] } | null>(null);
@@ -65,131 +50,201 @@ export default function ShopPerformanceHeatmap() {
     });
   }, []);
 
-  // Each heatmap cell is one Monday→Sunday week. For past weeks we compare actual
-  // revenue to the full weekly goal. For the CURRENT week (the last column) we
-  // pro-rate the goal by working-days elapsed so partial-week comparisons are fair.
   const now = useMemo(() => new Date(), []);
-  function goalForCell(shopNum: string, weekStartISO: string): number | undefined {
+  const currentIdx = data ? data.weeks.length - 1 : -1; // last col = in-progress week
+
+  function revGoal(shopNum: string, weekStartISO: string): number | undefined {
     const weekly = goals[shopNum]?.revenueWeekly;
     if (!weekly) return undefined;
-    const weekStart = startOfDay(new Date(weekStartISO + 'T12:00:00'));
-    const weekEnd = endOfDay(addDays(weekStart, 6));
-    if (isAfter(weekEnd, now)) {
-      // Current/partial week — prorate by working days elapsed.
-      const totalDays = workingDaysBetween(weekStart, weekEnd);
-      const doneDays = workingDaysBetween(weekStart, now);
-      if (totalDays === 0) return undefined;
-      return weekly * (doneDays / totalDays);
+    const ws = startOfDay(new Date(weekStartISO + 'T12:00:00'));
+    const we = endOfDay(addDays(ws, 6));
+    if (isAfter(we, now)) {
+      const total = workingDaysBetween(ws, we);
+      const done = workingDaysBetween(ws, now);
+      return total ? weekly * (done / total) : undefined;
     }
     return weekly;
   }
 
-  function cellBg(shopNum: string, weekStartISO: string, c: Cell | null): { bg: string; ratio: number | null } {
-    if (!c) return { bg: '#F4F5F7', ratio: null };
-    if (metric === 'gpPct') {
-      return { bg: gpBandColor(c.gpPct), ratio: null };
+  // Per-shop trailing median for metrics with no hard goal (cars/ARO/$/hrs)
+  // → percent-to-typical, kept consistent with the revenue %-to-goal idea.
+  function rowMedian(cells: (Cell | null)[], pick: (c: Cell) => number): number {
+    const xs = cells.filter((c): c is Cell => !!c).map(pick).filter((v) => v > 0).sort((a, b) => a - b);
+    return xs.length ? xs[Math.floor(xs.length / 2)] : 0;
+  }
+  function colMax(pick: (c: Cell) => number | null | undefined): number {
+    let m = 0;
+    for (const s of data?.shops || []) for (const c of s.cells) {
+      const v = c ? pick(c) : null;
+      if (v != null && v > m) m = v;
     }
-    const goal = goalForCell(shopNum, weekStartISO);
-    if (!goal) return { bg: '#F4F5F7', ratio: null };
-    const ratio = c.revenue / goal;
-    return { bg: revenueBandColor(ratio), ratio };
+    return m;
   }
 
-  const cellLabel = (c: Cell | null): string => {
-    if (!c) return '—';
-    if (metric === 'revenue') return '$' + Math.round(c.revenue / 1000) + 'k';
-    return (c.gpPct * 100).toFixed(0) + '%';
+  // Returns { tier, big, small } for one cell under the active metric.
+  function render(row: ShopRow, c: Cell | null, wkISO: string): { tier: Tier | null; big: string; small: string } {
+    if (!c) return { tier: null, big: '—', small: '' };
+    switch (metric) {
+      case 'revenue': {
+        const g = revGoal(row.shopNum, wkISO);
+        if (!g) return { tier: null, big: fmtK(c.revenue), small: 'no goal' };
+        const r = c.revenue / g;
+        return { tier: pctTier(r), big: Math.round(r * 100) + '%', small: `${fmtK(c.revenue)} / ${fmtK(g)}` };
+      }
+      case 'cars': {
+        const med = rowMedian(row.cells, (x) => x.cars);
+        const r = med ? c.cars / med : null;
+        return { tier: pctTier(r), big: r != null ? Math.round(r * 100) + '%' : String(c.cars), small: `${c.cars}${med ? ` / ~${Math.round(med)}` : ''}` };
+      }
+      case 'aro': {
+        // ARO is a DOLLAR amount — show $ as the primary value; the % is just
+        // the shading basis (vs this shop's typical), shown small for context.
+        const med = rowMedian(row.cells, (x) => x.aro);
+        const r = med ? c.aro / med : null;
+        return { tier: pctTier(r), big: '$' + Math.round(c.aro), small: r != null ? Math.round(r * 100) + '% of typ.' : '' };
+      }
+      case 'gpDollars': {
+        const med = rowMedian(row.cells, (x) => x.gpDollars);
+        const r = med ? c.gpDollars / med : null;
+        return { tier: pctTier(r), big: fmtK(c.gpDollars), small: r != null ? Math.round(r * 100) + '% of typ.' : '' };
+      }
+      case 'gpPct':
+        return { tier: gpTier(c.gpPct), big: (c.gpPct * 100).toFixed(0) + '%', small: 'gross profit' };
+      case 'closeRate':
+        return { tier: closeTier(c.closeRate), big: (c.closeRate * 100).toFixed(0) + '%', small: 'close rate' };
+      case 'conversion': {
+        // 1 decimal to match the Employee view's Call Conversion exactly
+        // (same cache, same precision — no rounding drift).
+        const v = c.conversion == null || c.conversion < 0 ? null : c.conversion;
+        return { tier: convTier(v), big: v == null ? '—' : v.toFixed(1) + '%', small: v == null ? 'no data' : 'calls booked' };
+      }
+      case 'rebook': {
+        // 1 decimal to match the Employee view's Re-Book leaderboard exactly.
+        const v = c.rebook == null || c.rebook < 0 ? null : c.rebook;
+        return { tier: rebookTier(v), big: v == null ? '—' : v.toFixed(1) + '%', small: v == null ? 'no data' : 're-booked' };
+      }
+      case 'comebacks': {
+        // Show the DOLLAR impact (revenue those comeback hours displaced),
+        // not the raw count. Tier still inverts (less $ = better) and scales
+        // against the worst cell in view.
+        const v = c.comebackDollars ?? 0;
+        const big = v >= 1000 ? '$' + (v / 1000).toFixed(1) + 'k' : '$' + Math.round(v);
+        const n = c.comebacks ?? 0;
+        return { tier: comebackTier(v, colMax((x) => x.comebackDollars ?? 0)), big, small: `${n} comeback${n === 1 ? '' : 's'}` };
+      }
+      case 'billedHours': {
+        const med = rowMedian(row.cells, (x) => x.billedHours ?? 0);
+        const v = c.billedHours ?? 0;
+        const r = med ? v / med : null;
+        return { tier: pctTier(r), big: v.toFixed(0) + 'h', small: r != null ? Math.round(r * 100) + '% of typ.' : '' };
+      }
+      case 'rating': {
+        const v = c.rating == null || c.rating <= 0 ? null : c.rating;
+        return { tier: ratingTier(v), big: v == null ? '—' : v.toFixed(2) + '★', small: v == null ? 'no data' : 'google rating' };
+      }
+      default:
+        return { tier: null, big: '—', small: '' };
+    }
+  }
+
+  const hint: Record<Metric, string> = {
+    revenue: 'Percent of weekly revenue goal. Current week is prorated by working-days elapsed.',
+    gpPct: 'Gross-profit % against the 58% target.',
+    gpDollars: 'GP dollars vs each shop’s typical week.',
+    cars: 'Car count vs each shop’s typical week.',
+    aro: 'Average RO vs each shop’s typical week.',
+    closeRate: 'Job close rate against an 85% excellent / 55% critical scale.',
+    conversion: 'Inbound calls booked (Claude-classified). Blank weeks predate tracking.',
+    rebook: 'Customers who re-booked a future visit. Low visual aggression by design.',
+    comebacks: 'Comeback $ — revenue the redo/warranty hours displaced. Lower is better; only elevated amounts darken. Count shown below.',
+    billedHours: 'Tech hours produced vs each shop’s typical week.',
+    rating: 'Cumulative Google rating, captured weekly. History accumulates from when tracking began.',
   };
 
-  const revenueLegend = [
-    { c: '#5BAA59', l: 'Above 100%' },
-    { c: '#A8CE5A', l: '98-100%' },
-    { c: '#F5E580', l: '90-98%' },
-    { c: '#F4B65C', l: '85-90%' },
-    { c: '#ED8E3A', l: '75-85%' },
-    { c: '#C9412A', l: 'Below 75%' },
-  ];
-  const gpLegend = [
-    { c: '#5BAA59', l: 'Above 58%' },
-    { c: '#A8CE5A', l: '56-58%' },
-    { c: '#F5E580', l: '54-56%' },
-    { c: '#F4B65C', l: '52-54%' },
-    { c: '#ED8E3A', l: '50-52%' },
-    { c: '#C9412A', l: 'Below 50%' },
-  ];
-  const legend = metric === 'revenue' ? revenueLegend : gpLegend;
-
   return (
-    <div className="card mb-6 w-full">
-      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <Grid3x3 className="w-5 h-5 text-mango-info" />
-          <h2 className="text-lg font-semibold">Shop Performance Heatmap — 12 weeks</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex bg-white border border-mango-line rounded-lg overflow-hidden">
-            <button onClick={() => setMetric('revenue')}
-              className={`px-3 py-1.5 text-sm font-medium ${metric === 'revenue' ? 'bg-mango-info text-white' : ''}`}>Revenue</button>
-            <button onClick={() => setMetric('gpPct')}
-              className={`px-3 py-1.5 text-sm font-medium ${metric === 'gpPct' ? 'bg-mango-info text-white' : ''}`}>GP %</button>
+    <div className="card mb-8 w-full">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2.5">
+          <Grid3x3 className="w-[18px] h-[18px] text-mango-faint" />
+          <div>
+            <h2 className="section-h">Shop Performance</h2>
+            <p className="section-sub mt-0.5">12-week view · {hint[metric]}</p>
           </div>
         </div>
+        {/* Compact pill legend */}
+        <div className="flex items-center gap-3 text-[11px] text-mango-muted">
+          {LEGEND.map((l) => (
+            <span key={l.tier} className="inline-flex items-center">
+              <span className="legend-dot" style={{ background: HEAT[l.tier - 1], boxShadow: 'inset 0 0 0 1px rgba(31,41,55,0.06)' }} />
+              {l.label}
+            </span>
+          ))}
+        </div>
       </div>
-      <p className="text-xs text-mango-muted mb-3">
-        {metric === 'revenue'
-          ? "Weekly revenue vs the shop's weekly goal. Current week is prorated by working-days elapsed (Mon-Fri, minus holidays). Hover any below-goal cell for the biggest lever."
-          : "GP% per week. Fixed thresholds against the 58% target."}
-      </p>
 
-      {/* Color legend */}
-      <div className="flex items-center gap-0 mb-3 text-[10px]">
-        {legend.map((b, i) => (
-          <div key={i} className="flex-1 text-center py-1 font-medium" style={{ background: b.c, color: bandTextColor(b.c) }}>{b.l}</div>
+      {/* Metric segmented control */}
+      <div className="mt-4 flex flex-wrap gap-1.5">
+        {METRICS.map((m) => (
+          <button key={m.key} onClick={() => setMetric(m.key)}
+            className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition ${
+              metric === m.key ? 'bg-mango-ink text-white' : 'bg-mango-bg text-mango-muted hover:text-mango-ink'
+            }`}>
+            {m.label}
+          </button>
         ))}
       </div>
 
       {!data ? (
-        <div className="h-[260px] animate-pulse bg-mango-bg rounded-md" />
+        <div className="h-[280px] mt-5 animate-pulse bg-mango-bg rounded-xl" />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-separate" style={{ borderSpacing: '2px' }}>
+        <div className="mt-5 rounded-xl border border-mango-line overflow-hidden">
+          {/* table-fixed + w-full → the whole grid fits the card; no
+              horizontal scroll. Columns share width evenly. */}
+          <table className="w-full table-fixed border-separate" style={{ borderSpacing: '3px' }}>
+            <colgroup>
+              <col style={{ width: '104px' }} />
+              {data.weeks.map((_, i) => <col key={i} />)}
+            </colgroup>
             <thead>
               <tr>
-                <th className="text-left text-xs font-medium text-mango-muted px-2 py-1 w-32">Shop</th>
+                <th className="text-left text-[10px] font-medium text-mango-faint px-2 pb-2"></th>
                 {data.weeks.map((w, i) => (
-                  <th key={i} className="text-[10px] font-medium text-mango-muted px-1">{format(new Date(w + 'T12:00:00'), 'M/d')}</th>
+                  <th key={i} className="px-0.5 pb-2 align-bottom">
+                    {i === currentIdx && (
+                      <div className="mb-0.5 text-[8px] font-semibold uppercase tracking-wide text-mango-info leading-tight">Partial</div>
+                    )}
+                    <div className="text-[10px] font-medium text-mango-faint">{format(new Date(w + 'T12:00:00'), 'M/d')}</div>
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {data.shops.map((r) => {
-                const shopMeta = SHOPS.find(s => s.num === r.shopNum);
-                return (
+              {data.shops.map((r, ri) => (
                 <tr key={r.shopNum}>
-                  <td className="px-2 py-1 text-sm font-medium whitespace-nowrap">
-                    <span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{ background: shopMeta?.color }} />
+                  <td className="px-2 text-[12px] font-medium text-mango-ink whitespace-nowrap truncate rounded-lg"
+                    style={{ background: ri % 2 ? 'rgba(31,41,55,0.018)' : 'transparent' }}>
                     {r.shopName}
                   </td>
                   {r.cells.map((c, i) => {
-                    const { bg, ratio } = cellBg(r.shopNum, data.weeks[i], c);
-                    const fg = bandTextColor(bg);
-                    const goalRev = metric === 'revenue' ? goalForCell(r.shopNum, data.weeks[i]) : undefined;
-                    const diag = metric === 'revenue' ? diagnose(c, goalRev, r.cells) : null;
-                    const tip = c
-                      ? `${r.shopName} · week of ${data.weeks[i]} · ${cellLabel(c)}${ratio !== null ? ` (${(ratio*100).toFixed(0)}% of goal)` : ''}${diag ? '\n→ ' + diag : ''}`
-                      : 'no data';
+                    const { tier, big, small } = render(r, c, data.weeks[i]);
+                    const { bg, fg } = tierColor(tier);
+                    const isCurrent = i === currentIdx;
                     return (
                       <td key={i}
-                        className="px-0 py-0 text-center text-[11px] font-semibold"
-                        style={{ background: bg, color: fg, borderRadius: 4, minWidth: 56, height: 30, cursor: diag ? 'help' : 'default' }}
-                        title={tip}>
-                        {cellLabel(c)}
+                        className={`text-center align-middle overflow-hidden ${isCurrent ? 'partial-week' : ''}`}
+                        style={{
+                          background: bg, color: fg, borderRadius: 8,
+                          height: 44, padding: '3px 2px',
+                          boxShadow: isCurrent ? 'inset 0 0 0 1.5px #E08E1A' : 'inset 0 0 0 1px rgba(31,41,55,0.04)',
+                        }}
+                        title={c ? `${r.shopName} · week of ${data.weeks[i]} · ${big}${small ? ` (${small})` : ''}` : 'no data'}>
+                        <div className="text-[12px] font-semibold leading-tight tnum">{big}</div>
+                        {small && <div className="text-[8.5px] leading-tight tnum truncate" style={{ opacity: 0.5 }}>{small}</div>}
                       </td>
                     );
                   })}
                 </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>

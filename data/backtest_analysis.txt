@@ -1,0 +1,98 @@
+
+# Backtest analysis — strictly 2026 (week >= 2026-01-05)
+# 1064 rows = 152 shop-weeks × 7 checkpoints across 19 weeks × 8 shops
+# Dec 29 2025 week segmented out (would add 56 rows / 8 shop-weeks).
+
+## (1) Pearson r — each signal vs final weekly revenue, per checkpoint
+checkpoint          rev_so_far  approved_unbil    booked_appts    calls_so_far  calls_booked_s   gp_so_far_pct      aro_so_far     cars_so_far
+mon_am                  +0.077         +0.528         +0.603         +0.421         +0.275         -0.023         +0.039         +0.056
+mon_close               +0.442         +0.567         +0.643         +0.374         +0.292         +0.204         +0.182         +0.428
+tue_close               +0.642         +0.564         +0.615         +0.384         +0.280         +0.203         +0.324         +0.566
+wed_close               +0.757         +0.562         +0.576         +0.371         +0.289         +0.246         +0.388         +0.618
+thu_close               +0.854         +0.404         +0.553         +0.365         +0.303         +0.233         +0.483         +0.665
+fri_mid                 +0.896         +0.470         +0.411         +0.362         +0.298         +0.251         +0.520         +0.667
+fri_close               +0.989         +0.084         +0.231         +0.349         +0.299         +0.313         +0.581         +0.695
+
+## (2) Out-of-sample MAPE (5-fold CV) by single signal, per checkpoint
+       lower = better. Baseline rows reported separately below.
+checkpoint          rev_so_far  approved_unbil    booked_appts    calls_so_far  calls_booked_s   gp_so_far_pct      aro_so_far     cars_so_far
+mon_am                  40.9%          34.1%          28.8%          36.5%          40.0%          41.4%          41.4%          41.1%
+mon_close               35.8%          32.8%          26.8%          37.6%          39.0%          40.8%          40.7%          35.5%
+tue_close               28.7%          31.9%          28.5%          37.3%          38.9%          40.6%          38.8%          30.6%
+wed_close               24.1%          33.5%          30.3%          37.6%          39.1%          39.9%          36.7%          28.8%
+thu_close               18.9%          36.7%          31.9%          37.7%          39.0%          40.0%          35.1%          27.4%
+fri_mid                 14.6%          35.5%          37.2%          37.8%          39.0%          39.6%          33.9%          27.1%
+fri_close                2.3%          41.5%          40.3%          38.0%          38.8%          38.6%          32.0%          26.0%
+
+## (3) Approved-sales: how strongly does approved_unbilled predict residual revenue (y_final − rev_so_far)?
+checkpoint      corr(approved_unbilled, y_final − rev_so_far)   approved>0 rows
+mon_am          +0.531                                          152/152
+mon_close       +0.640                                          152/152
+tue_close       +0.757                                          152/152
+wed_close       +0.878                                          150/152
+thu_close       +0.954                                          146/152
+fri_mid         +0.989                                          149/152
+fri_close       +0.999                                          22/152
+
+## (4) Huge-approval outliers — approved_unbilled in top decile, did it bill same week?
+  tue_close: top-decile median approved $33,335 → median same-week realization 1.31× of approved
+  wed_close: top-decile median approved $29,374 → median same-week realization 1.17× of approved
+  thu_close: top-decile median approved $24,570 → median same-week realization 1.07× of approved
+  fri_mid: top-decile median approved $21,360 → median same-week realization 1.03× of approved
+
+## (5) Booked appointments contribution to blended fit (MAPE with vs without)
+  mon_am         with booked_appts  23.3%   without  31.5%   Δ -8.17pp
+  mon_close      with booked_appts  17.3%   without  25.3%   Δ -8.00pp
+  tue_close      with booked_appts  12.3%   without  16.2%   Δ -3.88pp
+  wed_close      with booked_appts   7.6%   without   8.6%   Δ -1.04pp
+  thu_close      with booked_appts   3.8%   without   4.2%   Δ -0.40pp
+  fri_mid        with booked_appts   2.0%   without   1.9%   Δ +0.02pp
+  fri_close      with booked_appts   0.1%   without   0.1%   Δ +0.00pp
+
+## (6) Calls (volume + baseline-converted) contribution
+  mon_am         with calls  23.3%   without calls  23.5%   Δ -0.21pp
+  mon_close      with calls  17.3%   without calls  17.9%   Δ -0.66pp
+  tue_close      with calls  12.3%   without calls  12.7%   Δ -0.37pp
+  wed_close      with calls   7.6%   without calls   7.6%   Δ -0.09pp
+  thu_close      with calls   3.8%   without calls   3.8%   Δ +0.02pp
+  fri_mid        with calls   2.0%   without calls   1.9%   Δ +0.01pp
+  fri_close      with calls   0.1%   without calls   0.1%   Δ +0.00pp
+
+## (7) Per-shop intercept vs global pooled model (5-fold CV MAPE)
+  mon_am         global  23.3%   per-shop  18.2%   Δ +5.17pp (shop helps)
+  mon_close      global  17.3%   per-shop  15.8%   Δ +1.52pp (shop helps)
+  tue_close      global  12.3%   per-shop  15.3%   Δ -2.94pp (no)
+  wed_close      global   7.6%   per-shop  15.1%   Δ -7.55pp (no)
+  thu_close      global   3.8%   per-shop  16.5%   Δ -12.69pp (no)
+  fri_mid        global   2.0%   per-shop  17.6%   Δ -15.66pp (no)
+  fri_close      global   0.1%   per-shop  17.6%   Δ -17.56pp (no)
+
+## (8) Confidence progression (per-shop blended MAPE per checkpoint)
+  mon_am         MAPE  18.2%   suggested confidence (1−MAPE, clipped): 0.82
+  mon_close      MAPE  15.8%   suggested confidence (1−MAPE, clipped): 0.84
+  tue_close      MAPE  15.3%   suggested confidence (1−MAPE, clipped): 0.85
+  wed_close      MAPE  15.1%   suggested confidence (1−MAPE, clipped): 0.85
+  thu_close      MAPE  16.5%   suggested confidence (1−MAPE, clipped): 0.84
+  fri_mid        MAPE  17.6%   suggested confidence (1−MAPE, clipped): 0.82
+  fri_close      MAPE  17.6%   suggested confidence (1−MAPE, clipped): 0.82
+
+## (9) Accuracy vs current method (pace = rev_so_far / elapsed_biz_frac, engine's 30% floor)
+checkpoint      current-proxy MAPE   best-blended MAPE   improvement
+  mon_am              94.9%                 18.2%           +76.76pp
+  mon_close           49.3%                 15.8%           +33.57pp
+  tue_close           31.2%                 15.3%           +15.94pp
+  wed_close           24.5%                 15.1%           +9.38pp
+  thu_close           17.1%                 16.5%           +0.58pp
+  fri_mid             20.4%                 17.6%           +2.74pp
+  fri_close            1.2%                 17.6%           -16.46pp
+
+## (10) Fitted blended coefficients per checkpoint (fit on full strict-2026 with per-shop intercept)
+       Form: ŷ = shop_intercept + b0 + b1·rev_so_far + b2·approved_unbilled + b3·booked_appts + b4·calls_so_far + b5·calls_booked_so_far
+checkpoint       intercept   rev_so_far   approved bookedAppt    calls  callBooked
+  mon_am               -7242       -0.158      0.519        -42   -152.2      1426.5
+  mon_close            -9987        0.650      0.654        -55   -253.8       817.3
+  tue_close           -12414        0.724      0.694       -208   -136.7       365.4
+  wed_close           -13828        0.628      0.750       -418    -83.6       241.5
+  thu_close           -14873        0.649      0.640       -807    -64.1       163.4
+  fri_mid             -15836        0.522      0.614       -969    -59.3       128.8
+  fri_close           -16030        0.482      1.157      -1975    -53.1       145.9

@@ -128,7 +128,7 @@ import type { ShopNum as ShopNumT } from './shops';
 export async function computeWtdBookedRate(
   isBooked: (lead: Lead) => boolean = isBookedBaseline
 ): Promise<BookedRateSnapshot> {
-  const range = resolveRange('wtd');
+  const range = resolveRange('last_7_days');
   const startDate = range.startISO.slice(0, 10);
   const endDate = range.endISO.slice(0, 10);
   const shops = (Object.keys(SHOP_BY_NUM) as ShopNumT[]);

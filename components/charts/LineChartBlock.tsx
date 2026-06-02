@@ -21,11 +21,18 @@ export default function LineChartBlock({
   height = 280,
   series,
   xType = 'date',
+  showDots = false,
+  formatValue,
 }: {
   height?: number;
   series: LineSeries[];
   xType?: 'date' | 'category';
+  showDots?: boolean;
+  // How to render Y-axis ticks + tooltip values. Defaults to money so existing
+  // revenue charts are unchanged; pass a custom formatter for %, counts, hours.
+  formatValue?: (n: number) => string;
 }) {
+  const fmt = formatValue ?? fmtMoney;
   // Merge by x
   const xs = Array.from(
     new Set(series.flatMap((s) => s.data.map((p) => p.x)))
@@ -42,15 +49,17 @@ export default function LineChartBlock({
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={merged} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
-          <CartesianGrid stroke="#E6E8EC" strokeDasharray="3 3" vertical={false} />
+          <CartesianGrid stroke="#F0F1F3" strokeDasharray="2 5" vertical={false} />
           <XAxis
             dataKey="x"
-            stroke="#5B6471"
-            fontSize={11}
+            stroke="#ECEEF1"
+            tick={{ fill: '#9AA1AC', fontSize: 11 }}
+            tickLine={false}
+            axisLine={false}
             tickFormatter={(v) => (xType === 'date' ? format(new Date(v), 'MMM d') : v)}
-            tickMargin={8}
+            tickMargin={10}
           />
-          <YAxis stroke="#5B6471" fontSize={11} tickFormatter={fmtMoney} tickMargin={6} />
+          <YAxis stroke="#ECEEF1" tick={{ fill: '#9AA1AC', fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={fmt} tickMargin={8} width={48} />
           <Tooltip
             content={(props: any) => {
               const { active, payload, label } = props;
@@ -61,20 +70,20 @@ export default function LineChartBlock({
                 .sort((a: any, b: any) => (b.value as number) - (a.value as number));
               const labelText = xType === 'date' ? format(new Date(label), 'MMM d, yyyy') : String(label);
               return (
-                <div style={{ background: 'white', border: '1px solid #E6E8EC', borderRadius: 8, padding: '8px 10px', fontSize: 12, boxShadow: '0 4px 8px rgba(15,20,25,0.08)' }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{labelText}</div>
+                <div style={{ background: 'white', border: '1px solid #ECEEF1', borderRadius: 10, padding: '9px 12px', fontSize: 12, boxShadow: '0 4px 14px rgba(31,41,55,0.08)' }}>
+                  <div style={{ fontWeight: 600, marginBottom: 5, color: '#1F2937' }}>{labelText}</div>
                   {items.map((p: any) => (
                     <div key={p.dataKey} style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
                       <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: p.color, flexShrink: 0 }} />
                       <span style={{ flex: 1, color: '#0F1419' }}>{p.name}</span>
-                      <span style={{ fontWeight: 600, color: '#0F1419', tabularNums: true } as any}>{typeof p.value === 'number' ? fmtMoney(p.value) : p.value}</span>
+                      <span style={{ fontWeight: 600, color: '#0F1419', tabularNums: true } as any}>{typeof p.value === 'number' ? fmt(p.value) : p.value}</span>
                     </div>
                   ))}
                 </div>
               );
             }}
           />
-          <Legend wrapperStyle={{ fontSize: 12 }} iconType="plainline" />
+          <Legend wrapperStyle={{ fontSize: 11, color: '#6B7280', paddingTop: 6 }} iconType="plainline" />
           {series.map((s) => (
             <Line
               key={s.key}
@@ -82,10 +91,10 @@ export default function LineChartBlock({
               dataKey={s.key}
               name={s.label}
               stroke={s.color}
-              strokeWidth={2}
+              strokeWidth={1.75}
               strokeDasharray={s.dashed ? '4 4' : undefined}
-              dot={false}
-              activeDot={{ r: 4 }}
+              dot={showDots ? { r: 2.5, strokeWidth: 0, fill: s.color } : false}
+              activeDot={{ r: 3.5, strokeWidth: 0 }}
               isAnimationActive={false}
             />
           ))}

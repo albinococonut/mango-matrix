@@ -11,23 +11,28 @@ export interface Shop {
   timezone: string;
   city: string;
   state: string;
+  district: string;   // metro grouping for district-level rollups
   // Brief section 6 notes - used for FBR retail/fleet defaults
   defaultFleetMix: 'mostly_retail' | 'mostly_fleet' | 'balanced';
   // Ramping flag from brief section 9
   openedAt?: string;
   color: string;       // chart color
   googlePlaceId?: string;
+  // Physical bays — used by Finance View for "Revenue per Bay per Week".
+  // Back-calculated from MightyMangos_BaselineFinancials weekly rev-per-bay /
+  // actual revenue. Update if a shop adds/removes bays.
+  bays: number;
 }
 
 export const SHOPS: Shop[] = [
-  { num: '001', name: 'Cottonwood',  tekmetricId: 2892,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', defaultFleetMix: 'balanced',      openedAt: '2018-01-01', color: '#EC4899' /* pink */,      googlePlaceId: 'ChIJUUobG0dxIocR90y74Lu6TFc' },
-  { num: '002', name: 'The Heights', tekmetricId: 4011,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', defaultFleetMix: 'balanced',      openedAt: '2019-06-01', color: '#F97316' /* orange */,    googlePlaceId: 'ChIJW8j4-B2fGIcRirMety19QHY' },
-  { num: '003', name: 'Downtown',    tekmetricId: 3785,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', defaultFleetMix: 'mostly_fleet',  openedAt: '2020-01-01', color: '#F5C518' /* yellow */,    googlePlaceId: 'ChIJ_ZjznI0NIocRHpXTCeWCM5s' },
-  { num: '004', name: 'Pellicano',   tekmetricId: 11565, timezone: 'America/Denver',  city: 'El Paso',      state: 'TX', defaultFleetMix: 'mostly_fleet',  openedAt: '2025-01-01', color: '#15803D' /* deep green */, googlePlaceId: 'ChIJXb-A9KFE54YRi77I5uKZh3o' },
-  { num: '005', name: 'Las Cruces',  tekmetricId: 8878,  timezone: 'America/Denver',  city: 'Las Cruces',   state: 'NM', defaultFleetMix: 'mostly_fleet',  openedAt: '2024-01-01', color: '#06B6D4' /* cyan */,       googlePlaceId: 'ChIJnylEKl093oYRmO08JnQTJz0' },
-  { num: '006', name: 'Yuma',        tekmetricId: 7492,  tekmetricIdSecondary: 18346, timezone: 'America/Phoenix', city: 'Yuma', state: 'AZ', defaultFleetMix: 'mostly_fleet', openedAt: '2022-01-01', color: '#3B82F6' /* blue */,      googlePlaceId: 'ChIJWUstMEhf1oAR5KYI-F-l5pE' },
-  { num: '007', name: 'Montana',     tekmetricId: 11253, timezone: 'America/Denver',  city: 'El Paso',      state: 'TX', defaultFleetMix: 'mostly_retail', openedAt: '2024-10-01', color: '#8B5CF6' /* purple */,    googlePlaceId: 'ChIJeaQeSHhb54YRy_dP6d5wOzQ' },
-  { num: '009', name: 'The Valley',  tekmetricId: 16116, timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', defaultFleetMix: 'mostly_retail', openedAt: '2026-01-01', color: '#EF4444' /* red */,       googlePlaceId: 'ChIJUwcdeDtzIocRneLazjKards' },
+  { num: '001', name: 'Cottonwood',  tekmetricId: 2892,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', district: 'Albuquerque', defaultFleetMix: 'balanced',      openedAt: '2018-01-01', bays: 12, color: '#F5A623' /* mango */,      googlePlaceId: 'ChIJUUobG0dxIocR90y74Lu6TFc' },
+  { num: '002', name: 'The Heights', tekmetricId: 4011,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', district: 'Albuquerque', defaultFleetMix: 'balanced',      openedAt: '2019-06-01', bays: 9,  color: '#18B6C9' /* bright teal */,    googlePlaceId: 'ChIJW8j4-B2fGIcRirMety19QHY' },
+  { num: '003', name: 'Downtown',    tekmetricId: 3785,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', district: 'Albuquerque', defaultFleetMix: 'mostly_fleet',  openedAt: '2020-01-01', bays: 9,  color: '#FF6B4A' /* coral */,    googlePlaceId: 'ChIJ_ZjznI0NIocRHpXTCeWCM5s' },
+  { num: '004', name: 'Pellicano',   tekmetricId: 11565, timezone: 'America/Denver',  city: 'El Paso',      state: 'TX', district: 'El Paso',      defaultFleetMix: 'mostly_fleet',  openedAt: '2025-01-01', bays: 9,  color: '#4FB477' /* fresh green */, googlePlaceId: 'ChIJXb-A9KFE54YRi77I5uKZh3o' },
+  { num: '005', name: 'Las Cruces',  tekmetricId: 8878,  timezone: 'America/Denver',  city: 'Las Cruces',   state: 'NM', district: 'Las Cruces',   defaultFleetMix: 'mostly_fleet',  openedAt: '2024-01-01', bays: 14, color: '#9B7BE0' /* violet */,       googlePlaceId: 'ChIJnylEKl093oYRmO08JnQTJz0' },
+  { num: '006', name: 'Yuma',        tekmetricId: 7492,  tekmetricIdSecondary: 18346, timezone: 'America/Phoenix', city: 'Yuma', state: 'AZ', district: 'Yuma',         defaultFleetMix: 'mostly_fleet', openedAt: '2022-01-01', bays: 14, color: '#FFC72C' /* sunny gold */,      googlePlaceId: 'ChIJWUstMEhf1oAR5KYI-F-l5pE' },
+  { num: '007', name: 'Montana',     tekmetricId: 11253, timezone: 'America/Denver',  city: 'El Paso',      state: 'TX', district: 'El Paso',      defaultFleetMix: 'mostly_retail', openedAt: '2024-10-01', bays: 6,  color: '#FF8FB1' /* warm pink */,    googlePlaceId: 'ChIJeaQeSHhb54YRy_dP6d5wOzQ' },
+  { num: '009', name: 'The Valley',  tekmetricId: 16116, timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', district: 'Albuquerque', defaultFleetMix: 'mostly_retail', openedAt: '2026-01-01', bays: 6,  color: '#6FB1FF' /* sky blue */,       googlePlaceId: 'ChIJUwcdeDtzIocRneLazjKards' },
 ];
 
 export const SHOP_BY_NUM: Record<ShopNum, Shop> = Object.fromEntries(
@@ -42,6 +47,21 @@ export const SHOP_BY_TEKMETRIC_ID: Record<number, Shop> = SHOPS.reduce(
   },
   {} as Record<number, Shop>
 );
+
+// Districts = metro groupings. Order matters (UI lists them this way).
+export const DISTRICTS: { name: string; shopNums: ShopNum[] }[] = (() => {
+  const order: string[] = [];
+  const m = new Map<string, ShopNum[]>();
+  for (const s of SHOPS) {
+    if (!m.has(s.district)) { m.set(s.district, []); order.push(s.district); }
+    m.get(s.district)!.push(s.num);
+  }
+  return order.map((name) => ({ name, shopNums: m.get(name)! }));
+})();
+
+export function districtOf(num: ShopNum): string {
+  return SHOP_BY_NUM[num]?.district ?? 'Other';
+}
 
 export function isRampingShop(shop: Shop, asOf: Date = new Date()): boolean {
   if (!shop.openedAt) return false;

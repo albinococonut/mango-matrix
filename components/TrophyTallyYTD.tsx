@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Award } from 'lucide-react';
 import { SHOPS } from '@/lib/shops';
+import { historyWeeksSince } from '@/lib/trophyHistory';
 import { TrophyIcon } from './Trophy';
 
 type Category = 'revenue' | 'gp' | 'tech' | 'rebook' | 'comebacks' | 'reviews' | 'conversion';
@@ -29,13 +30,6 @@ const CATEGORY_LABEL: Record<Category, string> = {
   conversion: 'Highest Call Conversion',
 };
 
-interface Heatmap {
-  weeks: string[];
-  shops: Array<{
-    shopNum: string; shopName: string;
-    cells: ({ revenue: number; gpPct: number } | null)[];
-  }>;
-}
 
 // Return [year, quarterIndex 0-3, quarterLabel "Q2", quarterStartISO] for `now`.
 function currentQuarter(now: Date) {
@@ -47,29 +41,48 @@ function currentQuarter(now: Date) {
 }
 
 function TallyMarks({ count, color }: { count: number; color: string }) {
-  if (count === 0) return <span className="text-mango-muted text-xs">—</span>;
-  if (count > 25) return <span className="font-bold tabular-nums" style={{ color }}>{count}</span>;
+  if (count === 0) return (
+    <svg width="34" height="10" viewBox="0 0 34 10" aria-label="no trophies" role="img" className="opacity-50">
+      <path d="M1 5 Q5 1 9 5 T17 5 T25 5 T33 5" fill="none" stroke="#cbd0d6" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+  if (count > 40) return <span className="font-bold tabular-nums" style={{ color }}>{count}</span>;
   const fives = Math.floor(count / 5);
   const rem = count % 5;
-  return (
-    <span className="inline-flex items-center gap-1 leading-none" style={{ color }}>
-      {Array.from({ length: fives }).map((_, i) => (
-        <span key={`f${i}`} className="font-bold text-base tracking-tight" title={`${(i + 1) * 5}`}>𝍢</span>
+  // Classic tally: each full group = 4 upright strokes + a 5th diagonal slash
+  // across them. Strokes stay full-size; the diagonal is what marks the five.
+  const GroupFive = ({ k }: { k: number }) => (
+    <svg key={k} width="26" height="20" viewBox="0 0 26 20" className="shrink-0" aria-hidden>
+      {[3, 8, 13, 18].map((x, i) => (
+        <line key={i} x1={x} y1="2" x2={x} y2="18" stroke={color} strokeWidth="2" strokeLinecap="round" />
       ))}
-      {rem > 0 && (
-        <span className="font-bold text-base tracking-tighter">{'|'.repeat(rem)}</span>
-      )}
+      <line x1="0" y1="18" x2="24" y2="2" stroke={color} strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+  const Partial = ({ n }: { n: number }) => (
+    <svg width={n * 5 + 2} height="20" viewBox={`0 0 ${n * 5 + 2} 20`} className="shrink-0" aria-hidden>
+      {Array.from({ length: n }).map((_, i) => (
+        <line key={i} x1={3 + i * 5} y1="2" x2={3 + i * 5} y2="18" stroke={color} strokeWidth="2" strokeLinecap="round" />
+      ))}
+    </svg>
+  );
+  return (
+    <span className="inline-flex items-center gap-1.5 leading-none" title={String(count)}>
+      {Array.from({ length: fives }).map((_, i) => <GroupFive key={i} k={i} />)}
+      {rem > 0 && <Partial n={rem} />}
     </span>
   );
 }
 
 export default function TrophyTallyYTD() {
-  const [heatmap, setHeatmap] = useState<Heatmap | null>(null);
   const [techs, setTechs] = useState<any[] | null>(null);
   const [fbr, setFbr] = useState<any[] | null>(null);
   const [comebacks, setComebacks] = useState<any[] | null>(null);
   const [reviews, setReviews] = useState<any[] | null>(null);
   const [conversion, setConversion] = useState<any[] | null>(null);
+  // Current in-progress week's revenue + GP% per shop (history covers only
+  // completed weeks; this adds the live week to the quarter accumulation).
+  const [liveKpi, setLiveKpi] = useState<Array<{ shopNum: string; revenue: number; gpPct: number }>>([]);
 
   const q = useMemo(() => currentQuarter(new Date()), []);
 
@@ -78,12 +91,18 @@ export default function TrophyTallyYTD() {
       try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); } catch { return null; }
     };
     // Pull enough weeks (13) to cover any quarter; we filter client-side to weeks ≥ quarter start.
-    safe<any>('/api/shop-performance-heatmap?weeks=13').then(d => d?.shops && setHeatmap(d));
-    safe<any>('/api/tech-production?range=this_week').then(d => setTechs(d?.rows || []));
+    safe<any>('/api/tech-production?range=last_7_days').then(d => setTechs(d?.rows || []));
     safe<any>('/api/fbr?view=leaderboard').then(d => setFbr(d?.shops || []));
-    safe<any>('/api/extras?view=comebacks&range=this_week').then(d => setComebacks(d?.shops || []));
+    safe<any>('/api/extras?view=comebacks&range=last_7_days').then(d => setComebacks(d?.shops || []));
     safe<any>('/api/extras?view=google-ratings').then(d => setReviews(d?.shops || []));
     safe<any>('/api/extras?view=booked-rate&strict=1').then(d => setConversion(d?.shops || []));
+    safe<any>('/api/metrics?range=last_7_days').then(d => {
+      const lk: Array<{ shopNum: string; revenue: number; gpPct: number }> = [];
+      for (const s of (d?.kpi?.byShop || [])) {
+        lk.push({ shopNum: s.shopNum, revenue: s.revenue, gpPct: s.gpPct });
+      }
+      setLiveKpi(lk);
+    });
   }, []);
 
   // Compute per-shop tallies. `currentWeekRank` captures the most-recent rank
@@ -119,28 +138,22 @@ export default function TrophyTallyYTD() {
       });
     }
 
-    // Revenue + GP%: only weeks within current quarter
-    if (heatmap) {
-      heatmap.weeks.forEach((wkISO, wi) => {
-        if (wkISO < q.startDate) return; // out of quarter
-        const rev = heatmap.shops
-          .map(s => ({ n: s.shopNum, v: s.cells[wi]?.revenue ?? null }))
-          .filter(x => x.v !== null)
-          .sort((a, b) => (b.v as number) - (a.v as number))
-          .map(x => x.n);
-        const gp = heatmap.shops
-          .map(s => ({ n: s.shopNum, v: s.cells[wi]?.gpPct ?? null }))
-          .filter(x => x.v !== null)
-          .sort((a, b) => (b.v as number) - (a.v as number))
-          .map(x => x.n);
-        if (rev.length) awardWeekly('revenue', rev);
-        if (gp.length) awardWeekly('gp', gp);
-        // Record most-recent (last) week's ranking for leverage calc
-        if (wi === heatmap.weeks.length - 1) {
-          if (rev.length) recordRanking('revenue', rev);
-          if (gp.length) recordRanking('gp', gp);
-        }
-      });
+    // All completed weeks of the quarter, from the committed backfill history.
+    // Revenue / GP% / Top-Tech / Fewest-Comebacks accumulate every week.
+    for (const hw of historyWeeksSince(q.startDate)) {
+      awardWeekly('revenue', hw.rankings.revenue);
+      awardWeekly('gp', hw.rankings.gp);
+      awardWeekly('tech', hw.rankings.tech);
+      awardWeekly('comebacks', hw.rankings.comebacks);
+    }
+    // Current in-progress week's revenue/GP also count toward the quarter.
+    if (liveKpi.length) {
+      const rev = [...liveKpi].sort((a, b) => b.revenue - a.revenue).map(x => x.shopNum);
+      const gp = [...liveKpi].sort((a, b) => b.gpPct - a.gpPct).map(x => x.shopNum);
+      awardWeekly('revenue', rev);
+      awardWeekly('gp', gp);
+      recordRanking('revenue', rev);
+      recordRanking('gp', gp);
     }
     // Snapshot categories: trophy this week + record ranking
     function snapshot(cat: Category, ranking: string[]) {
@@ -150,10 +163,14 @@ export default function TrophyTallyYTD() {
     if (techs)      snapshot('tech',      [...techs].sort((a, b) => b.efficiency - a.efficiency).map(x => x.shopNum));
     if (fbr)        snapshot('rebook',    [...fbr].sort((a, b) => (b.fbr?.fbrPct ?? 0) - (a.fbr?.fbrPct ?? 0)).map(x => x.shopNum));
     if (comebacks)  snapshot('comebacks', [...comebacks].sort((a, b) => a.comebackJobs - b.comebackJobs).map(x => x.shopNum));
-    if (reviews)    snapshot('reviews',   [...reviews].sort((a, b) => b.fiveStar - a.fiveStar).map(x => x.shopNum));
+    // Skip the reviews category entirely while GBP totals are all 0 (API access
+    // pending). Auto-resumes when any shop has a non-zero 5★ count.
+    if (reviews && reviews.some((x: any) => (x.fiveStar ?? 0) > 0)) {
+      snapshot('reviews', [...reviews].sort((a, b) => b.fiveStar - a.fiveStar).map(x => x.shopNum));
+    }
     if (conversion) snapshot('conversion', [...conversion].sort((a, b) => b.bookedRatePct - a.bookedRatePct).map(x => x.shopNum));
     return out;
-  }, [heatmap, techs, fbr, comebacks, reviews, conversion, q.startDate]);
+  }, [liveKpi, techs, fbr, comebacks, reviews, conversion, q.startDate]);
 
   function topCategories(t: typeof tallies[string]): string {
     const sorted = (Object.entries(t.perCategory) as [Category, any][])
@@ -165,33 +182,17 @@ export default function TrophyTallyYTD() {
     return sorted.map(x => CATEGORY_LABEL[x.cat]).join(', ');
   }
 
-  // Highest Leverage = category where this shop is CLOSEST to a trophy but not
-  // yet in the top 3 — the smallest single push that would buy a medal next
-  // week. Ignore categories where they're already top 3 (no leverage —
-  // they're winning), and ignore categories with no current ranking data.
-  function highestLeverage(t: typeof tallies[string]): string {
-    const candidates = (Object.entries(t.perCategory) as [Category, any][])
-      .filter(([, p]) => typeof p.currentWeekRank === 'number' && p.currentWeekRank > 3)
-      .sort((a, b) => (a[1].currentWeekRank ?? 99) - (b[1].currentWeekRank ?? 99));
-    if (candidates.length === 0) {
-      // Either all medals secured this week, or no data yet
-      const anyRank = (Object.values(t.perCategory) as any[]).some(p => typeof p.currentWeekRank === 'number');
-      return anyRank ? 'All medals secured 🏆' : '—';
-    }
-    const [cat, p] = candidates[0];
-    const positionsFromBronze = (p.currentWeekRank as number) - 3;
-    return `${CATEGORY_LABEL[cat]} (#${p.currentWeekRank} → +${positionsFromBronze} for bronze)`;
-  }
-
   return (
     <div className="card mb-6">
       <div className="flex items-center gap-2 mb-1">
         <Award className="w-5 h-5 text-mango-orange" />
-        <h2 className="text-lg font-semibold">Current Quarter {q.year} Tally — {q.label}</h2>
+        <h2 className="text-lg font-semibold">Past Trophies Earned this Quarter</h2>
       </div>
-      <p className="text-xs text-mango-muted mb-4">
-        Weeks since {q.startDate} for Revenue + GP%, plus this week for Top Tech / Re-Books / Comebacks / Reviews / Call Conversion.
-        Each tally mark = one weekly trophy. <span className="italic">Highest Leverage</span> = the category where the shop is closest to a trophy this week — the smallest push to medal next week.
+      <p className="text-sm text-mango-muted mt-0.5">
+        Every trophy each shop has banked so far this quarter. The shop with the most is the quarter leader.
+      </p>
+      <p className="text-xs font-semibold text-mango-ink/70 mt-1.5 mb-4">
+        {(Object.values(CATEGORY_LABEL) as string[]).join(' · ')}
       </p>
       <table className="w-full text-sm">
         <thead className="text-xs text-mango-muted">
@@ -201,7 +202,6 @@ export default function TrophyTallyYTD() {
             <th className="py-2 px-2 text-left"><span className="inline-flex items-center gap-1.5"><TrophyIcon rank={2} size={16} /> Silver</span></th>
             <th className="py-2 px-2 text-left"><span className="inline-flex items-center gap-1.5"><TrophyIcon rank={3} size={16} /> Bronze</span></th>
             <th className="py-2 px-2 text-left">Often Trophies In</th>
-            <th className="py-2 px-2 text-left">Highest Leverage</th>
           </tr>
         </thead>
         <tbody>
@@ -217,12 +217,14 @@ export default function TrophyTallyYTD() {
                 <td className="py-2 px-2"><TallyMarks count={t.silver} color="#6B7280" /></td>
                 <td className="py-2 px-2"><TallyMarks count={t.bronze} color="#9A5F33" /></td>
                 <td className="py-2 px-2 text-xs">{topCategories(t)}</td>
-                <td className="py-2 px-2 text-xs text-mango-orange">{highestLeverage(t)}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      <p className="text-[11px] text-mango-muted/70 mt-4 pt-3 border-t border-mango-line/50">
+        Each tally mark (𝍢 = 5) is one weekly trophy. Revenue and GP% accumulate every week of the quarter since {q.startDate}. Top Tech, Re-Books, Comebacks, Reviews, and Call Conversion reflect the most recent week only — those sources don’t expose week-by-week history, so they can’t be backfilled across the quarter. “Most 5★ Reviews” is paused until Google Business Profile API access is approved.
+      </p>
     </div>
   );
 }

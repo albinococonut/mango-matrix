@@ -5,6 +5,7 @@ import { Repeat } from 'lucide-react';
 import { SHOP_BY_NUM } from '@/lib/shops';
 import { usd, num } from '@/lib/format';
 import { TrophyIcon } from './Trophy';
+import { WindowToggle } from './AppointmentBookedRate';
 
 interface Row {
   shopNum: string;
@@ -17,15 +18,25 @@ interface Row {
   ros: number;
 }
 
+type WindowKind = 'rolling' | 'this_week';
+
 export default function Comebacks() {
   const [rows, setRows] = useState<Row[] | null>(null);
-  const [windowLabel, setWindowLabel] = useState<string>('');
+  const [windowKind, setWindowKind] = useState<WindowKind>('this_week');
+
   useEffect(() => {
-    fetch('/api/extras?view=comebacks&range=last_week').then(r => r.json()).then(d => {
-      setRows(d?.shops || []);
-      setWindowLabel(d?.window?.label || '');
-    });
-  }, []);
+    setRows(null);
+    const range = windowKind === 'this_week' ? 'this_week' : 'last_7_days';
+    let cancelled = false;
+    fetch(`/api/extras?view=comebacks&range=${range}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setRows(d?.shops || []); })
+      .catch(() => { if (!cancelled) setRows([]); });
+    return () => { cancelled = true; };
+  }, [windowKind]);
+
+  const windowLabel = windowKind === 'this_week' ? 'This Week' : 'Rolling 7 Days';
+  const windowCopy  = windowKind === 'this_week' ? 'this week (Mon → today MT)' : 'the last 7 days';
 
   if (!rows) return <div className="card animate-pulse h-[260px] mb-6" />;
 
@@ -41,12 +52,15 @@ export default function Comebacks() {
 
   return (
     <div className="card mb-6">
-      <div className="flex items-center gap-2 mb-1">
-        <Repeat className="w-5 h-5 text-mango-red" />
-        <h2 className="text-lg font-semibold">Comebacks — {windowLabel || 'last week'}</h2>
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+        <div className="flex items-center gap-2">
+          <Repeat className="w-5 h-5 text-mango-red" />
+          <h2 className="text-lg font-semibold">Comebacks — {windowLabel}</h2>
+        </div>
+        <WindowToggle value={windowKind} onChange={setWindowKind} />
       </div>
       <p className="text-xs text-mango-muted mb-4">
-        Heuristic: authorized jobs where a tech logged ≥ 15 minutes but the customer was charged ≤ $20 (usually warranty re-dos).
+        Heuristic: authorized jobs over {windowCopy} where a tech logged ≥ 15 minutes but the customer was charged ≤ $20 (usually warranty re-dos), and all jobs categorized as re-inspect.
         Ranked by <b>revenue lost</b> (impact, not raw count). Revenue lost = comeback hours × that shop's billable revenue per
         tech hour (labor + parts ÷ total labor hours from authorized jobs).
       </p>

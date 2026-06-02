@@ -1,30 +1,43 @@
-// Google Business Profile OAuth helpers. Wraps the standard Google OAuth2
-// authorization-code-with-PKCE flow. Returns refresh + access tokens.
+// Google Business Profile OAuth helpers. Standard OAuth2 authorization-code
+// flow with refresh-token persistence in Upstash KV.
 //
-// SCOPES: we only need business.manage to read accounts/locations/reviews.
-// `access_type=offline` + `prompt=consent` is required to receive a refresh
-// token on every authorize (otherwise Google only sends it on first consent).
+// Single-connection model: ONE Google account owns all 8 Mango locations, so
+// we store one set of tokens (refresh + access + expiry) under a single KV
+// key and reuse them across every shop. If a future expansion lands us with
+// locations under different Google accounts, switch this to per-shop keys.
+//
+// SCOPES: business.manage covers everything we need (accounts, locations,
+// reviews). access_type=offline + prompt=consent guarantees a refresh_token
+// on every authorize (Google withholds it on subsequent consents otherwise).
 
-import { sql } from './db';
+import { readCache, writeCache } from './cache';
 
 const AUTH_BASE = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_BASE = 'https://oauth2.googleapis.com/token';
 export const SCOPES = ['https://www.googleapis.com/auth/business.manage', 'openid', 'email'];
 
+const TOKENS_KEY = 'gbp_oauth_primary_v1';
+// Discovered accounts + locations, refreshed on each /callback so /admin/gbp
+// can show what Google sees without making API calls on every page load.
+export const DISCOVERED_KEY = 'gbp_discovered_v1';
+
 function requireEnv(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`${name} not configured. See README.gbp.md for setup.`);
+  if (!v) throw new Error(`${name} not configured. Add it in Vercel → Settings → Environment Variables.`);
   return v;
 }
 
+/**
+ * Where Google redirects after consent. The value MUST match exactly what's
+ * registered in Google Cloud → Credentials → OAuth client → Authorized
+ * redirect URIs. We hardcode the stable alias because VERCEL_URL points at
+ * the per-deploy random URL, which would never match the registered one.
+ */
 export function getRedirectUri(): string {
-  // Prefer an explicit override (production), else infer from VERCEL_URL, else localhost.
   if (process.env.GBP_OAUTH_REDIRECT_URI) return process.env.GBP_OAUTH_REDIRECT_URI;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}/api/gbp/oauth/callback`;
-  return 'http://localhost:3000/api/gbp/oauth/callback';
+  return 'https://mango-matrix.vercel.app/api/gbp/oauth/callback';
 }
 
-/** Build the URL the admin clicks to begin OAuth. */
 export function buildAuthorizeUrl(state: string): string {
   const clientId = requireEnv('GBP_OAUTH_CLIENT_ID');
   const params = new URLSearchParams({
@@ -42,14 +55,13 @@ export function buildAuthorizeUrl(state: string): string {
 
 export interface TokenSet {
   access_token: string;
-  refresh_token?: string;     // present on first consent only; persist when received
-  expires_in: number;          // seconds
-  token_type: string;          // 'Bearer'
+  refresh_token?: string;
+  expires_in: number;
+  token_type: string;
   scope: string;
   id_token?: string;
 }
 
-/** Exchange authorization code for tokens. */
 export async function exchangeCodeForTokens(code: string): Promise<TokenSet> {
   const clientId = requireEnv('GBP_OAUTH_CLIENT_ID');
   const clientSecret = requireEnv('GBP_OAUTH_CLIENT_SECRET');
@@ -65,7 +77,6 @@ export async function exchangeCodeForTokens(code: string): Promise<TokenSet> {
   return r.json();
 }
 
-/** Use a stored refresh_token to get a fresh access_token. */
 export async function refreshAccessToken(refreshToken: string): Promise<TokenSet> {
   const clientId = requireEnv('GBP_OAUTH_CLIENT_ID');
   const clientSecret = requireEnv('GBP_OAUTH_CLIENT_SECRET');
@@ -78,8 +89,6 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenSet
   const r = await fetch(TOKEN_BASE, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
   if (!r.ok) {
     const txt = await r.text();
-    // 400 invalid_grant = refresh token revoked or user removed access.
-    // Caller should surface "needs re-connect" to admin.
     const e: any = new Error(`OAuth refresh failed: ${r.status} ${txt}`);
     e.code = r.status === 400 ? 'REFRESH_REVOKED' : 'REFRESH_FAILED';
     throw e;
@@ -87,20 +96,76 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenSet
   return r.json();
 }
 
+// ---- KV-backed token storage ----------------------------------------------
+
+export interface StoredTokens {
+  refresh_token: string;
+  access_token: string;
+  access_token_expires_at: string;   // ISO
+  email?: string;                    // who consented (from id_token)
+  connected_at: string;              // ISO of initial consent
+  updated_at: string;                // ISO of last write (e.g. access token refresh)
+}
+
+export async function readStoredTokens(): Promise<StoredTokens | null> {
+  return await readCache<StoredTokens>(TOKENS_KEY);
+}
+
+export async function writeStoredTokens(t: StoredTokens): Promise<void> {
+  await writeCache(TOKENS_KEY, { ...t, updated_at: new Date().toISOString() });
+}
+
+/** Decode an id_token payload (no signature check — we trust Google's response). */
+function decodeIdTokenEmail(idToken?: string): string | undefined {
+  if (!idToken) return undefined;
+  const parts = idToken.split('.');
+  if (parts.length !== 3) return undefined;
+  try {
+    const padded = parts[1].replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((parts[1].length + 3) % 4);
+    const json = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    return typeof json.email === 'string' ? json.email : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Fetch a valid access token for an account, refreshing if it's expiring within
- * 60 seconds. Updates the DB row with the new access token + expiry so other
- * concurrent callers don't all refresh.
+ * Persist a fresh authorize_code exchange result. Required to keep the
+ * refresh_token across access-token refreshes (Google returns refresh_token
+ * only on the initial exchange).
  */
-export async function getAccessTokenForAccount(accountId: string): Promise<string> {
-  const db = sql();
-  const rows = await db`SELECT refresh_token, access_token, access_token_expires_at FROM gbp_oauth_tokens WHERE account_id = ${accountId} LIMIT 1`;
-  if (rows.length === 0) throw new Error(`No OAuth tokens stored for account ${accountId}. Connect via /admin/gbp.`);
-  const row = rows[0] as any;
-  const expiresAt = new Date(row.access_token_expires_at).getTime();
-  if (expiresAt - Date.now() > 60_000) return row.access_token;
-  const t = await refreshAccessToken(row.refresh_token);
-  const newExpiry = new Date(Date.now() + t.expires_in * 1000);
-  await db`UPDATE gbp_oauth_tokens SET access_token = ${t.access_token}, access_token_expires_at = ${newExpiry}, updated_at = NOW() WHERE account_id = ${accountId}`;
-  return t.access_token;
+export async function persistFreshTokens(t: TokenSet): Promise<StoredTokens> {
+  if (!t.refresh_token) throw new Error('Google did not return a refresh_token. Re-authorize with prompt=consent.');
+  const now = new Date();
+  const stored: StoredTokens = {
+    refresh_token: t.refresh_token,
+    access_token: t.access_token,
+    access_token_expires_at: new Date(now.getTime() + t.expires_in * 1000).toISOString(),
+    email: decodeIdTokenEmail(t.id_token),
+    connected_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  };
+  await writeStoredTokens(stored);
+  return stored;
+}
+
+/**
+ * Return a non-expired access token, refreshing via the stored refresh_token
+ * if we're within 60s of expiry. Throws if no connection exists — caller
+ * should redirect the admin to /admin/gbp to (re)connect.
+ */
+export async function getAccessToken(): Promise<string> {
+  const stored = await readStoredTokens();
+  if (!stored) throw new Error('Google Business Profile not connected. Visit /admin/gbp.');
+  const expiresAt = new Date(stored.access_token_expires_at).getTime();
+  if (Number.isFinite(expiresAt) && expiresAt - Date.now() > 60_000) return stored.access_token;
+  const t = await refreshAccessToken(stored.refresh_token);
+  const updated: StoredTokens = {
+    ...stored,
+    access_token: t.access_token,
+    access_token_expires_at: new Date(Date.now() + t.expires_in * 1000).toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  await writeStoredTokens(updated);
+  return updated.access_token;
 }

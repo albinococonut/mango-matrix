@@ -9,7 +9,10 @@
 
 import type { RepairOrder, Appointment } from './tekmetric';
 import { SHOP_BY_TEKMETRIC_ID, isRampingShop } from './shops';
-import { addMonths, addHours, isAfter, isBefore } from 'date-fns';
+import { isAfter } from 'date-fns';
+// addDays + REBOOK_CALLBACK_DAYS are intentionally left removed; the FBR
+// matcher no longer constrains on appointment createdDate (see
+// findForwardBookedAppt below for rationale).
 
 // Heuristic fleet classifier per brief section 6.
 // Caller passes a customer record (we keep this lib pure so the caller threads it through).
@@ -66,20 +69,75 @@ export function isEligibleRO(
 }
 
 /**
- * "Re-Book at Checkout": does this customer have ANY future appointment on the calendar
- * (between RO posted date and 14 months out)? Per the new definition: an RO closing
- * today is "rebooked" if the customer has a future appointment scheduled for any time
- * after the RO closed. No tight ±24h-of-checkout window — we only check existence of
- * a future appointment.
+ * "Re-Booked": did the customer BOOK a future appointment either at checkout
+ * or within the post-checkout callback window? Match an appointment when:
+ *   - `createdDate` is AFTER the RO posted (not before — pre-existing
+ *     appointments don't count as "rebooks earned on this visit")
+ *   - `createdDate` is WITHIN 14 DAYS of the RO posting (real callback
+ *     window — customer left Tuesday, called Friday to schedule = counts;
+ *     called 3 weeks later = that's a fresh schedule, not a rebook)
+ *   - `startTime` is AFTER the RO closed (future visit, not historical)
+ *
+ * The previous ±1-day-of-RO rule was too strict — Montana and other shops
+ * legitimately rebook customers via phone callback 2-7 days after checkout
+ * and were getting 0%. The previous "any appointment within 14 months" rule
+ * was too loose: historical weeks accumulated months of future appts (→ ~28%)
+ * while the current week saw none (~10%), producing incomparable numbers.
+ *
+ * The 14-day callback cap preserves comparability: every RO sees at most a
+ * 14-day window for "earning" a rebook, regardless of when the week is
+ * viewed. Past weeks see their full 14-day window. The current week sees a
+ * partial window (0-7 days elapsed for each RO depending on day-of-week) —
+ * which is the same asymmetry that always exists between past and current
+ * weeks, much smaller than the months-of-accumulation problem the prior
+ * loose rule had.
  */
-export function hasForwardBookedAppt(ro: RepairOrder, apptsByCustomer: Map<number, Appointment[]>): boolean {
+// Previously: const REBOOK_CALLBACK_DAYS = 14;
+// Removed when the rule was loosened to "any future appointment counts."
+
+/**
+ * Return the matched forward-booked appointment for this RO (or null). If
+ * multiple appointments qualify, the SOONEST start time wins — that's the
+ * one the customer will actually show up for and the most representative of
+ * "when did they rebook for".
+ *
+ * RULE: any appointment whose `startTime` is AFTER the RO's `postedDate`
+ * counts. We do NOT constrain on `createdDate` — managers told us
+ * appointments booked at checkout commonly have `createdDate` slightly
+ * BEFORE the RO is posted (RO finalization is the last step), and those
+ * legitimate rebooks were being silently dropped. So as long as the
+ * customer has a future visit on the books, this RO is credited as
+ * forward-booked, regardless of WHEN the appointment was created.
+ *
+ * Side-effect of loosening this: a customer's pre-existing annual-
+ * maintenance appointment will credit every RO they have until that
+ * appointment's startTime. We accept this — it's better to over-credit
+ * than to silently zero-out shops that are actively rebooking.
+ *
+ * The previous rule (createdDate AFTER postedDate, within 14d) is kept
+ * in git history; the constant `REBOOK_CALLBACK_DAYS` is no longer used
+ * here but retained in case we want to add a soft-cap on appointment
+ * horizon later.
+ */
+export function findForwardBookedAppt(ro: RepairOrder, apptsByCustomer: Map<number, Appointment[]>): Appointment | null {
   const posted = new Date(ro.postedDate!);
   const list = apptsByCustomer.get(ro.customerId) || [];
+  let best: Appointment | null = null;
+  let bestStart = Infinity;
   for (const a of list) {
-    const ss = new Date(a.startTime);
-    if (isAfter(ss, posted) && isBefore(ss, addMonths(posted, 14))) return true;
+    if (!a.startTime) continue;
+    const start = new Date(a.startTime);
+    if (isAfter(start, posted)) {
+      const t = start.getTime();
+      if (t < bestStart) { best = a; bestStart = t; }
+    }
   }
-  return false;
+  return best;
+}
+
+/** Back-compat wrapper for callers that only need the boolean. */
+export function hasForwardBookedAppt(ro: RepairOrder, apptsByCustomer: Map<number, Appointment[]>): boolean {
+  return findForwardBookedAppt(ro, apptsByCustomer) !== null;
 }
 
 export interface ShopFbr {
@@ -88,8 +146,13 @@ export interface ShopFbr {
   eligibleROs: number;
   forwardBookedROs: number;
   fbrPct: number; // 0..1
+  // Mean months from RO close to the booked appointment's scheduled start,
+  // across all forward-booked ROs this window. Null when no rebooks.
+  avgMonthsToRebook: number | null;
   ramping: boolean;
 }
+
+const MS_PER_MONTH = 30.4375 * 24 * 60 * 60 * 1000;
 
 export function shopFbr(
   ros: RepairOrder[],
@@ -102,13 +165,30 @@ export function shopFbr(
   const meta = SHOP_BY_TEKMETRIC_ID[first.shopId];
   if (!meta) return null;
   const eligible = ros.filter(r => isEligibleRO(r, fleetByCustomer));
-  const booked = eligible.filter(r => hasForwardBookedAppt(r, apptsByCustomer));
+  // Collect the matched appointment per booked RO so we can both count it
+  // and measure how far in the future it was scheduled.
+  const matched: Array<{ ro: RepairOrder; appt: Appointment }> = [];
+  for (const ro of eligible) {
+    const a = findForwardBookedAppt(ro, apptsByCustomer);
+    if (a) matched.push({ ro, appt: a });
+  }
+  let avgMonthsToRebook: number | null = null;
+  if (matched.length > 0) {
+    let sum = 0;
+    for (const { ro, appt } of matched) {
+      const posted = new Date(ro.postedDate!).getTime();
+      const start = new Date(appt.startTime).getTime();
+      sum += Math.max(0, (start - posted) / MS_PER_MONTH);
+    }
+    avgMonthsToRebook = sum / matched.length;
+  }
   return {
     shopNum: meta.num,
     shopName: meta.name,
     eligibleROs: eligible.length,
-    forwardBookedROs: booked.length,
-    fbrPct: eligible.length ? booked.length / eligible.length : 0,
+    forwardBookedROs: matched.length,
+    fbrPct: eligible.length ? matched.length / eligible.length : 0,
+    avgMonthsToRebook,
     ramping: isRampingShop(meta, asOf),
   };
 }

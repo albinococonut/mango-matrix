@@ -204,6 +204,68 @@ export async function fetchAllAppointments(f: AppointmentFilter): Promise<Appoin
   return out;
 }
 
+// ---- Customer-by-phone search ----
+// Used by the To Do queue's missed-callbacks tab to decide whether a caller
+// is already a Tekmetric customer (so we can deep-link to their record) or a
+// first-time lead (no link). Tekmetric's `/customers?search=` field matches
+// across name + phone fields, so we re-verify the digit match against each
+// returned customer's phones before claiming a hit.
+
+export async function searchCustomersByPhone(shopId: number, phoneDigits: string): Promise<number | null> {
+  if (!phoneDigits || phoneDigits.length < 7) return null;
+  try {
+    const data = await authedFetch('/customers', { shop: shopId, search: phoneDigits, size: 5 }) as any;
+    const content: any[] = Array.isArray(data?.content) ? data.content : (Array.isArray(data) ? data : []);
+    if (!content.length) return null;
+    // Compare on the last 10 digits — US numbers may or may not carry a "1"
+    // country prefix in either source.
+    const target = phoneDigits.slice(-10);
+    for (const c of content) {
+      const phones = collectPhoneDigits(c);
+      if (phones.some(p => p.endsWith(target) || target.endsWith(p) || p.includes(target))) {
+        return c.id;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Walk a Tekmetric customer object and pull every digit string that looks
+// like a phone. Restricted to keys whose names suggest phone-ness so we
+// don't accidentally match account ids or vehicle numbers.
+function collectPhoneDigits(c: any): string[] {
+  const out = new Set<string>();
+  function walk(v: any, key?: string) {
+    if (v == null) return;
+    const keyLooksPhoney = !!key && /phone|tel|mobile|cell|number/i.test(key);
+    if (typeof v === 'string') {
+      if (keyLooksPhoney) {
+        const digits = v.replace(/\D/g, '');
+        if (digits.length >= 7) out.add(digits);
+      }
+      return;
+    }
+    if (typeof v === 'number') {
+      if (keyLooksPhoney) {
+        const s = String(v);
+        if (s.length >= 7) out.add(s);
+      }
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const item of v) walk(item, key);
+      return;
+    }
+    if (typeof v === 'object') {
+      for (const k of Object.keys(v)) walk(v[k], k);
+    }
+  }
+  walk(c);
+  return Array.from(out);
+}
+
 // ---- Helpers ----
 
 /** Cents -> dollars. Tekmetric returns money in integer cents. */

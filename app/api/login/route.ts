@@ -1,12 +1,13 @@
-// Login + logout, both POST to keep us under Hobby's 12-function cap.
-//   POST {password}              → validate, sign role cookie, set
-//   POST {logout: true}          → clear cookie
+// Logout endpoint (legacy path name — kept as /api/login because the
+// existing Sign Out buttons in EmployeeShell / ExecShell / ExecSidebar
+// all POST here with {logout: true}).
 //
-// Generic error on wrong password. Passwords compared server-side against env
-// vars only — never shipped to the client.
+// Shared-password sign-in has been retired in favor of Google OAuth
+// (/api/auth/google/start → /api/auth/google/callback). A password POST
+// here returns 410 Gone with a pointer to the Google flow.
 
 import { NextResponse } from 'next/server';
-import { COOKIE_NAME, roleForPassword, signRoleCookie } from '@/lib/auth';
+import { COOKIE_NAME } from '@/lib/auth';
 
 export const runtime = 'edge';
 
@@ -17,18 +18,8 @@ export async function POST(req: Request) {
     res.cookies.set(COOKIE_NAME, '', { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 0 });
     return res;
   }
-  const role = roleForPassword(String(body?.password || ''));
-  if (!role) {
-    return NextResponse.json({ ok: false, error: 'Incorrect password' }, { status: 401 });
-  }
-  const { value, maxAge } = await signRoleCookie(role);
-  const res = NextResponse.json({ ok: true, role });
-  res.cookies.set(COOKIE_NAME, value, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge,
-  });
-  return res;
+  return NextResponse.json(
+    { ok: false, error: 'Password sign-in has been retired. Use Sign in with Google at /login.' },
+    { status: 410 },
+  );
 }

@@ -1,0 +1,14 @@
+{
+  "generatedAt": "2026-05-20T00:13:02.952Z",
+  "methodology": "80th percentile of authorized job subtotal over last 24 months",
+  "caps": {
+    "001": 280,
+    "002": 320,
+    "003": 254,
+    "004": 412,
+    "005": 286,
+    "006": 195,
+    "007": 364,
+    "009": 186
+  }
+}

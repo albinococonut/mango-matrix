@@ -52,13 +52,17 @@ export async function handle(req: NextRequest) {
       shopBillable[key].laborSales += c2d(o.laborSales);
       shopBillable[key].partsSales += c2d(o.partsSales);
       for (const j of o.jobs) {
-        if (!j.authorized) continue;
         const hours = j.laborHours || 0;
-        shopBillable[key].laborHours += hours;
-        if (hours < COMEBACK_MIN_HOURS) continue;
+        // Billable-hours denominator counts every authorized job.
+        if (j.authorized) shopBillable[key].laborHours += hours;
+        // Any job categorized re-inspect / "REINS" is a comeback for sure,
+        // regardless of the charge/hours heuristic.
+        const isReinspect = /re-?inspect|reins/i.test(j.jobCategoryName || '');
         const customerCharge = c2d(j.subtotal || 0);
-        if (customerCharge > COMEBACK_MAX_CHARGE) continue;
-        // Comeback signature: tech earned hours but customer paid ≤ $20.
+        // Heuristic comeback: tech earned hours but customer paid ≤ $20.
+        const heuristicHit =
+          j.authorized && hours >= COMEBACK_MIN_HOURS && customerCharge <= COMEBACK_MAX_CHARGE;
+        if (!isReinspect && !heuristicHit) continue;
         byShop[key].comebackJobs++;
         byShop[key].comebackHours += hours;
         byShop[key].estLaborCost += hours * (LABOR_RATE_BY_SHOP[key] ?? 50);

@@ -1,14 +1,15 @@
 'use client';
 
-// Call Conversion (week-to-date). Styled to match the other leaderboard cards
+// Call Conversion (rolling 7 days). Styled to match the other leaderboard cards
 // on the page — row-per-shop with a colored bar fill, rank trophy, and a
 // Revenue Lost column per shop computed from the missed-call count × shop ARO.
 
 import { useEffect, useState } from 'react';
-import { Phone } from 'lucide-react';
+import { Phone, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react';
 import { SHOP_BY_NUM } from '@/lib/shops';
 import { usd } from '@/lib/format';
 import { TrophyIcon } from './Trophy';
+import { MissedCallbacksChainStrip, MissedCallbacksShopQueue } from './MissedCallbacks';
 
 interface Snap {
   windowStart: string;
@@ -34,25 +35,42 @@ function rateColor(rate: number): string {
   return '#C9412A';
 }
 
+type WindowKind = 'rolling' | 'this_week';
+
 export default function AppointmentBookedRate() {
   const [snap, setSnap] = useState<Snap | null>(null);
   const [aroByShop, setAroByShop] = useState<Record<string, number>>({});
+  const [windowKind, setWindowKind] = useState<WindowKind>('this_week');
+  // Which shop's "Missed Conversion Callbacks" queue is open? Null = all
+  // collapsed. Only one open at a time to keep the per-shop rows scannable.
+  const [expandedShop, setExpandedShop] = useState<string | null>(null);
 
-  async function load() {
-    const res = await fetch('/api/extras?view=booked-rate&strict=1', { cache: 'no-store' });
-    const j = await res.json();
-    setSnap(j);
-  }
   useEffect(() => {
-    load();
-    fetch('/api/metrics?range=this_week').then(r => r.json()).then(d => {
+    setSnap(null);
+    const callsUrl = windowKind === 'this_week'
+      ? '/api/extras?view=booked-rate&wtd=1'
+      : '/api/extras?view=booked-rate&strict=1';
+    const aroRange = windowKind === 'this_week' ? 'this_week' : 'last_7_days';
+
+    let cancelled = false;
+    fetch(callsUrl, { cache: 'no-store' })
+      .then(r => r.json()).then(j => { if (!cancelled) setSnap(j); }).catch(() => {});
+    fetch(`/api/metrics?range=${aroRange}`).then(r => r.json()).then(d => {
+      if (cancelled) return;
       const map: Record<string, number> = {};
       for (const s of (d?.kpi?.byShop || [])) map[s.shopNum] = s.aro;
       setAroByShop(map);
     }).catch(() => {});
-    const t = setInterval(load, 15 * 60 * 1000);
-    return () => clearInterval(t);
-  }, []);
+
+    // Auto-refresh only the trailing-7 view (call-data cron re-runs every 15
+    // min). WTD is derived from the same cron data — same cadence — but using
+    // the cron-written cache key. Just re-fetch on the same interval.
+    const t = setInterval(() => {
+      if (cancelled) return;
+      fetch(callsUrl, { cache: 'no-store' }).then(r => r.json()).then(setSnap).catch(() => {});
+    }, 15 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [windowKind]);
 
   if (!snap) return <div className="card animate-pulse h-[360px] mb-6" />;
 
@@ -62,22 +80,29 @@ export default function AppointmentBookedRate() {
 
   return (
     <div className="card mb-6">
-      <div className="flex items-center gap-2 mb-1">
-        <Phone className="w-5 h-5 text-mango-info" />
-        <h2 className="text-lg font-semibold">Call Conversion — week to date</h2>
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+        <div className="flex items-center gap-2">
+          <Phone className="w-5 h-5 text-mango-info" />
+          <h2 className="text-lg font-semibold">Call Conversion — {windowKind === 'this_week' ? 'This Week' : 'rolling 7 days'}</h2>
+        </div>
+        <WindowToggle value={windowKind} onChange={setWindowKind} />
       </div>
       <p className="text-xs text-mango-muted mb-4">
-        Window: {snap.windowStart} → {snap.windowEnd} (resets Monday). Every call run through Claude
+        Window: {snap.windowStart} → {snap.windowEnd}{windowKind === 'rolling' ? ' (resets Monday)' : ' (Mon → today)'}. Every call run through Claude
         (booking language + customer agreement). Auto-refreshes every 15 min.
         Revenue lost = unbooked calls × shop ARO this week.
       </p>
 
       <div className="grid grid-cols-4 gap-3 mb-4">
-        <div className="bg-mango-bg/50 rounded-lg p-3"><div className="text-xs text-mango-muted">Chain conversion</div><div className="text-2xl font-bold mt-0.5">{snap.chain.bookedRatePct.toFixed(1)}%</div></div>
+        <div className="bg-mango-bg/50 rounded-lg p-3"><div className="text-xs text-mango-muted">Company conversion</div><div className="text-2xl font-bold mt-0.5">{snap.chain.bookedRatePct.toFixed(1)}%</div></div>
         <div className="bg-mango-bg/50 rounded-lg p-3"><div className="text-xs text-mango-muted">Eligible calls WTD</div><div className="text-2xl font-bold mt-0.5">{snap.chain.eligible}</div></div>
         <div className="bg-mango-bg/50 rounded-lg p-3"><div className="text-xs text-mango-muted">Calls converted</div><div className="text-2xl font-bold mt-0.5">{snap.chain.booked}</div></div>
         <div className="bg-mango-red/10 rounded-lg p-3"><div className="text-xs text-mango-muted">Revenue lost (est.)</div><div className="text-2xl font-bold mt-0.5 text-mango-red">{chainRevLost ? usd(chainRevLost) : '—'}</div></div>
       </div>
+
+      {/* Missed Conversion Callbacks — chain-wide top metric strip. Renders
+          nothing when there's nothing salvageable to surface. */}
+      <MissedCallbacksChainStrip />
 
       <div>
         {sorted.map((r, i) => {
@@ -87,18 +112,36 @@ export default function AppointmentBookedRate() {
           const aro = aroByShop[r.shopNum] || 0;
           const missed = Math.max(0, r.eligible - r.booked);
           const revLost = missed * aro;
+          const isExpanded = expandedShop === r.shopNum;
           return (
-            <div key={r.shopNum} className="flex items-center gap-3 py-2 border-b border-mango-line/60 last:border-0">
-              <div className="w-5 text-mango-muted font-semibold text-sm text-right">{i + 1}</div>
-              {i < 3 ? <TrophyIcon rank={(i + 1) as 1 | 2 | 3} size={16} /> : <div className="w-4" />}
-              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: meta?.color }} />
-              <div className="font-medium text-sm w-28 shrink-0">{r.shopName}</div>
-              <div className="flex-1 h-2.5 bg-mango-line/40 rounded-full overflow-hidden" title={`${r.booked}/${r.eligible} calls converted`}>
-                <div className="h-full rounded-full" style={{ width: fill, background: bg }} />
+            <div key={r.shopNum} className="border-b border-mango-line/60 last:border-0">
+              <div className="flex items-center gap-3 py-2">
+                <div className="w-5 text-mango-muted font-semibold text-sm text-right">{i + 1}</div>
+                {i < 3 ? <TrophyIcon rank={(i + 1) as 1 | 2 | 3} size={16} /> : <div className="w-4" />}
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: meta?.color }} />
+                <div className="font-medium text-sm w-28 shrink-0">{r.shopName}</div>
+                <div className="flex-1 h-2.5 bg-mango-line/40 rounded-full overflow-hidden" title={`${r.booked}/${r.eligible} calls converted`}>
+                  <div className="h-full rounded-full" style={{ width: fill, background: bg }} />
+                </div>
+                <div className="text-sm font-bold tabular-nums w-16 text-right px-2 py-0.5 rounded" style={{ background: bg, color: bg === '#5BAA59' || bg === '#C9412A' ? '#FFF' : '#0F1419' }}>{r.bookedRatePct.toFixed(1)}%</div>
+                <div className="text-xs text-mango-muted tabular-nums w-16 text-right" title="Converted / Eligible">{r.booked}/{r.eligible}</div>
+                {/* Rev lost: dash whenever there's nothing to display (no
+                    missed calls AND/OR ARO unknown). The previous condition
+                    rendered "$0" for any shop that had ARO but zero missed
+                    calls, while shops without ARO got the dash — inconsistent
+                    treatment when both states mean "nothing was lost." */}
+                <div className="text-sm font-bold tabular-nums w-24 text-right text-mango-red" title={`${missed} missed × ARO ${usd(aro)}`}>{missed > 0 && aro > 0 ? usd(revLost) : '—'}</div>
+                <button
+                  onClick={() => setExpandedShop(isExpanded ? null : r.shopNum)}
+                  className="inline-flex items-center gap-1 text-[11px] text-mango-muted hover:text-mango-orange shrink-0"
+                  title="Show callable missed-conversion calls"
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Callbacks
+                  {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
               </div>
-              <div className="text-sm font-bold tabular-nums w-16 text-right px-2 py-0.5 rounded" style={{ background: bg, color: bg === '#5BAA59' || bg === '#C9412A' ? '#FFF' : '#0F1419' }}>{r.bookedRatePct.toFixed(1)}%</div>
-              <div className="text-xs text-mango-muted tabular-nums w-16 text-right" title="Converted / Eligible">{r.booked}/{r.eligible}</div>
-              <div className="text-sm font-bold tabular-nums w-24 text-right text-mango-red" title={`${missed} missed × ARO ${usd(aro)}`}>{aro ? usd(revLost) : '—'}</div>
+              {isExpanded && <MissedCallbacksShopQueue shopNum={r.shopNum} />}
             </div>
           );
         })}
@@ -107,6 +150,24 @@ export default function AppointmentBookedRate() {
       <p className="text-[11px] text-mango-muted mt-3">
         Calls excluded from denominator: spam, wrong number, dropped/audio issues, or transcript &lt;30 chars.
       </p>
+    </div>
+  );
+}
+
+// Small shared two-button toggle used at the top of each rolling-7 vs this-week
+// component (Call Conversion, Re-Book, Tech Production). Exported so the other
+// components can reuse the exact same visual.
+export function WindowToggle({
+  value, onChange,
+}: { value: WindowKind; onChange: (v: WindowKind) => void }) {
+  const btn = (active: boolean) =>
+    `text-[11.5px] font-medium px-3 py-1 rounded-full transition ${
+      active ? 'bg-mango-ink text-white' : 'text-mango-muted hover:text-mango-ink'
+    }`;
+  return (
+    <div className="inline-flex items-center gap-1 bg-mango-bg rounded-full p-0.5">
+      <button type="button" onClick={() => onChange('rolling')} className={btn(value === 'rolling')}>Rolling 7d</button>
+      <button type="button" onClick={() => onChange('this_week')} className={btn(value === 'this_week')}>This Week</button>
     </div>
   );
 }

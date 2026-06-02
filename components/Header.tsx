@@ -39,52 +39,36 @@ export default function Header({
   customEnd?: string;
   setCustomEnd?: (v: string) => void;
 }) {
+  const ctl =
+    'appearance-none bg-white/80 border border-mango-line rounded-full text-[13px] font-medium ' +
+    'text-mango-ink focus:outline-none focus:ring-2 focus:ring-mango-info/25 focus:border-mango-info/40 ' +
+    'cursor-pointer transition hover:border-mango-faint';
   return (
-    <header className="flex items-center justify-end mb-6 flex-wrap gap-3">
-      <div className="flex items-center gap-3 flex-wrap">
+    <header className="sticky top-3 z-30 mb-7 flex justify-end">
+      <div className="glass-bar inline-flex items-center gap-2 flex-wrap rounded-full px-2 py-1.5 shadow-soft">
         <div className="relative">
-          <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
-          <select
-            value={range}
-            onChange={(e) => setRange(e.target.value as RangeKey)}
-            className="appearance-none pl-9 pr-9 py-2 bg-white border border-mango-line rounded-lg text-sm font-medium focus:outline-none focus:border-mango-orange cursor-pointer"
-          >
-            {RANGES.map((r) => (
-              <option key={r.value} value={r.value}>{r.label}</option>
-            ))}
+          <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[15px] h-[15px] text-mango-faint pointer-events-none" />
+          <select value={range} onChange={(e) => setRange(e.target.value as RangeKey)} className={`${ctl} pl-9 pr-8 py-2.5 min-h-[44px]`}>
+            {RANGES.map((r) => (<option key={r.value} value={r.value}>{r.label}</option>))}
           </select>
-          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-mango-faint pointer-events-none" />
         </div>
         {range === 'custom' && setCustomStart && setCustomEnd && (
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={customStart || ''}
-              onChange={(e) => setCustomStart(e.target.value)}
-              className="px-2 py-2 bg-white border border-mango-line rounded-lg text-sm focus:outline-none focus:border-mango-orange"
-            />
-            <span className="text-mango-muted text-sm">→</span>
-            <input
-              type="date"
-              value={customEnd || ''}
-              onChange={(e) => setCustomEnd(e.target.value)}
-              className="px-2 py-2 bg-white border border-mango-line rounded-lg text-sm focus:outline-none focus:border-mango-orange"
-            />
+          <div className="flex items-center gap-1.5">
+            <input type="date" value={customStart || ''} onChange={(e) => setCustomStart(e.target.value)}
+              className={`${ctl} px-3 py-2.5 min-h-[44px]`} />
+            <span className="text-mango-faint text-sm">→</span>
+            <input type="date" value={customEnd || ''} onChange={(e) => setCustomEnd(e.target.value)}
+              className={`${ctl} px-3 py-2.5 min-h-[44px]`} />
           </div>
         )}
         <div className="relative">
-          <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
-          <select
-            value={shop}
-            onChange={(e) => setShop(e.target.value as ShopNum | 'all')}
-            className="appearance-none pl-9 pr-9 py-2 bg-white border border-mango-line rounded-lg text-sm font-medium focus:outline-none focus:border-mango-orange cursor-pointer"
-          >
+          <Store className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[15px] h-[15px] text-mango-faint pointer-events-none" />
+          <select value={shop} onChange={(e) => setShop(e.target.value as ShopNum | 'all')} className={`${ctl} pl-9 pr-8 py-2.5 min-h-[44px]`}>
             <option value="all">All Shops</option>
-            {SHOPS.map((s) => (
-              <option key={s.num} value={s.num}>{s.name}</option>
-            ))}
+            {SHOPS.map((s) => (<option key={s.num} value={s.num}>{s.name}</option>))}
           </select>
-          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-mango-faint pointer-events-none" />
         </div>
       </div>
     </header>
