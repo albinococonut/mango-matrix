@@ -12,7 +12,9 @@ jobs:
           SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          BASE="${SYNC_CRON_URL/run-syncs/webhooks\/restore-recovered}"
+          # SYNC_CRON_URL = https://hostname/api/cron/run-syncs
+          # We want      = https://hostname/api/webhooks/restore-recovered
+          BASE="${SYNC_CRON_URL/\/api\/cron\/run-syncs/\/api\/webhooks\/restore-recovered}"
           echo "Calling $BASE"
           OUT=$(curl -sS --max-time 120 -X POST "$BASE" \
             -H "Authorization: Bearer $CRON_SECRET" \
