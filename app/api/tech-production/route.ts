@@ -57,6 +57,6 @@ export async function GET(req: NextRequest) {
       const stale = await readCache<any>(respKey);
       if (stale) return NextResponse.json({ ...stale, stale: true });
     }
-    return NextResponse.json({ error: e?.message || 'tech production failed' }, { status: 500 });
+    return NextResponse.json({ error: 'tech production unavailable' }, { status: 500 });
   }
 }

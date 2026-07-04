@@ -55,16 +55,22 @@ const reqMemo = new Map<string, { at: number; env: Envelope<unknown> | null }>()
 const MEMO_MS = 2000; // collapse readCache+isFresh of the same key in one request
 
 async function redisCmd(args: (string | number)[]): Promise<any> {
-  const r = await fetch(REDIS_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(args),
-    // Never let Next cache this fetch.
-    cache: 'no-store',
-  });
-  if (!r.ok) throw new Error(`redis ${args[0]} ${r.status}`);
-  const j = await r.json();
-  return j.result;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const r = await fetch(REDIS_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+      cache: 'no-store',
+      signal: ctrl.signal,
+    });
+    if (!r.ok) throw new Error(`redis ${args[0]} ${r.status}`);
+    const j = await r.json();
+    return j.result;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function getEnvelope<T>(key: string): Promise<Envelope<T> | null> {

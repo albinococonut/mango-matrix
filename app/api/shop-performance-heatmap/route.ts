@@ -33,21 +33,38 @@ function loadExtras(): Map<string, WeekExtra> {
 }
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 120;
 const RESULT_FRESH_MS = 4 * 60 * 60 * 1000;
+// Serve stale-while-revalidate up to this age; after that, recompute inline
+// rather than returning data that may be days old due to repeated refresh failures.
+const MAX_STALE_MS = 48 * 60 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
   if ((await getRole(req)) !== 'executive') {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
   const weeks = Math.max(1, Math.min(26, Number(req.nextUrl.searchParams.get('weeks') || 12)));
-  // v4: comeback $ now uses (laborSales+partsSales)/hr to match the Comebacks
-  // section exactly. Bump so stale cells recompute.
-  const cacheKey = `heatmap_v4_${weeks}w`;
-  // Stale-while-revalidate: if any cache exists, return it instantly.
+  // v6: week-end fixed to include full Sunday (was start-of-Sunday, now start-of-next-Monday).
+  const cacheKey = `heatmap_v6_${weeks}w`;
   const cached = await readCache(cacheKey);
   if (cached) {
-    if (!(await isFresh(cacheKey, RESULT_FRESH_MS))) {
-      compute(weeks, cacheKey).catch(e => console.error('[heatmap] background refresh failed:', e));
+    const fresh = await isFresh(cacheKey, RESULT_FRESH_MS);
+    if (!fresh) {
+      const withinStaleCeiling = await isFresh(cacheKey, MAX_STALE_MS);
+      if (withinStaleCeiling) {
+        // Stale but not too old: return cached immediately and refresh in background.
+        compute(weeks, cacheKey).catch(e => console.error('[heatmap] background refresh failed:', e));
+      } else {
+        // Data is older than 48 h — refresh synchronously so users don't see
+        // severely stale data due to repeated background failures.
+        try {
+          const data = await compute(weeks, cacheKey);
+          return NextResponse.json(await applyLiveCurrentWeek(data));
+        } catch (e) {
+          console.error('[shop-performance-heatmap] forced recompute failed, serving stale:', e);
+          // Fall through: serve stale cache rather than a hard error.
+        }
+      }
     }
     // Always patch the CURRENT week's Re-Book/Conversion with the live WTD
     // caches before returning, even on a cache hit. The grid is cached 4h, but
@@ -58,9 +75,9 @@ export async function GET(req: NextRequest) {
   try {
     const data = await compute(weeks, cacheKey);
     return NextResponse.json(await applyLiveCurrentWeek(data));
-  } catch (e: any) {
+  } catch (e) {
     console.error('[shop-performance-heatmap] failed:', e);
-    return NextResponse.json({ error: e?.message || 'heatmap failed' }, { status: 500 });
+    return NextResponse.json({ error: 'heatmap unavailable' }, { status: 500 });
   }
 }
 
@@ -100,7 +117,14 @@ async function applyLiveCurrentWeek(payload: any) {
 // fix for "why recompute 12 weeks every 4 hours": closed weeks are now
 // immutable, and on the Sun→Mon rollover the just-closed week gets computed
 // once and frozen while a new current week begins.
-const HM_WEEK_KEY = (wkLabel: string) => `hm_week_v2_${wkLabel}`;
+//
+// EXCEPTION: the just-closed week (i === 1 in the loop) is never permanently
+// cached. Shops batch-post their end-of-week ROs on Monday morning, so the
+// first recompute (Monday midnight) captures only Mon-Fri data. By skipping
+// the permanent cache for i===1, the heatmap re-queries Tekmetric on every
+// 4-hour cycle until the week becomes 2+ weeks old (i >= 2), at which point
+// all ROs are definitively posted and permanent caching is safe.
+const HM_WEEK_KEY = (wkLabel: string) => `hm_week_v5_${wkLabel}`;
 
 // RO-derived per-shop cells for one week (revenue, GP, cars, comebacks $,
 // billed hours). Re-Book/Conversion/Rating are layered on separately at
@@ -175,20 +199,26 @@ async function compute(weeks: number, cacheKey: string) {
 
   for (let i = weeks - 1; i >= 0; i--) {
     const ws = addDays(thisWeekStart, -7 * i);
-    const we = addDays(ws, 6);
+    const we = addDays(ws, 7); // start of next Monday = end of Sunday inclusive, matches resolveRange()
     const wkLabel = ws.toISOString().slice(0, 10);
     weekStarts.push(wkLabel);
     const isCurrentWeek = wkLabel === currentWeekLabel;
 
-    // CLOSED week → permanent cache (compute once, reuse forever).
-    // CURRENT week → always recompute fresh.
+    // CLOSED week (i >= 2) → permanent cache: stable data, computed once.
+    // JUST-CLOSED week (i === 1) → never permanently cached; recomputes every
+    //   4-hour heatmap cycle. Shops post Saturday ROs on Monday morning, so
+    //   caching at midnight Monday captures incomplete data. Fresh recomputes
+    //   pick up late-posted ROs. The following week (when i becomes 2) all ROs
+    //   are definitely posted and the permanent cache is written correctly.
+    // CURRENT week (i === 0) → always recompute fresh.
+    const isJustClosed = i === 1;
     let roCells: Record<string, any> | null = null;
-    if (!isCurrentWeek) roCells = await readCache<Record<string, any>>(HM_WEEK_KEY(wkLabel));
+    if (!isCurrentWeek && !isJustClosed) roCells = await readCache<Record<string, any>>(HM_WEEK_KEY(wkLabel));
     if (!roCells) {
       const wsISO = fromZonedTime(ws, TEKMETRIC_REPORT_TZ).toISOString();
       const weISO = fromZonedTime(we, TEKMETRIC_REPORT_TZ).toISOString();
       roCells = await weekRoCells(wsISO, weISO);
-      if (!isCurrentWeek) await writeCache(HM_WEEK_KEY(wkLabel), roCells); // permanent, no TTL
+      if (!isCurrentWeek && !isJustClosed) await writeCache(HM_WEEK_KEY(wkLabel), roCells); // permanent
     }
 
     const ex = extras.get(wkLabel);

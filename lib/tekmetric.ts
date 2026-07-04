@@ -16,15 +16,23 @@ async function getAccessToken(): Promise<string> {
     throw new Error('TEKMETRIC_CLIENT_ID / TEKMETRIC_CLIENT_SECRET not configured');
   }
   const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${basic}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials',
-    cache: 'no-store',
-  });
+  const tokenCtrl = new AbortController();
+  const tokenTimer = setTimeout(() => tokenCtrl.abort(), 10000);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/oauth/token`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${basic}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+      cache: 'no-store',
+      signal: tokenCtrl.signal,
+    });
+  } finally {
+    clearTimeout(tokenTimer);
+  }
   if (!res.ok) throw new Error(`Tekmetric token error ${res.status}: ${await res.text()}`);
   const json = (await res.json()) as { access_token: string };
   // Tokens typically last 24h but doc isn't explicit; refresh after 12h to be safe.
@@ -43,10 +51,18 @@ async function authedFetch(path: string, params?: Record<string, string | number
   // Tekmetric throttles aggressive callers with 429. Back off exponentially and retry.
   const maxAttempts = 5;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      cache: 'no-store',
-    });
+    const fetchCtrl = new AbortController();
+    const fetchTimer = setTimeout(() => fetchCtrl.abort(), 15000);
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        cache: 'no-store',
+        signal: fetchCtrl.signal,
+      });
+    } finally {
+      clearTimeout(fetchTimer);
+    }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
       const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(8000, 500 * 2 ** attempt);
@@ -100,12 +116,17 @@ export interface Job {
   name: string;
   authorized: boolean;
   authorizedDate: string | null;
+  selected: boolean;
+  technicianId: number | null;
+  note: string | null;
+  cannedJobId: number | null;
   jobCategoryName: string;
   partsTotal: number;
   laborTotal: number;
   discountTotal: number;
   feeTotal: number;
   subtotal: number;
+  archived: boolean;
   laborHours: number;
   parts: Part[];
   labor: { rate: number; hours: number; technicianId: number | null; complete: boolean }[];
@@ -151,6 +172,27 @@ export interface ROFilter {
   size?: number;
 }
 
+// Fetch ROs that were CREATED in the given range regardless of posted status.
+// This captures open/work-in-progress tickets that have no postedDate yet.
+export async function fetchROsByCreatedDate(shopId: number, createdStart: string, createdEnd: string): Promise<RepairOrder[]> {
+  const out: RepairOrder[] = [];
+  let page = 0;
+  while (true) {
+    const data = (await authedFetch('/repair-orders', {
+      shop: shopId,
+      createdDateStart: createdStart,
+      createdDateEnd: createdEnd,
+      page,
+      size: 200,
+    })) as { content: RepairOrder[]; last: boolean };
+    out.push(...data.content.map((ro) => ro.shopId ? ro : { ...ro, shopId }));
+    if (data.last) break;
+    page++;
+    if (page > 500) break;
+  }
+  return out;
+}
+
 export async function fetchAllRepairOrders(f: ROFilter): Promise<RepairOrder[]> {
   const out: RepairOrder[] = [];
   let page = 0;
@@ -162,7 +204,12 @@ export async function fetchAllRepairOrders(f: ROFilter): Promise<RepairOrder[]> 
       page,
       size: f.size ?? 200,
     })) as { content: RepairOrder[]; last: boolean; totalPages: number };
-    out.push(...data.content);
+    // Stamp shopId onto every RO so callers can filter by shop after
+    // concatenating results from multiple shops (e.g. rosForChain). The
+    // Tekmetric API endpoint is scoped to one shop via ?shop=<id> so the
+    // field may not be present in the response body — stamping it here
+    // guarantees r.shopId is always the correct numeric Tekmetric shop ID.
+    out.push(...data.content.map((ro) => ro.shopId ? ro : { ...ro, shopId: f.shopId }));
     if (data.last) break;
     page++;
     if (page > 500) break; // safety

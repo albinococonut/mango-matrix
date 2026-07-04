@@ -69,6 +69,7 @@ export async function GET(req: NextRequest) {
       const stale = await readCache<any>(respKey);
       if (stale) return NextResponse.json({ ...stale, stale: true });
     }
-    return NextResponse.json({ error: e?.message || 'metrics fetch failed' }, { status: 500 });
+    console.error('[metrics] failed:', e);
+    return NextResponse.json({ error: 'metrics unavailable' }, { status: 500 });
   }
 }

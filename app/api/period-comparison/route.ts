@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { rosForChain } from '@/lib/dataAccess';
+import { rosForChain, rosForShopNum } from '@/lib/dataAccess';
+import { SHOP_BY_NUM, ShopNum } from '@/lib/shops';
 import { chainKpi, isCountedRO } from '@/lib/metrics';
 import { c2d } from '@/lib/tekmetric';
 import { ComparisonMode, customRange, resolveComparisonRange, resolveRange, RangeKey, CHAIN_TZ } from '@/lib/dates';
@@ -7,6 +8,7 @@ import { getRole } from '@/lib/serverAuth';
 import { readCache, writeCache, isFresh } from '@/lib/cache';
 import { metricSnapshotMap } from '@/lib/metricSnapshots';
 import { SHOPS } from '@/lib/shops';
+// (SHOPS imported above for the per-shop WTD FBR warm-patch; SHOP_BY_NUM/ShopNum added for shop filter)
 import type { RepairOrder } from '@/lib/tekmetric';
 import { startOfWeek } from 'date-fns';
 
@@ -193,12 +195,22 @@ export async function GET(req: NextRequest) {
   const rawGran = req.nextUrl.searchParams.get('granularity');
   const granularity: Granularity = rawGran === 'daily' || rawGran === 'monthly' ? rawGran : 'weekly';
 
+  // Shop filter: 'all' (default) or a specific shopNum like '001'.
+  // When a single shop is selected, only that shop's ROs are included so
+  // every metric (revenue, GP, cars, etc.) reflects that shop alone.
+  // Conversion / Re-Book are still suppressed for single-shop since the
+  // snapshot store only holds chain averages.
+  const rawShop = req.nextUrl.searchParams.get('shop') || 'all';
+  const shopFilter: ShopNum | 'all' = rawShop !== 'all' && SHOP_BY_NUM[rawShop as ShopNum] ? rawShop as ShopNum : 'all';
+
   const currWindow = range === 'custom' && start && end ? customRange(start, end) : resolveRange(range);
   const prevWindow = resolveComparisonRange(currWindow, compMode, compStart || undefined, compEnd || undefined);
 
-  // v3: granularity-aware buckets. Cache key includes granularity so the
-  // three views are independent.
-  const respKey = `pc_v3_${granularity}_${range}_${compMode}_${start || ''}_${end || ''}_${compStart || ''}_${compEnd || ''}`;
+  // Cache key: bumped to pc_v4 (2026-06-03) after the Yuma fleet-only fix.
+  // Old pc_v2/pc_v3 entries included Yuma fleet shop 18346 in chain metrics —
+  // v4 forces a clean recompute so stale fleet-inclusive data is never served.
+  const cachePrefix = 'pc_v4';
+  const respKey = `${cachePrefix}_${granularity}_${shopFilter}_${range}_${compMode}_${start || ''}_${end || ''}_${compStart || ''}_${compEnd || ''}`;
   if (await isFresh(respKey, PC_FRESH_MS)) {
     const cached = await readCache<any>(respKey);
     // Patch the current week's chain Re-Book/Conversion live even on a cache
@@ -208,10 +220,44 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [curr, prev] = await Promise.all([
-      rosForChain({ startISO: currWindow.startISO, endISO: currWindow.endISO }),
-      rosForChain({ startISO: prevWindow.startISO, endISO: prevWindow.endISO }),
+    // Fetch ROs. For a single-shop request we use rosForShopNum directly —
+    // it's exact, uses the per-shop RO cache, and avoids any shopId-injection
+    // ambiguity from the chain fetch. For all-shops we fetch chain-wide and
+    // also fan out per-shop payloads in the background so switching shops is
+    // instant on the next request.
+    // Build a set of shopIds that were open during a given window start date.
+    // This prevents pre-opening data (e.g. prior-business data in a Tekmetric
+    // shop ID before Mango took over) from polluting YoY comparison periods.
+    const shopOpenMs = (shopNum: ShopNum) => {
+      const s = SHOP_BY_NUM[shopNum];
+      return s?.openedAt ? new Date(s.openedAt).getTime() : 0;
+    };
+    const filterByOpenDate = (ros: RepairOrder[], windowStartISO: string) => {
+      const wsMs = new Date(windowStartISO).getTime();
+      // Build set of tekmetric IDs that were open by this window start
+      const openIds = new Set(SHOPS.filter(s => !s.openedAt || new Date(s.openedAt).getTime() <= wsMs).flatMap(s => s.tekmetricIdSecondary ? [s.tekmetricId, s.tekmetricIdSecondary] : [s.tekmetricId]));
+      return ros.filter(r => openIds.has(r.shopId));
+    };
+
+    const [currRaw, prevRaw] = await Promise.all([
+      shopFilter === 'all'
+        ? rosForChain({ startISO: currWindow.startISO, endISO: currWindow.endISO })
+        : rosForShopNum(shopFilter, { startISO: currWindow.startISO, endISO: currWindow.endISO }),
+      shopFilter === 'all'
+        ? rosForChain({ startISO: prevWindow.startISO, endISO: prevWindow.endISO })
+        : (() => {
+            // For single shop, check if shop was open during comparison period
+            const shop = SHOP_BY_NUM[shopFilter];
+            const shopOpen = shop?.openedAt ? new Date(shop.openedAt).getTime() : 0;
+            if (shopOpen > new Date(prevWindow.startISO).getTime()) {
+              return Promise.resolve([] as RepairOrder[]); // shop didn't exist yet
+            }
+            return rosForShopNum(shopFilter, { startISO: prevWindow.startISO, endISO: prevWindow.endISO });
+          })(),
     ]);
+    // Filter out pre-opening data from chain fetches
+    const curr = shopFilter === 'all' ? filterByOpenDate(currRaw, currWindow.startISO) : currRaw;
+    const prev = shopFilter === 'all' ? filterByOpenDate(prevRaw, prevWindow.startISO) : prevRaw;
 
     // Merge live weekly snapshots (preferred) with the frozen backfill
     // (fallback) into one weekStart -> {conversion, rebook} chain-average map.
@@ -247,18 +293,47 @@ export async function GET(req: NextRequest) {
       rebook: liveRebook ?? existing.rebook,
     });
 
+    // Conversion / Re-Book snapshots are chain averages — meaningless for a
+    // single-shop filter. Pass an empty map so those columns show null.
+    const emptyMap = new Map<string, { conversion: number | null; rebook: number | null }>();
+
+    // Build the payload from the ROs we just fetched (chain or single-shop).
+    const crMap = shopFilter === 'all' ? convRebookByWeek : emptyMap;
     const payload = {
-      current: buildPeriod(curr, currWindow.label, convRebookByWeek, granularity),
-      comparison: buildPeriod(prev, prevWindow.label, convRebookByWeek, granularity),
+      current: buildPeriod(curr, currWindow.label, crMap, granularity),
+      comparison: buildPeriod(prev, prevWindow.label, crMap, granularity),
       granularity,
+      shop: shopFilter,
     };
+
+    // Cache the result under respKey so subsequent requests are instant.
     await writeCache(respKey, payload);
+
+    // ── All-shops fan-out — pre-warm per-shop caches in the background ────
+    // When shopFilter === 'all', curr + prev contain all shops' ROs. Fan out
+    // per-shop payloads now so switching to a single shop is instant next time.
+    // shopId is guaranteed on every RO via the stamp in fetchAllRepairOrders.
+    if (shopFilter === 'all') {
+      Promise.all(SHOPS.map(async (s) => {
+        const shopKey = `pc_v4_${granularity}_${s.num}_${range}_${compMode}_${start || ''}_${end || ''}_${compStart || ''}_${compEnd || ''}`;
+        if (await isFresh(shopKey, PC_FRESH_MS)) return;
+        const shopIds = new Set([s.tekmetricId, ...(s.tekmetricIdSecondary ? [s.tekmetricIdSecondary] : [])]);
+        const shopCurr = curr.filter((r) => shopIds.has(r.shopId));
+        const shopPrev = prev.filter((r) => shopIds.has(r.shopId));
+        await writeCache(shopKey, {
+          current: buildPeriod(shopCurr, currWindow.label, emptyMap, granularity),
+          comparison: buildPeriod(shopPrev, prevWindow.label, emptyMap, granularity),
+          granularity, shop: s.num,
+        });
+      })).catch(() => {});
+    }
+
     return NextResponse.json(await patchCurrentWeekLive(payload));
   } catch (e: any) {
     console.error('[period-comparison] failed:', e);
     const stale = await readCache<any>(respKey);
     if (stale) return NextResponse.json({ ...(await patchCurrentWeekLive(stale)), stale: true });
-    return NextResponse.json({ error: e?.message || 'period comparison failed' }, { status: 500 });
+    return NextResponse.json({ error: 'period comparison unavailable' }, { status: 500 });
   }
 }
 
