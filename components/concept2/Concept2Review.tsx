@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { customRange } from '@/lib/dates';
-import { loadGoals, revenueGoalForRange, prorateRevenueGoal, isWorkingDay } from '@/lib/goals';
+import { loadGoals, revenueGoalForRange, prorateRevenueGoal, isWorkingDay, workingDaysBetween } from '@/lib/goals';
 import { SHOPS, SHOP_BY_NUM, ShopNum } from '@/lib/shops';
 import type { ChainKpi, ShopKpi } from '@/lib/metrics';
 import { startOfWeek, endOfWeek, addDays } from 'date-fns';
@@ -34,6 +34,19 @@ const SEV_LABEL: Record<Sev, string> = { ok: 'Healthy', watch: 'Watch', problem:
 const sevTone = (s: Sev): 'good' | 'warn' | 'bad' => (s === 'ok' ? 'good' : s === 'watch' ? 'warn' : 'bad');
 const sevColor = (s: Sev) => (s === 'ok' ? GOOD : s === 'watch' ? WARN : s === 'critical' ? '#A33523' : BAD);
 const sevFill = (s: Sev) => { const c = sevColor(s); return `linear-gradient(90deg, ${c}55, ${c}aa)`; };
+
+// Returns a human-readable holiday name for a non-working weekday (null if unknown).
+function holidayName(d: Date): string | null {
+  const m = d.getMonth(), day = d.getDate(), dow = d.getDay();
+  if (m === 0 && (day === 1 || (day === 2 && dow === 1) || (day === 31 && dow === 5))) return "New Year's Day";
+  if (m === 4 && dow === 1 && day >= 25) return 'Memorial Day';
+  if (m === 6 && day >= 3 && day <= 5) return 'Independence Day';
+  if (m === 8 && dow === 1 && day <= 7) return 'Labor Day';
+  if (m === 10 && dow === 4 && day >= 22 && day <= 28) return 'Thanksgiving';
+  if (m === 10 && dow === 5 && day >= 23 && day <= 29) return 'Day after Thanksgiving';
+  if (m === 11 && day >= 23 && day <= 26) return 'Christmas';
+  return null;
+}
 
 // ── heat gradient for bar fills (matches diagnostic heatmap + projection) ──
 // All progress bars on this page render on the continuous blue->teal->yellow->
@@ -157,6 +170,16 @@ export default function Concept2Review() {
     return `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, '0')}-${String(e.getDate()).padStart(2, '0')}`;
   }, [weekStart]);
   const lwWin = useMemo(() => customRange(weekStart, weekEnd), [weekStart, weekEnd]);
+  const lwWorkingDays = useMemo(() => workingDaysBetween(lwWin.start, lwWin.end), [lwWin]);
+  const lwHolidayNote = useMemo(() => {
+    if (lwWorkingDays >= 5) return null;
+    const names: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const d = addDays(lwWin.start, i);
+      if (!isWorkingDay(d)) { const n = holidayName(d); if (n && !names.includes(n)) names.push(n); }
+    }
+    return names.length > 0 ? names.join(' & ') : null;
+  }, [lwWorkingDays, lwWin]);
   const lwEndDate = useMemo(() => { const [y, m, d] = weekEnd.split('-').map(Number); return new Date(y, m - 1, d, 23, 59, 59); }, [weekEnd]);
   const mtdStartStr = useMemo(() => `${weekEnd.slice(0, 7)}-01`, [weekEnd]);
   const mtdEndStr = weekEnd;
@@ -244,7 +267,7 @@ export default function Concept2Review() {
     return SHOPS.map((shop): ShopRow => {
       const lw = lwBy[shop.num]; const mtd = mtdBy[shop.num];
       const fullWeekGoal = revenueGoalForRange(goals[shop.num as ShopNum], 'last_week') || 0;
-      const lwTarget = fullWeekGoal ? prorateRevenueGoal(fullWeekGoal, 'last_week', lwWin.start, lwWin.end) : 0;
+      const lwTarget = fullWeekGoal ? fullWeekGoal * (lwWorkingDays / 5) : 0;
       const fullMonthGoal = revenueGoalForRange(goals[shop.num as ShopNum], 'this_month') || 0;
       const mtdTarget = fullMonthGoal ? prorateRevenueGoal(fullMonthGoal, 'this_month', lwEndDate, lwEndDate, lwEndDate) : 0;
       const lwActual = lw?.revenue ?? 0; const mtdActual = mtd?.revenue ?? 0;
@@ -266,13 +289,13 @@ export default function Concept2Review() {
         ar: arByShop[shop.num] ?? { kind: 'loading' },
       };
     });
-  }, [lwKpi, mtdKpi, arByShop, goals]);
+  }, [lwKpi, mtdKpi, arByShop, goals, lwWorkingDays]);
 
   const summary = useMemo(() => {
     if (!lwKpi || !mtdKpi) return null;
     let lwGoal = 0, mtdGoalFull = 0;
     for (const s of SHOPS) {
-      const w = revenueGoalForRange(goals[s.num], 'last_week') || 0; if (w) lwGoal += prorateRevenueGoal(w, 'last_week', lwWin.start, lwWin.end);
+      const w = revenueGoalForRange(goals[s.num], 'last_week') || 0; if (w) lwGoal += w * (lwWorkingDays / 5);
       const m = revenueGoalForRange(goals[s.num], 'this_month') || 0; if (m) mtdGoalFull += m;
     }
     const mtdGoal = mtdGoalFull ? prorateRevenueGoal(mtdGoalFull, 'this_month', lwEndDate, lwEndDate, lwEndDate) : 0;
@@ -289,7 +312,7 @@ export default function Concept2Review() {
       lwGpGoal: lwGoal * GP_TARGET, mtdGpGoal: mtdGoal * GP_TARGET, mtdFullMonthGpGoal: mtdGoalFull * GP_TARGET,
       arTotal, arOver30,
     };
-  }, [lwKpi, mtdKpi, ar, goals]);
+  }, [lwKpi, mtdKpi, ar, goals, lwWorkingDays]);
 
   const diagnostic = useMemo(() => {
     if (!lwKpi || !summary) return null;
@@ -498,6 +521,16 @@ export default function Concept2Review() {
           <HeroNumber kicker="Last week . revenue" value={summary.lwRev} goal={summary.lwGoal} variance={summary.lwVar} sev={paceSev(summary.lwGoal > 0 ? summary.lwRev / summary.lwGoal : null)} footnote="* Excludes refund invoices" />
           <HeroNumber kicker="Last week . gross profit" value={summary.totalGpD} goal={summary.lwGpGoal} variance={summary.totalGpD - summary.lwGpGoal} sev={paceSev(summary.lwGpGoal > 0 ? summary.totalGpD / summary.lwGpGoal : null)} footnote={<>GP% <span className="c2disp tabular-nums" style={{ color: INK, fontWeight: 600 }}>{pct(summary.totalGpP)}</span> . target {Math.round(GP_TARGET * 100)}% . Parts GP <span className="c2disp tabular-nums" style={{ color: INK, fontWeight: 600 }}>{pct(summary.partsGpP)}</span></>} />
         </div>
+        {/* Holiday week banner — shown when the work week has fewer than 5 working days */}
+        {lwWorkingDays < 5 && (
+          <div className="mt-4 rounded-2xl px-5 py-3 flex items-start gap-3" style={{ background: 'rgba(232,134,62,0.09)', border: '1px solid rgba(232,134,62,0.28)' }}>
+            <span style={{ color: AMBER, fontSize: 18, lineHeight: '1.4', flexShrink: 0 }}>◆</span>
+            <span className="c2ui text-[13px] leading-snug" style={{ color: '#9A4E10' }}>
+              <strong>{lwWorkingDays}-day week</strong>{lwHolidayNote ? <> ({lwHolidayNote})</> : null}
+              {' — '}revenue and GP$ goals have been adjusted to {lwWorkingDays}/5 of the weekly target.
+            </span>
+          </div>
+        )}
         {/* Running stats strip -- editorial flow with dividers */}
         <div className="mt-5 rounded-[26px] px-7 py-5 flex flex-wrap items-start gap-x-9 gap-y-4" style={FROST}>
           <StatPair label="Cars" value={num(lwKpi.totalCars)} />
