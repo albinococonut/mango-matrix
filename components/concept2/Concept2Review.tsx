@@ -513,6 +513,17 @@ export default function Concept2Review() {
         {!atLatest && <button onClick={() => setWeekStart(lastCompletedMonday())} className="c2ui ml-1 text-[13px] font-semibold rounded-full px-3 py-1 transition" style={{ color: '#B5631F', background: 'rgba(232,134,62,0.12)' }}>Jump to latest</button>}
       </div>
 
+      {/* Holiday week banner — shown when the work week has fewer than 5 working days */}
+      {lwWorkingDays < 5 && (
+        <div className="mb-6 rounded-2xl px-5 py-3 flex items-center gap-3" style={{ background: 'rgba(255,255,255,0.92)', border: `1.5px solid ${COOL}` }}>
+          <span style={{ color: COOL, fontSize: 16, flexShrink: 0, fontWeight: 700 }}>◆</span>
+          <span className="c2ui text-[13px]" style={{ color: INK }}>
+            <span style={{ color: COOL, fontWeight: 700 }}>{lwWorkingDays}-day week{lwHolidayNote ? ` · ${lwHolidayNote}` : ''}</span>
+            {' — '}revenue and GP$ goals adjusted to {lwWorkingDays}/5 of the weekly target.
+          </span>
+        </div>
+      )}
+
       {/* THE WEEK -- editorial 2-up hero: revenue + GP$ as huge Fraunces
           numbers with variance, pace, and a placement track. This is the
           first thing a leader reads on Monday. */}
@@ -521,16 +532,6 @@ export default function Concept2Review() {
           <HeroNumber kicker="Last week . revenue" value={summary.lwRev} goal={summary.lwGoal} variance={summary.lwVar} sev={paceSev(summary.lwGoal > 0 ? summary.lwRev / summary.lwGoal : null)} footnote="* Excludes refund invoices" />
           <HeroNumber kicker="Last week . gross profit" value={summary.totalGpD} goal={summary.lwGpGoal} variance={summary.totalGpD - summary.lwGpGoal} sev={paceSev(summary.lwGpGoal > 0 ? summary.totalGpD / summary.lwGpGoal : null)} footnote={<>GP% <span className="c2disp tabular-nums" style={{ color: INK, fontWeight: 600 }}>{pct(summary.totalGpP)}</span> . target {Math.round(GP_TARGET * 100)}% . Parts GP <span className="c2disp tabular-nums" style={{ color: INK, fontWeight: 600 }}>{pct(summary.partsGpP)}</span></>} />
         </div>
-        {/* Holiday week banner — shown when the work week has fewer than 5 working days */}
-        {lwWorkingDays < 5 && (
-          <div className="mt-4 rounded-2xl px-5 py-3 flex items-start gap-3" style={{ background: 'rgba(232,134,62,0.09)', border: '1px solid rgba(232,134,62,0.28)' }}>
-            <span style={{ color: AMBER, fontSize: 18, lineHeight: '1.4', flexShrink: 0 }}>◆</span>
-            <span className="c2ui text-[13px] leading-snug" style={{ color: '#9A4E10' }}>
-              <strong>{lwWorkingDays}-day week</strong>{lwHolidayNote ? <> ({lwHolidayNote})</> : null}
-              {' — '}revenue and GP$ goals have been adjusted to {lwWorkingDays}/5 of the weekly target.
-            </span>
-          </div>
-        )}
         {/* Running stats strip -- editorial flow with dividers */}
         <div className="mt-5 rounded-[26px] px-7 py-5 flex flex-wrap items-start gap-x-9 gap-y-4" style={FROST}>
           <StatPair label="Cars" value={num(lwKpi.totalCars)} />
