@@ -1,29 +1,27 @@
-// Employee View — Golden Mango / Trophies / Operations.
-// Both roles allowed. Executives keep the ExecShell sidebar so navigation is
-// consistent with every other menu item (Diagnostic / Review / To Do). The
-// page content is identical either way, so an exec still sees exactly what an
-// employee sees — just framed by the sidebar. Non-execs get the minimal
-// EmployeeShell top bar.
-
 import { cookies } from 'next/headers';
 import { COOKIE_NAME, verifySession } from '@/lib/auth';
 import { redirect } from 'next/navigation';
-import Dashboard from '@/components/Dashboard';
-import ExecShell from '@/components/ExecShell';
-import EmployeeShell from '@/components/EmployeeShell';
+import { ConceptShell } from '@/components/concept2/kit';
+import Concept2Employee from '@/components/concept2/Concept2Employee';
 
 export const dynamic = 'force-dynamic';
+
+const EMP_SECTIONS = [
+  { id: 'golden', label: 'Golden Mango' },
+  { id: 'trophies', label: 'Trophy Standings' },
+  { id: 'leaderboard', label: 'Leaderboard' },
+  { id: 'tech', label: 'Tech Production' },
+  { id: 'comebacks', label: 'Comebacks' },
+  { id: 'callbacks', label: 'Calls & To Do' },
+  { id: 'receivables', label: 'Accounts Receivable' },
+];
 
 export default async function EmployeePage() {
   const session = await verifySession(cookies().get(COOKIE_NAME)?.value);
   if (!session) redirect('/login');
-  const content = <Dashboard role={session.role} category="employee" />;
-  if (session.role === 'executive') {
-    return <ExecShell role={session.role} email={session.email}>{content}</ExecShell>;
-  }
   return (
-    <EmployeeShell role={session.role} email={session.email}>
-      {content}
-    </EmployeeShell>
+    <ConceptShell active="employee" sections={EMP_SECTIONS} email={session.email}>
+      <Concept2Employee role={session.role} />
+    </ConceptShell>
   );
 }

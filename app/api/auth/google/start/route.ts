@@ -16,9 +16,9 @@ const SCOPES = ['openid', 'email', 'profile'];
 const STATE_COOKIE = 'auth_google_state';
 const NEXT_COOKIE = 'auth_google_next';
 
-function getRedirectUri(): string {
+function getRedirectUri(req: NextRequest): string {
   if (process.env.GOOGLE_AUTH_REDIRECT_URI) return process.env.GOOGLE_AUTH_REDIRECT_URI;
-  return 'https://mango-matrix.vercel.app/api/auth/google/callback';
+  return `${new URL(req.url).origin}/api/auth/google/callback`;
 }
 
 function randomState(): string {
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
   const state = randomState();
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: getRedirectUri(),
+    redirect_uri: getRedirectUri(req),
     response_type: 'code',
     scope: SCOPES.join(' '),
     state,

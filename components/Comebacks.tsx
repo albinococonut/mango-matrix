@@ -1,11 +1,23 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Repeat } from 'lucide-react';
+import { ChevronDown, ExternalLink, Repeat } from 'lucide-react';
 import { SHOP_BY_NUM } from '@/lib/shops';
 import { usd, num } from '@/lib/format';
 import { TrophyIcon } from './Trophy';
 import { WindowToggle } from './AppointmentBookedRate';
+
+interface ComebackTicket {
+  roId: number;
+  shopId: number;
+  roNumber: number;
+  postedDate: string;
+  jobName: string;
+  hours: number;
+  estLaborCost: number;
+  revenueLost: number;
+  reason: 'reinspect' | 'heuristic';
+}
 
 interface Row {
   shopNum: string;
@@ -16,6 +28,7 @@ interface Row {
   revenueLost: number;
   revenuePerHour: number;
   ros: number;
+  tickets?: ComebackTicket[];
 }
 
 type WindowKind = 'rolling' | 'this_week';
@@ -23,6 +36,7 @@ type WindowKind = 'rolling' | 'this_week';
 export default function Comebacks() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [windowKind, setWindowKind] = useState<WindowKind>('this_week');
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
     setRows(null);
@@ -76,19 +90,69 @@ export default function Comebacks() {
         {ranked.map((r, i) => {
           const meta = SHOP_BY_NUM[r.shopNum as keyof typeof SHOP_BY_NUM];
           const fillPct = `${Math.max(4, (r.revenueLost / maxLost) * 100)}%`;
+          const isOpen = expanded === r.shopNum;
+          const tickets = r.tickets ?? [];
           return (
-            <div key={r.shopNum} className="flex items-center gap-3 py-2 border-b border-mango-line/60 last:border-0" title={`Revenue per tech hour for this shop ≈ ${usd(r.revenuePerHour)}`}>
-              <div className="w-5 text-mango-muted font-semibold text-sm text-right">{i + 1}</div>
-              {i < 3 ? <TrophyIcon rank={(i + 1) as 1 | 2 | 3} size={16} /> : <div className="w-4" />}
-              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: meta?.color }} />
-              <div className="font-medium text-sm w-28 shrink-0">{r.shopName}</div>
-              <div className="flex-1 h-2.5 bg-mango-line/40 rounded-full overflow-hidden">
-                <div className="h-full rounded-full" style={{ width: fillPct, background: meta?.color, opacity: 0.7 }} />
-              </div>
-              <div className="text-xs text-mango-muted tabular-nums w-12 text-right" title="Comeback jobs">{r.comebackJobs}j</div>
-              <div className="text-xs text-mango-muted tabular-nums w-14 text-right" title="Tech hours">{r.comebackHours.toFixed(1)}hr</div>
-              <div className="text-xs text-mango-muted tabular-nums w-20 text-right" title="Est. labor cost">{usd(r.estLaborCost)}</div>
-              <div className="text-sm font-bold tabular-nums w-24 text-right text-mango-red" title="Revenue lost">{usd(r.revenueLost)}</div>
+            <div key={r.shopNum} className="border-b border-mango-line/60 last:border-0">
+              {/* Shop summary row — click to expand ticket list */}
+              <button
+                className="w-full flex items-center gap-3 py-2 hover:bg-mango-bg/30 transition rounded text-left"
+                onClick={() => setExpanded(isOpen ? null : r.shopNum)}
+                title={`Revenue per tech hour for this shop ≈ ${usd(r.revenuePerHour)}`}
+                aria-expanded={isOpen}
+              >
+                <div className="w-5 text-mango-muted font-semibold text-sm text-right">{i + 1}</div>
+                {i < 3 ? <TrophyIcon rank={(i + 1) as 1 | 2 | 3} size={16} /> : <div className="w-4" />}
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: meta?.color }} />
+                <div className="font-medium text-sm w-28 shrink-0">{r.shopName}</div>
+                <div className="flex-1 h-2.5 bg-mango-line/40 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: fillPct, background: meta?.color, opacity: 0.7 }} />
+                </div>
+                <div className="text-xs text-mango-muted tabular-nums w-12 text-right">{r.comebackJobs}j</div>
+                <div className="text-xs text-mango-muted tabular-nums w-14 text-right">{r.comebackHours.toFixed(1)}hr</div>
+                <div className="text-xs text-mango-muted tabular-nums w-20 text-right">{usd(r.estLaborCost)}</div>
+                <div className="text-sm font-bold tabular-nums w-24 text-right text-mango-red">{usd(r.revenueLost)}</div>
+                {tickets.length > 0 && (
+                  <ChevronDown className={`w-4 h-4 text-mango-muted shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                )}
+                {tickets.length === 0 && <div className="w-4 shrink-0" />}
+              </button>
+
+              {/* Expandable ticket list */}
+              {isOpen && tickets.length > 0 && (
+                <div className="ml-12 mb-2 rounded-lg overflow-hidden border border-mango-line/60">
+                  <div className="grid text-[10px] font-semibold uppercase tracking-wide text-mango-muted px-3 py-1.5 bg-mango-bg/50" style={{ gridTemplateColumns: '1fr 2fr auto auto auto auto' }}>
+                    <span>RO #</span>
+                    <span>Job</span>
+                    <span className="text-right">Date</span>
+                    <span className="text-right">Hrs</span>
+                    <span className="text-right">Cost</span>
+                    <span className="text-right">Rev Lost</span>
+                  </div>
+                  {tickets.map((t, ti) => {
+                    const roUrl = `https://shop.tekmetric.com/admin/shop/${t.shopId}/repair-orders/${t.roId}`;
+                    const dateStr = t.postedDate ? new Date(t.postedDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+                    return (
+                      <div key={`${t.roId}-${ti}`}
+                        className="grid items-center px-3 py-2 text-sm border-t border-mango-line/40 hover:bg-mango-bg/30 transition"
+                        style={{ gridTemplateColumns: '1fr 2fr auto auto auto auto' }}>
+                        {/* RO number — links directly to Tekmetric */}
+                        <a href={roUrl} target="_blank" rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-mango-orange hover:text-mango-orange/80 font-semibold tabular-nums"
+                          onClick={e => e.stopPropagation()}>
+                          #{t.roNumber}
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                        <span className="text-mango-ink truncate pr-2" title={t.jobName}>{t.jobName}</span>
+                        <span className="text-mango-muted tabular-nums text-right text-xs">{dateStr}</span>
+                        <span className="text-mango-muted tabular-nums text-right text-xs">{t.hours.toFixed(1)}</span>
+                        <span className="text-mango-muted tabular-nums text-right text-xs">{usd(t.estLaborCost)}</span>
+                        <span className="text-mango-red font-semibold tabular-nums text-right text-xs">{usd(t.revenueLost)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}

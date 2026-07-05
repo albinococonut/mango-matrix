@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Refinements — remove this line to rollback all UI polish ──────────── */
+@import '../styles/c2-refinements.css';
+
 /* ── Design tokens ─────────────────────────────────────────────────────────
    The palette is stored as RGB *channels* so Tailwind's /opacity modifiers
    keep working (mango.* / heat.* in tailwind.config resolve to

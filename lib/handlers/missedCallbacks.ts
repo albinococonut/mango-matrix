@@ -30,7 +30,8 @@ export interface MissedCallbackCall {
   callerCity?: string;
   callerState?: string;
   callDurationSeconds: number;
-  recording?: string;             // play_recording URL — HTML5 audio plays directly
+  recording?: string;             // direct audio URL — proxied server-side with WhatConverts auth
+  playRecording?: string;         // WhatConverts player page (fallback when no direct URL)
   transcriptPreview: string;      // first 1200 chars; full transcript fetched on expand
   salesAgent?: string;            // WhatConverts lead_analysis 'Sales Agent'
   sentimentDetection?: string;

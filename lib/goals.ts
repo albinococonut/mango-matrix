@@ -71,8 +71,19 @@ function lastWeekdayOfMonth(year: number, monthIdx: number, dow: number): Date {
   return new Date(year, monthIdx, last.getDate() - offset);
 }
 
+/** When a fixed-date holiday falls on a weekend, return the observed weekday.
+ *  Sat → preceding Fri, Sun → following Mon (per company policy). */
+function observed(d: Date): Date {
+  const dow = d.getDay();
+  if (dow === 6) return new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  if (dow === 0) return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+  return d;
+}
+
 /**
  * Shop holidays per user spec. Day-after-Thanksgiving is also off.
+ * Fixed-date holidays use the observed weekday when the calendar date falls
+ * on a weekend (Sat → Fri, Sun → Mon).
  * Returns the holiday date objects for one calendar year.
  */
 export function holidaysInYear(year: number): Date[] {
@@ -80,14 +91,14 @@ export function holidaysInYear(year: number): Date[] {
   const labor = nthWeekdayOfMonth(year, 8, 1, 1);                  // 1st Monday in Sept
   const thanksgiving = nthWeekdayOfMonth(year, 10, 4, 4);          // 4th Thursday in Nov
   return [
-    new Date(year, 0, 1),                                          // New Year's Day
+    observed(new Date(year, 0, 1)),                                // New Year's Day (observed)
     memorial,
-    new Date(year, 6, 4),                                          // Independence Day
+    observed(new Date(year, 6, 4)),                                // Independence Day (observed)
     labor,
     thanksgiving,
     addDays(thanksgiving, 1),                                      // Day after Thanksgiving
-    new Date(year, 11, 24),                                        // Christmas Eve
-    new Date(year, 11, 25),                                        // Christmas
+    observed(new Date(year, 11, 24)),                              // Christmas Eve (observed)
+    observed(new Date(year, 11, 25)),                              // Christmas (observed)
   ];
 }
 

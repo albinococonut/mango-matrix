@@ -12,7 +12,7 @@
 // module scope, so both render sites share the same response.
 
 import { useEffect, useState, useCallback } from 'react';
-import { Phone, PlayCircle, ChevronDown, ChevronUp, Check, X, MessageSquare, AlertTriangle, ArrowUpDown } from 'lucide-react';
+import { Phone, PlayCircle, Check, X, MessageSquare, AlertTriangle, ArrowUpDown } from 'lucide-react';
 import { num, usd, usdK } from '@/lib/format';
 
 type Status = 'open' | 'resolved' | 'not_salvageable';
@@ -26,6 +26,7 @@ interface CallRow {
   callerState?: string;
   callDurationSeconds: number;
   recording?: string;
+  playRecording?: string;
   transcriptPreview: string;
   salesAgent?: string;
   sentimentDetection?: string;
@@ -115,36 +116,53 @@ function useMissedCallbacks(): { data: MissedCallbacksData | null; error: string
   return { data: _cached, error: _error, refresh: () => { _error = null; return loadOnce(true); } };
 }
 
+// Design tokens — match Concept2TodoSection exactly
+const INK = '#221F1A';
+const INK2 = '#5C5852';
+const FAINT = '#938C81';
+const LINE = 'rgba(34,32,28,0.10)';
+const LINE_STRONG = 'rgba(34,32,28,0.08)';
+
+function cardStyle(row: CallRow): { background: string; border: string; opacity?: number } {
+  const probHigh = row.probability >= 0.65;
+  const probMid = row.probability >= 0.45;
+  const done = row.resolution?.status === 'resolved' || row.resolution?.status === 'not_salvageable';
+  return {
+    background: probHigh ? 'rgba(192,90,46,0.07)' : probMid ? 'rgba(176,120,32,0.06)' : 'rgba(255,255,255,0.60)',
+    border: probHigh ? '1px solid rgba(192,90,46,0.22)' : probMid ? '1px solid rgba(176,120,32,0.18)' : `1px solid ${LINE}`,
+    ...(done ? { opacity: 0.45 } : {}),
+  };
+}
+
+function probBadge(p: number): { bg: string; color: string; label: string } {
+  if (p >= 0.65) return { bg: 'rgba(192,90,46,0.13)', color: '#8E3F22', label: 'High' };
+  if (p >= 0.45) return { bg: 'rgba(176,120,32,0.12)', color: '#7A5300', label: 'Med-high' };
+  return { bg: 'rgba(34,32,28,0.07)', color: INK2, label: 'Medium' };
+}
+
 // ---------- Chain summary strip (mode = "chain") ----------
 
 export function MissedCallbacksChainStrip() {
   const { data } = useMissedCallbacks();
   if (!data) return null;
   const c = data.chain;
-  // If there are 0 salvageable calls AND nothing resolved, skip the strip
-  // entirely — no signal to show.
   if (c.totalSalvageable === 0 && c.resolvedCount === 0) return null;
   return (
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mt-4 mb-2">
-      <SummaryTile label="Missed rev. opportunity this week" value={usdK(c.estimatedMissedRevenue)} tone="red" />
-      <SummaryTile label="Total salvageable calls" value={num(c.totalSalvageable)} tone="amber" />
-      <SummaryTile label="Callbacks resolved" value={num(c.resolvedCount)} tone="green" />
-      <SummaryTile label="Revenue recovered (est.)" value={usdK(c.revenueRecovered)} tone="green" />
-      <SummaryTile label="Avg response time" value={c.avgResponseTimeHours == null ? '—' : `${c.avgResponseTimeHours.toFixed(1)}h`} tone="neutral" />
+      <SummaryTile label="Missed rev. opportunity" value={usdK(c.estimatedMissedRevenue)} bg="rgba(192,90,46,0.07)" border="rgba(192,90,46,0.22)" valColor="#8E3F22" />
+      <SummaryTile label="Salvageable calls" value={num(c.totalSalvageable)} bg="rgba(176,120,32,0.06)" border="rgba(176,120,32,0.18)" valColor="#7A5300" />
+      <SummaryTile label="Callbacks resolved" value={num(c.resolvedCount)} bg="rgba(62,142,94,0.07)" border="rgba(62,142,94,0.22)" valColor="#2F6E3A" />
+      <SummaryTile label="Revenue recovered (est.)" value={usdK(c.revenueRecovered)} bg="rgba(62,142,94,0.07)" border="rgba(62,142,94,0.22)" valColor="#2F6E3A" />
+      <SummaryTile label="Avg response time" value={c.avgResponseTimeHours == null ? '—' : `${c.avgResponseTimeHours.toFixed(1)}h`} bg="rgba(255,255,255,0.60)" border={LINE} valColor={INK2} />
     </div>
   );
 }
 
-function SummaryTile({ label, value, tone }: { label: string; value: string; tone: 'red' | 'amber' | 'green' | 'neutral' }) {
-  const cls =
-    tone === 'red' ? 'bg-mango-red/8 border-mango-red/25 text-mango-red' :
-    tone === 'amber' ? 'bg-amber-50 border-amber-200 text-amber-700' :
-    tone === 'green' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
-    'bg-mango-bg/50 border-mango-line text-mango-ink';
+function SummaryTile({ label, value, bg, border, valColor }: { label: string; value: string; bg: string; border: string; valColor: string }) {
   return (
-    <div className={`rounded-lg border p-3 ${cls}`}>
-      <div className="text-[11px] uppercase tracking-wide opacity-80 leading-tight">{label}</div>
-      <div className="text-xl font-bold tabular-nums mt-1">{value}</div>
+    <div className="rounded-2xl p-3" style={{ background: bg, border: `1px solid ${border}` }}>
+      <div className="c2ui text-[10.5px] uppercase tracking-[0.12em] leading-tight" style={{ color: FAINT }}>{label}</div>
+      <div className="c2disp tabular-nums font-semibold mt-1" style={{ color: valColor, fontSize: 20 }}>{value}</div>
     </div>
   );
 }
@@ -161,13 +179,12 @@ export function MissedCallbacksShopQueue({ shopNum }: { shopNum: string }) {
   const [expanded, setExpanded] = useState<number | null>(null);
 
   const shop = data?.shops.find(s => s.shopNum === shopNum);
-  if (error) return <div className="text-xs text-mango-red py-3">Couldn't load missed callbacks: {error}</div>;
-  if (!data) return <div className="text-xs text-mango-muted italic py-3">Loading missed callbacks…</div>;
+  if (error) return <div className="c2ui text-[12px] py-3" style={{ color: '#8E3F22' }}>Couldn't load missed callbacks: {error}</div>;
+  if (!data) return <div className="c2ui text-[12px] italic py-3" style={{ color: FAINT }}>Loading missed callbacks…</div>;
   if (!shop) return null;
-  if (shop.pending) return <div className="text-xs text-mango-muted italic py-3">Warming — callback data appears within ~5 min after the first booked-rate refresh.</div>;
-  if (shop.calls.length === 0) return <div className="text-xs text-mango-green py-3">No salvageable missed calls this week ✓</div>;
+  if (shop.pending) return <div className="c2ui text-[12px] italic py-3" style={{ color: FAINT }}>Warming — callback data appears within ~5 min after the first booked-rate refresh.</div>;
+  if (shop.calls.length === 0) return <div className="c2ui text-[12px] py-3" style={{ color: '#2F6E3A' }}>No salvageable missed calls this week ✓</div>;
 
-  // Unique advisors for the filter dropdown.
   const advisors = Array.from(new Set(shop.calls.map(c => c.salesAgent).filter(Boolean))) as string[];
 
   let rows = shop.calls.slice();
@@ -177,23 +194,33 @@ export function MissedCallbacksShopQueue({ shopNum }: { shopNum: string }) {
   else if (sortKey === 'revenue') rows.sort((a, b) => b.estimatedMissedRevenue - a.estimatedMissedRevenue);
   else rows.sort((a, b) => +new Date(b.dateCreated) - +new Date(a.dateCreated));
 
+  const ctrlStyle = { background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 };
+
   return (
-    <div className="bg-mango-bg/30 rounded-lg p-3 mt-2 mb-3">
-      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-        <div className="text-xs text-mango-muted">
-          {rows.length} call{rows.length === 1 ? '' : 's'} shown · window {shop.windowStart} → {shop.windowEnd}
+    <div className="mt-2 mb-3 space-y-2">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+        <div className="c2ui text-[11px]" style={{ color: FAINT }}>
+          {rows.length} call{rows.length === 1 ? '' : 's'} · {shop.windowStart} → {shop.windowEnd}
         </div>
-        <div className="flex items-center gap-2 flex-wrap text-xs">
-          <button onClick={() => setUnresolvedOnly(!unresolvedOnly)} className={`px-2 py-1 rounded-md border ${unresolvedOnly ? 'bg-mango-ink text-white border-mango-ink' : 'border-mango-line text-mango-muted'}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setUnresolvedOnly(!unresolvedOnly)}
+            className="c2ui text-[11.5px] font-semibold px-3 py-1.5 rounded-full"
+            style={unresolvedOnly ? { background: INK, color: 'white', border: `1px solid ${INK}` } : ctrlStyle}
+          >
             Unresolved only
           </button>
           {advisors.length > 0 && (
-            <select value={advisorFilter} onChange={e => setAdvisorFilter(e.target.value)} className="border border-mango-line rounded-md px-2 py-1 bg-white text-mango-ink">
+            <select value={advisorFilter} onChange={e => setAdvisorFilter(e.target.value)}
+              className="c2ui text-[11.5px] px-3 py-1.5 rounded-full"
+              style={ctrlStyle}>
               <option value="">All advisors</option>
               {advisors.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
           )}
-          <select value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)} className="border border-mango-line rounded-md px-2 py-1 bg-white text-mango-ink">
+          <select value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}
+            className="c2ui text-[11.5px] px-3 py-1.5 rounded-full"
+            style={ctrlStyle}>
             <option value="revenue">Sort: revenue $</option>
             <option value="probability">Sort: probability</option>
             <option value="date">Sort: most recent</option>
@@ -201,36 +228,23 @@ export function MissedCallbacksShopQueue({ shopNum }: { shopNum: string }) {
         </div>
       </div>
 
-      <div className="space-y-2">
-        {rows.map(row => (
-          <CallbackRow key={row.leadId} row={row} expanded={expanded === row.leadId} onToggle={() => setExpanded(expanded === row.leadId ? null : row.leadId)} onChange={refresh} />
-        ))}
-      </div>
+      {rows.map(row => (
+        <CallbackRow key={row.leadId} row={row} shopNum={shopNum} onChange={refresh} />
+      ))}
     </div>
   );
 }
 
-function urgencyClass(row: CallRow): string {
-  // Today's high-probability + high-revenue calls stand out.
-  const isToday = row.dateCreated.slice(0, 10) === new Date().toISOString().slice(0, 10);
-  const high = row.probability >= 0.65 && row.estimatedMissedRevenue >= 200;
-  if (isToday && high) return 'border-mango-red bg-mango-red/8 ring-1 ring-mango-red/40';
-  if (high) return 'border-orange-300 bg-orange-50/50';
-  if (row.resolution?.status === 'resolved') return 'border-mango-line bg-emerald-50/40 opacity-70';
-  if (row.resolution?.status === 'not_salvageable') return 'border-mango-line bg-mango-bg opacity-50';
-  return 'border-mango-line bg-white';
-}
-
-function probabilityTone(p: number): { bg: string; color: string; label: string } {
-  if (p >= 0.65) return { bg: '#FDE2E2', color: '#8B1F1F', label: 'High' };
-  if (p >= 0.45) return { bg: '#FFE9B8', color: '#7A5300', label: 'Medium-high' };
-  return { bg: '#F2EFE7', color: '#6B7280', label: 'Medium' };
-}
-
-function CallbackRow({ row, expanded, onToggle, onChange }: { row: CallRow; expanded: boolean; onToggle: () => void; onChange: () => Promise<void> }) {
-  const ptone = probabilityTone(row.probability);
+function CallbackRow({ row, shopNum, onChange }: { row: CallRow; shopNum: string; onChange: () => Promise<void> }) {
   const status = row.resolution?.status ?? 'open';
   const [busy, setBusy] = useState<string | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [showNoteEditor, setShowNoteEditor] = useState(false);
+  const badge = probBadge(row.probability);
+  // Derive the /play page URL — play_recording is the canonical player URL;
+  // fall back to swapping /download → /play on the direct audio URL.
+  const callPageUrl = row.playRecording
+    || (row.recording ? row.recording.replace(/\/download$/, '/play') : null);
 
   const post = useCallback(async (action: string, extra: Record<string, any> = {}) => {
     setBusy(action);
@@ -246,105 +260,155 @@ function CallbackRow({ row, expanded, onToggle, onChange }: { row: CallRow; expa
     }
   }, [row.leadId, onChange]);
 
-  // Defensive: WhatConverts always returns this as a string, but the FBR
-  // missed-rebooks code had a crash from a numeric phone returned by
-  // Tekmetric. Coerce here too so a future shape drift doesn't blow up
-  // the entire Call Conversion section.
+  // Defensive coerce — WhatConverts returns string but guard against numeric drift
   const callerPhoneStr = row.callerPhone == null ? '' : String(row.callerPhone);
   const telHref = callerPhoneStr ? `tel:${callerPhoneStr.replace(/[^0-9+]/g, '')}` : undefined;
 
   return (
-    <div className={`rounded-lg border p-3 ${urgencyClass(row)}`}>
-      <div className="flex items-start gap-3 flex-wrap">
-        <div className="min-w-0 flex-1">
+    <div className="rounded-2xl p-4" style={cardStyle(row)}>
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-mango-ink">{row.callerName || 'Unknown caller'}</span>
-            {callerPhoneStr && <span className="text-xs text-mango-muted tabular-nums">{callerPhoneStr}</span>}
-            {row.salesAgent && <span className="text-[10px] uppercase tracking-wide text-mango-muted bg-mango-bg/50 px-1.5 py-0.5 rounded">{row.salesAgent}</span>}
-            <span className="inline-block text-[10px] font-semibold uppercase rounded-full px-2 py-0.5" style={{ background: ptone.bg, color: ptone.color }}>
-              {ptone.label} · {(row.probability * 100).toFixed(0)}%
+            <span className="c2ui font-semibold" style={{ color: INK, fontSize: 14 }}>{row.callerName || 'Unknown caller'}</span>
+            {row.salesAgent && (
+              <span className="c2ui text-[10px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,32,28,0.07)', color: FAINT }}>
+                {row.salesAgent}
+              </span>
+            )}
+            <span className="c2ui text-[10px] font-semibold uppercase tracking-[0.08em] px-2 py-0.5 rounded-full" style={{ background: badge.bg, color: badge.color }}>
+              {badge.label} · {(row.probability * 100).toFixed(0)}%
             </span>
-            {status === 'resolved' && <span className="inline-block text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-emerald-100 text-emerald-700">Resolved</span>}
-            {status === 'not_salvageable' && <span className="inline-block text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-mango-bg text-mango-muted">Dismissed</span>}
+            {status === 'resolved' && (
+              <span className="c2ui text-[10px] font-semibold uppercase tracking-[0.08em] px-2 py-0.5 rounded-full" style={{ background: 'rgba(62,142,94,0.12)', color: '#2F6E3A' }}>Resolved</span>
+            )}
+            {status === 'not_salvageable' && (
+              <span className="c2ui text-[10px] font-semibold uppercase tracking-[0.08em] px-2 py-0.5 rounded-full" style={{ background: 'rgba(34,32,28,0.06)', color: FAINT }}>Dismissed</span>
+            )}
           </div>
-          <div className="text-xs text-mango-ink/80 mt-1">{row.reason || '—'}</div>
-          {row.angle && <div className="text-xs text-mango-ink/70 mt-0.5 italic"><span className="font-medium not-italic">Suggested angle:</span> {row.angle}</div>}
-          <div className="flex items-center gap-3 mt-1.5 text-[11px] text-mango-muted">
-            <span className="tabular-nums">{new Date(row.dateCreated).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
-            <span>·</span>
-            <span>{Math.round(row.callDurationSeconds / 60)}m call</span>
-            {row.callerCity && <><span>·</span><span>{row.callerCity}, {row.callerState}</span></>}
-            {row.resolution?.attemptCount ? <><span>·</span><span>{row.resolution.attemptCount} callback attempt{row.resolution.attemptCount === 1 ? '' : 's'}</span></> : null}
+          {/* Phone */}
+          {callerPhoneStr
+            ? <div className="c2disp tabular-nums mt-2 leading-none" style={{ color: INK, fontSize: 20, letterSpacing: '-0.01em' }}>{callerPhoneStr}</div>
+            : <div className="c2ui text-[13px] mt-2 italic" style={{ color: FAINT }}>no phone on file</div>}
+          {/* Reason */}
+          {row.reason && <div className="c2ui mt-1.5 text-[12.5px]" style={{ color: INK2 }}>{row.reason}</div>}
+          {/* Angle */}
+          {row.angle && (
+            <div className="c2ui mt-0.5 text-[12px]" style={{ color: FAINT }}>
+              <span style={{ color: INK2, fontWeight: 600 }}>Angle:</span>{' '}{row.angle}
+            </div>
+          )}
+        </div>
+        {/* Est. lost */}
+        {row.estimatedMissedRevenue > 0 && (
+          <div className="shrink-0 text-right">
+            <div className="c2ui text-[10px] uppercase tracking-[0.12em]" style={{ color: FAINT }}>Est. lost</div>
+            <div className="c2disp tabular-nums font-semibold" style={{ color: '#8E3F22', fontSize: 18 }}>{usd(Math.round(row.estimatedMissedRevenue))}</div>
           </div>
-        </div>
-        <div className="text-right shrink-0">
-          <div className="text-[10px] uppercase text-mango-muted leading-none">est. missed revenue</div>
-          <div className="text-lg font-bold text-mango-red tabular-nums">{row.estimatedMissedRevenue > 0 ? usd(Math.round(row.estimatedMissedRevenue)) : '—'}</div>
-        </div>
+        )}
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap mt-3">
+      {/* WC summary — always visible when present */}
+      {row.wcSummary && (
+        <div className="c2ui mt-2 text-[12px] rounded-xl px-3 py-2"
+          style={{ background: 'rgba(34,32,28,0.04)', color: INK2, border: `1px solid ${LINE}` }}>
+          {row.wcSummary}
+        </div>
+      )}
+
+      {/* Saved note — always visible when present (hidden while editor is open) */}
+      {row.resolution?.note && !showNoteEditor && (
+        <div className="c2ui mt-2 text-[12px]" style={{ color: INK2 }}>
+          <span className="font-semibold" style={{ color: FAINT }}>Note:</span>{' '}{row.resolution.note}
+        </div>
+      )}
+
+      {/* Meta row */}
+      <div className="c2ui flex items-center gap-2 mt-2 text-[11px]" style={{ color: FAINT }}>
+        <span className="tabular-nums">{new Date(row.dateCreated).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+        <span>·</span>
+        <span>{Math.round(row.callDurationSeconds / 60)}m call</span>
+        {row.callerCity && <><span>·</span><span>{row.callerCity}, {row.callerState}</span></>}
+        {row.resolution?.attemptCount ? <><span>·</span><span>{row.resolution.attemptCount} attempt{row.resolution.attemptCount === 1 ? '' : 's'}</span></> : null}
+      </div>
+
+      {/* Action row */}
+      <div className="mt-3 pt-2.5 flex items-center gap-2 flex-wrap" style={{ borderTop: `1px solid ${LINE_STRONG}` }}>
         {telHref ? (
-          <a href={telHref} onClick={() => post('log_attempt')} className="inline-flex items-center gap-1.5 bg-mango-orange text-white text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-mango-orange/90">
+          <a href={telHref} onClick={() => post('log_attempt')}
+            className="c2ui inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-full"
+            style={{ background: 'rgba(232,134,62,0.92)', color: 'white', border: '1px solid transparent' }}>
             <Phone className="w-3.5 h-3.5" /> Call Back Now
           </a>
         ) : (
-          <button disabled className="inline-flex items-center gap-1.5 bg-mango-bg text-mango-muted text-xs font-semibold px-3 py-1.5 rounded-md cursor-not-allowed">
-            <Phone className="w-3.5 h-3.5" /> No phone number
+          <button disabled className="c2ui inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-full"
+            style={{ background: 'rgba(34,32,28,0.06)', color: FAINT, border: `1px solid ${LINE}` }}>
+            <Phone className="w-3.5 h-3.5" /> No phone
           </button>
         )}
         {status !== 'resolved' && (
-          <button disabled={busy !== null} onClick={() => post('resolve')} className="inline-flex items-center gap-1.5 border border-emerald-300 text-emerald-700 text-xs font-medium px-2.5 py-1.5 rounded-md hover:bg-emerald-50 disabled:opacity-50">
-            <Check className="w-3.5 h-3.5" /> Mark resolved
+          <button disabled={busy !== null} onClick={() => post('resolve')}
+            className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full disabled:opacity-50"
+            style={{ background: 'rgba(62,142,94,0.12)', border: '1px solid rgba(62,142,94,0.28)', color: '#2F6E3A' }}>
+            <Check className="w-3 h-3" strokeWidth={2.5} /> Resolved
           </button>
         )}
         {status !== 'not_salvageable' && (
-          <button disabled={busy !== null} onClick={() => post('not_salvageable')} className="inline-flex items-center gap-1.5 border border-mango-line text-mango-muted text-xs font-medium px-2.5 py-1.5 rounded-md hover:bg-mango-bg disabled:opacity-50">
-            <X className="w-3.5 h-3.5" /> Not salvageable
+          <button disabled={busy !== null} onClick={() => post('not_salvageable')}
+            className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full disabled:opacity-50"
+            style={{ background: 'rgba(34,32,28,0.06)', border: `1px solid ${LINE}`, color: FAINT }}>
+            <X className="w-3 h-3" /> Not salvageable
           </button>
         )}
         {status !== 'open' && (
-          <button disabled={busy !== null} onClick={() => post('reopen')} className="text-xs text-mango-muted hover:text-mango-ink underline">
+          <button disabled={busy !== null} onClick={() => post('reopen')}
+            className="c2ui text-[11px] disabled:opacity-50"
+            style={{ color: FAINT, textDecoration: 'underline' }}>
             Reopen
           </button>
         )}
-        <button onClick={onToggle} className="ml-auto inline-flex items-center gap-1 text-xs text-mango-muted hover:text-mango-ink">
-          {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          {expanded ? 'Hide details' : 'Show details'}
-        </button>
-      </div>
 
-      {expanded && (
-        <div className="mt-3 pt-3 border-t border-mango-line/60 space-y-3">
-          {row.recording && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-mango-muted font-semibold mb-1.5 flex items-center gap-1.5">
-                <PlayCircle className="w-3.5 h-3.5" /> Call recording
-              </div>
-              <audio controls preload="none" src={row.recording} className="w-full max-w-md" />
-            </div>
-          )}
-          {row.wcSummary && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-mango-muted font-semibold mb-1">WhatConverts summary</div>
-              <div className="text-xs text-mango-ink/85">{row.wcSummary}</div>
-            </div>
+        {/* Media + note — right side */}
+        <div className="ml-auto flex items-center gap-1.5">
+          {callPageUrl && (
+            <a href={callPageUrl} target="_blank" rel="noreferrer"
+              className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full"
+              style={{ background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 }}>
+              <PlayCircle className="w-3 h-3" /> Recording ↗
+            </a>
           )}
           {row.transcriptPreview && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-mango-muted font-semibold mb-1 flex items-center gap-1.5">
-                <MessageSquare className="w-3.5 h-3.5" /> Transcript
-              </div>
-              <div className="text-xs text-mango-ink/85 whitespace-pre-wrap font-mono bg-white border border-mango-line/60 rounded p-2 max-h-64 overflow-y-auto">{row.transcriptPreview}</div>
-            </div>
+            <button onClick={() => setShowTranscript(v => !v)}
+              className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full"
+              style={showTranscript
+                ? { background: 'rgba(232,134,62,0.12)', border: '1px solid rgba(232,134,62,0.35)', color: '#B5631F' }
+                : { background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 }}>
+              <MessageSquare className="w-3 h-3" /> Transcript
+            </button>
           )}
-          {row.resolution?.note && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-mango-muted font-semibold mb-1">Note</div>
-              <div className="text-xs text-mango-ink/85">{row.resolution.note}</div>
-            </div>
-          )}
-          <NoteEditor leadId={row.leadId} initialNote={row.resolution?.note} onSave={onChange} />
+          <button onClick={() => setShowNoteEditor(v => !v)}
+            className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full"
+            style={showNoteEditor
+              ? { background: 'rgba(232,134,62,0.12)', border: '1px solid rgba(232,134,62,0.35)', color: '#B5631F' }
+              : { background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 }}>
+            Note
+          </button>
+        </div>
+      </div>
+
+      {/* Transcript inline */}
+      {showTranscript && row.transcriptPreview && (
+        <div className="c2ui mt-2 text-[12px] whitespace-pre-wrap rounded-xl p-3 max-h-48 overflow-y-auto"
+          style={{ background: 'rgba(255,255,255,0.55)', color: INK2, border: `1px solid ${LINE}`, lineHeight: 1.6 }}>
+          {row.transcriptPreview}
+        </div>
+      )}
+
+      {/* Note editor */}
+      {showNoteEditor && (
+        <div className="mt-2">
+          <NoteEditor leadId={row.leadId} initialNote={row.resolution?.note}
+            onSave={() => { setShowNoteEditor(false); return onChange(); }} />
         </div>
       )}
     </div>
@@ -357,15 +421,16 @@ function NoteEditor({ leadId, initialNote, onSave }: { leadId: number; initialNo
   const dirty = note !== (initialNote ?? '');
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wide text-mango-muted font-semibold mb-1">Add / update note</div>
+      <div className="c2ui text-[10.5px] uppercase tracking-[0.12em] mb-1" style={{ color: FAINT }}>Add / update note</div>
       <textarea
         value={note}
         onChange={e => setNote(e.target.value)}
         rows={2}
         placeholder="e.g. Left voicemail Tuesday 10am; will retry Wednesday morning."
-        className="w-full text-xs border border-mango-line/60 rounded p-2 resize-y"
+        className="c2ui w-full text-[12px] rounded-xl p-3 resize-y"
+        style={{ background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK, outline: 'none' }}
       />
-      <div className="flex items-center justify-end mt-1">
+      <div className="flex items-center justify-end mt-2">
         <button
           disabled={!dirty || busy}
           onClick={async () => {
@@ -381,7 +446,8 @@ function NoteEditor({ leadId, initialNote, onSave }: { leadId: number; initialNo
               setBusy(false);
             }
           }}
-          className="text-xs bg-mango-ink text-white px-3 py-1 rounded-md disabled:opacity-40"
+          className="c2ui text-[12px] font-semibold px-4 py-1.5 rounded-full disabled:opacity-40"
+          style={{ background: INK, color: 'white', border: `1px solid ${INK}` }}
         >
           {busy ? 'Saving…' : 'Save note'}
         </button>

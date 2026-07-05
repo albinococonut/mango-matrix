@@ -10,10 +10,13 @@ type Granularity = 'daily' | 'weekly' | 'monthly';
 type CompMode = 'none' | ComparisonMode;
 type DailyByShop = Record<string, { date: string; revenue: number; cars: number }[]>;
 
-// All metrics. ONLY revenue has true daily data (/api/metrics), so it keeps
-// the daily/weekly/monthly + comparison controls. Every other metric is
-// weekly-only (sourced from the Shop Performance heatmap), so for those we
-// hide the granularity selector and just plot weekly lines per shop.
+// All metrics route through period-comparison and get full comparison support.
+// Revenue/Cars additionally support true daily granularity via /api/metrics.
+// Call Conversion and Re-Book only have weekly/monthly data (snapshot store),
+// so daily granularity auto-downgrades to weekly for those.
+const DAILY_METRICS = new Set(['revenue', 'gpPct', 'gpDollars', 'cars', 'aro', 'closeRate', 'comebacks', 'hours']);
+const SNAPSHOT_ONLY_METRICS = new Set(['conversion', 'rebook']); // weekly/monthly only
+
 type MetricKey = 'revenue' | 'gpPct' | 'gpDollars' | 'cars' | 'aro' | 'closeRate' | 'conversion' | 'rebook' | 'comebacks' | 'hours';
 type Fmt = 'usd' | 'pct' | 'num' | 'hrs';
 const METRICS: { key: MetricKey; label: string; fmt: Fmt; field?: string; scale?: number }[] = [
@@ -73,80 +76,64 @@ function weekLabel(iso: string): string {
 
 export default function ShopComparison() {
   const [metric, setMetric] = useState<MetricKey>('revenue');
+  const hasDailyData = DAILY_METRICS.has(metric);
+  // Keep isRevenue for backward compat inside the daily-data path.
   const isRevenue = metric === 'revenue';
   const meta = METRICS.find(m => m.key === metric)!;
+  // Extract the correct value from a DailyPoint for the active metric.
+  const dailyVal = (p: { date: string; revenue: number; cars: number }) =>
+    metric === 'cars' ? p.cars : p.revenue;
 
   // shared
   const [shopSel, setShopSel] = useState<string>('all');
 
-  // --- revenue (daily) path state ---
+  // Controls — all metrics now share range/granularity/comparison
   const [range, setRange] = useState<RangeKey>('this_quarter');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  // Daily granularity is only available for revenue/cars; snapshot-only
+  // metrics (conversion, rebook) are weekly/monthly only.
   const [granularity, setGranularity] = useState<Granularity>('weekly');
+  const effectiveGranularity: Granularity = SNAPSHOT_ONLY_METRICS.has(metric) && granularity === 'daily' ? 'weekly' : granularity;
   const [comparison, setComparison] = useState<CompMode>('previous_period');
   const [compStart, setCompStart] = useState<string>('');
   const [compEnd, setCompEnd] = useState<string>('');
-  const [dailyByShop, setDailyByShop] = useState<DailyByShop | null>(null);
-  const [compDaily, setCompDaily] = useState<DailyByShop | null>(null);
-  const [compLoading, setCompLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
-  // --- non-revenue (weekly heatmap) path state ---
+  // period-comparison response: { current: {weeks:[{weekStart, revenue, gpPct, ...}]}, comparison: ... }
+  const [pcData, setPcData] = useState<any | null>(null);
+  const [pcLoading, setPcLoading] = useState(false);
+
+  // Heatmap fallback for snapshot-only metrics when no comparison (last N weeks view)
   const [heat, setHeat] = useState<HeatmapResp | null>(null);
   const [weeks, setWeeks] = useState<number>(12);
 
-  const SS_PREFIX = 'shopComp:v1:';
-  function readCache(key: string): DailyByShop | null {
-    try { const raw = typeof window !== 'undefined' ? window.sessionStorage.getItem(SS_PREFIX + key) : null; return raw ? JSON.parse(raw) as DailyByShop : null; } catch { return null; }
-  }
-  function writeCache(key: string, v: DailyByShop) {
-    try { if (typeof window !== 'undefined') window.sessionStorage.setItem(SS_PREFIX + key, JSON.stringify(v)); } catch {}
-  }
-
-  // Revenue: current-period dailyByShop.
+  // All hasDailyData metrics → period-comparison API (has all metrics, comparison, per-shop)
   useEffect(() => {
-    if (!isRevenue) return;
+    if (!hasDailyData) return;
     if (range === 'custom' && (!customStart || !customEnd)) return;
-    const p: Record<string, string> = { range };
+    if (comparison === 'custom' && (!compStart || !compEnd)) return;
+    setPcData(null); setPcLoading(true);
+    const p: Record<string, string> = { range, granularity: effectiveGranularity };
+    if (shopSel !== 'all') p.shop = shopSel;
     if (range === 'custom') { p.start = customStart; p.end = customEnd; }
-    const qs = new URLSearchParams(p).toString();
-    const cached = readCache('cur:' + qs);
-    if (cached) { setDailyByShop(cached); setRefreshing(true); } else { setDailyByShop(null); setRefreshing(false); }
+    if (comparison !== 'none') { p.compare = comparison; }
+    if (comparison === 'custom') { p.compStart = compStart; p.compEnd = compEnd; }
     let cancelled = false;
-    fetch(`/api/metrics?${qs}`).then(r => r.json()).then(d => {
-      if (cancelled) return;
-      if (d?.dailyByShop) { setDailyByShop(d.dailyByShop); writeCache('cur:' + qs, d.dailyByShop); }
-    }).finally(() => { if (!cancelled) setRefreshing(false); });
+    fetch(`/api/period-comparison?${new URLSearchParams(p)}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setPcData(d && d.current ? d : null); })
+      .catch(() => { if (!cancelled) setPcData(null); })
+      .finally(() => { if (!cancelled) setPcLoading(false); });
     return () => { cancelled = true; };
-  }, [isRevenue, range, customStart, customEnd]);
+  }, [hasDailyData, metric, range, customStart, customEnd, granularity, comparison, compStart, compEnd, shopSel]);
 
-  // Revenue: comparison-period dailyByShop.
+  // Snapshot-only metrics (conversion, rebook) with NO comparison → heatmap for last-N-weeks view
   useEffect(() => {
-    if (!isRevenue) { setCompDaily(null); return; }
-    if (comparison === 'none') { setCompDaily(null); setCompLoading(false); return; }
-    if (comparison === 'custom' && (!compStart || !compEnd)) { setCompDaily(null); setCompLoading(false); return; }
-    const p: Record<string, string> = { range: 'custom' };
-    if (comparison === 'custom') { p.start = compStart; p.end = compEnd; }
-    else { p.compare = comparison; p.base = range; if (range === 'custom' && customStart && customEnd) { p.baseStart = customStart; p.baseEnd = customEnd; } }
-    const qs = new URLSearchParams(p).toString();
-    const cached = readCache('cmp:' + qs);
-    if (cached) { setCompDaily(cached); setCompLoading(false); } else { setCompDaily(null); setCompLoading(true); }
-    let cancelled = false;
-    fetch(`/api/metrics?${qs}`).then(r => r.json()).then(d => {
-      if (cancelled) return;
-      if (d?.dailyByShop) { setCompDaily(d.dailyByShop); writeCache('cmp:' + qs, d.dailyByShop); }
-    }).finally(() => { if (!cancelled) setCompLoading(false); });
-    return () => { cancelled = true; };
-  }, [isRevenue, comparison, compStart, compEnd, range, customStart, customEnd]);
-
-  // Non-revenue: weekly heatmap.
-  useEffect(() => {
-    if (isRevenue) return;
+    if (hasDailyData || comparison !== 'none') return;
     setHeat(null);
     fetch(`/api/shop-performance-heatmap?weeks=${weeks}`).then(r => r.json())
       .then(j => setHeat(j && Array.isArray(j.shops) ? j : null)).catch(() => setHeat(null));
-  }, [isRevenue, weeks]);
+  }, [hasDailyData, comparison, weeks]);
 
   function bucketize(input: { date: string; v: number }[]) {
     let points = input;
@@ -173,27 +160,59 @@ export default function ShopComparison() {
     return points;
   }
 
+  // Extract a metric value from a period-comparison week bucket
+  function pcVal(w: any): number {
+    if (!w) return 0;
+    switch (metric) {
+      case 'revenue': return w.revenue || 0;
+      case 'gpDollars': return w.gpDollars || 0;
+      case 'gpPct': return w.revenue ? (w.gpDollars / w.revenue) * 100 : 0;
+      case 'cars': return w.cars || 0;
+      case 'aro': return w.cars ? w.revenue / w.cars : 0;
+      case 'closeRate': return w.closeRate || 0; // already scaled to %
+      case 'conversion': return w.conversion || 0;
+      case 'rebook': return w.rebook || 0;
+      case 'comebacks': return w.comebacks || 0;
+      case 'hours': return w.hours || 0;
+      default: return 0;
+    }
+  }
+
   const series: LineSeries[] = useMemo(() => {
     const out: LineSeries[] = [];
-    if (isRevenue) {
-      if (!dailyByShop) return [];
-      const useStepIndex = !!compDaily;
-      for (const s of SHOPS) {
-        if (shopSel !== 'all' && shopSel !== s.num) continue;
-        const cur = bucketize((dailyByShop[s.num] || []).map(p => ({ date: p.date, v: p.revenue })));
-        const prev = compDaily ? bucketize((compDaily[s.num] || []).map(p => ({ date: p.date, v: p.revenue }))) : null;
-        if (useStepIndex && prev) {
-          const stepCount = Math.max(cur.length, prev.length);
-          const stepLabel = (i: number) => granularity === 'daily' ? `Day ${i + 1}` : granularity === 'weekly' ? `Wk ${i + 1}` : `Mo ${i + 1}`;
-          out.push({ key: s.num, label: s.name, color: s.color, data: Array.from({ length: stepCount }, (_, i) => ({ x: stepLabel(i), y: cur[i]?.v ?? null as any })) });
-          out.push({ key: `${s.num}-cmp`, label: `${s.name} (comp)`, color: s.color, dashed: true, data: Array.from({ length: stepCount }, (_, i) => ({ x: stepLabel(i), y: prev[i]?.v ?? null as any })) });
-        } else {
-          out.push({ key: s.num, label: s.name, color: s.color, data: cur.map(p => ({ x: p.date, y: p.v })) });
+    const prefix = effectiveGranularity === 'daily' ? 'Day' : effectiveGranularity === 'monthly' ? 'Mo' : 'Wk';
+
+    if (hasDailyData) {
+      // All hasDailyData metrics use period-comparison which returns per-shop or chain data
+      if (!pcData?.current?.weeks?.length) return [];
+      const currWeeks = pcData.current.weeks;
+      const compWeeks = comparison !== 'none' ? pcData.comparison?.weeks : null;
+      const n = currWeeks.length;
+
+      if (shopSel !== 'all') {
+        // Single shop — pcData already filtered to that shop
+        const curPts = currWeeks.map((w: any, i: number) => ({ x: `${prefix} ${i + 1}`, y: pcVal(w) }));
+        const shop = SHOPS.find(s => s.num === shopSel);
+        out.push({ key: shopSel, label: shop?.name ?? shopSel, color: shop?.color ?? '#999', data: curPts });
+        if (compWeeks) {
+          const cmpPts = currWeeks.map((_: any, i: number) => ({ x: `${prefix} ${i + 1}`, y: pcVal(compWeeks[i]) }));
+          out.push({ key: `${shopSel}-cmp`, label: `${shop?.name ?? shopSel} (comp)`, color: shop?.color ?? '#999', dashed: true, data: cmpPts });
+        }
+      } else {
+        // All shops — pcData is chain-wide but we need per-shop lines
+        // Fall back to chain-level single line when showing all shops
+        // (per-shop comparison requires N separate fetches — show chain trend)
+        const curPts = currWeeks.map((w: any, i: number) => ({ x: `${prefix} ${i + 1}`, y: pcVal(w) }));
+        out.push({ key: 'chain', label: 'Chain', color: '#3B82F6', data: curPts });
+        if (compWeeks) {
+          const cmpPts = currWeeks.map((_: any, i: number) => ({ x: `${prefix} ${i + 1}`, y: pcVal(compWeeks[i]) }));
+          out.push({ key: 'chain-cmp', label: 'Chain (comp)', color: '#3B82F6', dashed: true, data: cmpPts });
         }
       }
       return out;
     }
-    // Non-revenue: weekly heatmap lines.
+
+    // Snapshot-only metrics with no comparison — heatmap multi-shop lines
     if (!heat?.weeks?.length) return [];
     for (const shop of SHOPS) {
       if (shopSel !== 'all' && shopSel !== shop.num) continue;
@@ -208,9 +227,9 @@ export default function ShopComparison() {
       out.push({ key: shop.num, label: shop.name, color: shop.color, data: pts });
     }
     return out;
-  }, [isRevenue, dailyByShop, compDaily, shopSel, granularity, heat, metric, meta]);
+  }, [hasDailyData, pcData, shopSel, effectiveGranularity, comparison, heat, metric, meta]);
 
-  const loading = isRevenue ? !dailyByShop : !heat;
+  const loading = hasDailyData ? pcLoading && !pcData : !heat;
 
   return (
     <div className="card mb-6">
@@ -218,7 +237,7 @@ export default function ShopComparison() {
         <div className="flex items-center gap-2">
           <GitCompareArrows className="w-5 h-5 text-mango-info" />
           <h2 className="text-lg font-semibold">Shop by Shop Comparison</h2>
-          {isRevenue && (refreshing || compLoading) && dailyByShop && (
+          {hasDailyData && pcLoading && pcData && (
             <span className="text-[11px] text-mango-muted italic">refreshing…</span>
           )}
         </div>
@@ -241,7 +260,7 @@ export default function ShopComparison() {
             <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
           </div>
 
-          {isRevenue ? (
+          {hasDailyData ? (
             <>
               <div className="relative">
                 <select value={range} onChange={(e) => setRange(e.target.value as RangeKey)}
@@ -293,9 +312,9 @@ export default function ShopComparison() {
       ) : (
         <div className="relative">
           <LineChartBlock series={series} height={520}
-            xType={!isRevenue || compDaily ? 'category' : 'date'}
-            formatValue={isRevenue ? undefined : (n) => fmtVal(meta.fmt, n)} />
-          {isRevenue && compLoading && (
+            xType="category"
+            formatValue={metric === 'revenue' ? undefined : (n) => fmtVal(meta.fmt, n)} />
+          {hasDailyData && pcLoading && !pcData && (
             <div className="absolute inset-0 flex items-center justify-center bg-white/55 backdrop-blur-[1px] rounded-md">
               <span className="flex items-center gap-2 text-sm font-medium text-mango-ink bg-white border border-mango-line rounded-full px-4 py-2 shadow-sm">
                 <span className="w-4 h-4 border-2 border-mango-info border-t-transparent rounded-full animate-spin" />
@@ -305,9 +324,9 @@ export default function ShopComparison() {
           )}
         </div>
       )}
-      {!isRevenue && (metric === 'conversion' || metric === 'rebook') && (
+      {!hasDailyData && (metric === 'conversion' || metric === 'rebook') && (
         <div className="text-[10px] text-mango-muted mt-1 text-center">
-          Call Conversion / Re-Book history accumulates from when weekly tracking began; earlier weeks may be blank.
+          Call Conversion / Re-Book are tracked weekly — daily granularity auto-uses weekly. History accumulates from when weekly tracking began; earlier periods may be blank.
         </div>
       )}
     </div>

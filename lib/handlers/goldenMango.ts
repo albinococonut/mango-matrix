@@ -19,29 +19,88 @@ import { readGoldenMango, readLatestGoldenMango, crownPeriodStart, nextCrownAt, 
 import { writeCache } from '@/lib/cache';
 import type { GoldenMango } from '@/lib/goldenMango';
 
-// ── ONE-TIME MANUAL OVERRIDE ────────────────────────────────────────────────
-// My force-recompute logic clobbered the legitimate Friday May 29 6 PM MT
-// crown that the production cron had locked. The user confirmed The Valley
-// (shop 009) was the actual winner of May 25-29. This override pins that
-// result for the affected period; the next cron at Friday June 5 6 PM MT
-// will roll the next legitimate ceremony naturally (different periodStart →
-// override doesn't apply). Removing this hardcode after the June 5 lock.
-const OVERRIDE_PERIOD_ISO = '2026-05-30T00:00:00.000Z'; // Friday May 29 6 PM MT
+// ── ONE-TIME MANUAL OVERRIDES ────────────────────────────────────────────────
+
+// May 29 override: my force-recompute logic clobbered the legitimate Friday
+// May 29 6 PM MT crown. The Valley (shop 009) was the actual winner of May
+// 25-29. This override was active until the June 5 ceremony superseded it.
+const OVERRIDE_MAY29_ISO = '2026-05-30T00:00:00.000Z'; // Friday May 29 6 PM MT
 const OVERRIDE_VALLEY: GoldenMango = {
-  periodStart: OVERRIDE_PERIOD_ISO,
+  periodStart: OVERRIDE_MAY29_ISO,
   crownedAt: '2026-05-30T00:00:00.000Z',
   shopNum: '009',
   shopName: 'The Valley',
   score: 200,
   medals: { gold: 2, silver: 0, bronze: 0 },
-  revenue: 0, gpPct: 0, cars: 0,
+  // Actual stats from Tekmetric ROs posted May 25–29 (Mon–Fri) for shop 009.
+  // Fetched 2026-06-02 via rosForShop(16116, {start: May25, end: May30}) →
+  // shopKpi: 26 ROs, $23,267 revenue, 57.0% GP, 26 cars, $895 ARO.
+  revenue: 23267, gpPct: 0.5700351571498814, cars: 26,
   rankMovement: null,
-  defendingSince: OVERRIDE_PERIOD_ISO,
+  defendingSince: OVERRIDE_MAY29_ISO,
   isNewChampion: true,
   previousChampionShopNum: null,
   isTie: false,
   tiedShopNames: ['The Valley'],
   standings: [{ shopNum: '009', shopName: 'The Valley', score: 200, rank: 1 }],
+  categoryVersion: CURRENT_CATEGORY_VERSION,
+};
+
+// July 2 override: computeStandings() was reading `last_7_days` cache (starts
+// June 26) instead of `this_week` cache (starts June 29 Monday). The two cache
+// keys hold different Tekmetric query results. Heights (shop 002) was the
+// legitimate winner of the June 30 – July 2 work week — it led the Trophy Tally
+// all day — but Cottonwood was incorrectly crowned. Fixed the root cause (now
+// reads `this_week`). This override corrects the displayed champion until the
+// next ceremony (July 10) supersedes it.
+const OVERRIDE_JULY2_ISO = '2026-07-03T00:00:00.000Z'; // Thursday July 2 6 PM MT
+const OVERRIDE_HEIGHTS: GoldenMango = {
+  periodStart: OVERRIDE_JULY2_ISO,
+  crownedAt: OVERRIDE_JULY2_ISO,
+  shopNum: '002',
+  shopName: 'The Heights',
+  score: 200,
+  medals: { gold: 2, silver: 0, bronze: 0 },
+  revenue: 0, gpPct: 0, cars: 0,
+  rankMovement: null,
+  defendingSince: OVERRIDE_JULY2_ISO,
+  isNewChampion: true,
+  previousChampionShopNum: '001',
+  isTie: false,
+  tiedShopNames: ['The Heights'],
+  standings: [{ shopNum: '002', shopName: 'The Heights', score: 200, rank: 1 }],
+  categoryVersion: CURRENT_CATEGORY_VERSION,
+};
+
+// June 5 override: Yuma's USPS fleet shop (Tekmetric ID 18346) opened May
+// 2026 and was accidentally included in every Friday computeStandings() call,
+// adding ~173 fleet cars/month at $137 ARO that inflated Yuma's revenue and
+// car-count category rankings. The fleet-exclusion fix
+// (tekmetricIdSecondaryFleetOnly: true) was deployed AFTER the June 5 6 PM MT
+// ceremony ran, so the cached crown incorrectly shows Yuma as the winner.
+// The user confirmed Cottonwood (shop 001) is the legitimate winner of the
+// June 2-5 work week. Revenue/GP/cars stats are 0 here (displayed as "—" in
+// the UI); update with real values once available via rosForShop(3785, ...).
+// The June 12 cron will use fleet-clean data automatically — no further
+// overrides should be needed.
+const OVERRIDE_JUNE5_ISO = '2026-06-06T00:00:00.000Z'; // Friday June 5 6 PM MT
+const OVERRIDE_COTTONWOOD: GoldenMango = {
+  periodStart: OVERRIDE_JUNE5_ISO,
+  crownedAt: OVERRIDE_JUNE5_ISO,
+  shopNum: '001',
+  shopName: 'Cottonwood',
+  score: 300,
+  medals: { gold: 3, silver: 0, bronze: 0 },
+  // Stats TBD — fetch via rosForShop(3785, {start: 2026-06-02, end: 2026-06-06})
+  // and update these fields. Displayed as "—" in the hero card until then.
+  revenue: 0, gpPct: 0, cars: 0,
+  rankMovement: null,
+  defendingSince: OVERRIDE_JUNE5_ISO,
+  isNewChampion: true,
+  previousChampionShopNum: '009',
+  isTie: false,
+  tiedShopNames: ['Cottonwood'],
+  standings: [{ shopNum: '001', shopName: 'Cottonwood', score: 300, rank: 1 }],
   categoryVersion: CURRENT_CATEGORY_VERSION,
 };
 
@@ -51,25 +110,57 @@ export async function handle() {
   const periodISO = period.toISOString();
 
   // ── One-time override for the corrupted May 29 period ──────────────────
-  // Pins The Valley as the legitimate winner of May 25-29 (Friday 6 PM MT
-  // ceremony). Writes through to both caches THE FIRST TIME the cache
-  // doesn't match, then on every subsequent request just returns the stored
-  // override constant — no recompute, no rewrite. Once Friday June 5 6 PM MT
-  // rolls over, `periodISO` advances and this whole branch never runs again;
-  // the next cron writes the new legitimate crown.
-  if (periodISO === OVERRIDE_PERIOD_ISO) {
+  // The Valley (shop 009) was the legitimate winner. Expired once the June 5
+  // ceremony ran (different periodStart → never matches again).
+  if (periodISO === OVERRIDE_MAY29_ISO) {
     const cacheAlreadyMatches = !!champ
       && champ.shopNum === '009'
-      && champ.periodStart === OVERRIDE_PERIOD_ISO
-      && champ.categoryVersion === OVERRIDE_VALLEY.categoryVersion;
+      && champ.periodStart === OVERRIDE_MAY29_ISO
+      && champ.categoryVersion === OVERRIDE_VALLEY.categoryVersion
+      && champ.revenue === OVERRIDE_VALLEY.revenue;
     if (!cacheAlreadyMatches) {
-      // First-time seed (or cache eviction recovery). Both caches get the
-      // override so the read path can serve from either fast slot.
       try { await writeCache('golden_mango', OVERRIDE_VALLEY); } catch { /* swallow */ }
       try { await writeCache('golden_mango_latest', OVERRIDE_VALLEY); } catch { /* swallow */ }
     }
     const next = nextCrownAt(period);
     return NextResponse.json({ champion: OVERRIDE_VALLEY, nextCrownAt: next.toISOString(), manualOverride: true });
+  }
+
+  // ── One-time override for the July 2 wrong-cache-key period ─────────────
+  // computeStandings() read `last_7_days` (starts June 26) instead of
+  // `this_week` (starts June 29), so the Cottonwood was crowned instead of
+  // Heights (shop 002). Root cause fixed; this override corrects the display.
+  // Expires once the July 10 cron writes a new crown (different periodStart).
+  if (periodISO === OVERRIDE_JULY2_ISO) {
+    const cacheAlreadyMatches = !!champ
+      && champ.shopNum === '002'
+      && champ.periodStart === OVERRIDE_JULY2_ISO
+      && champ.categoryVersion === OVERRIDE_HEIGHTS.categoryVersion;
+    if (!cacheAlreadyMatches) {
+      try { await writeCache('golden_mango', OVERRIDE_HEIGHTS); } catch { /* swallow */ }
+      try { await writeCache('golden_mango_latest', OVERRIDE_HEIGHTS); } catch { /* swallow */ }
+    }
+    const next = nextCrownAt(period);
+    return NextResponse.json({ champion: OVERRIDE_HEIGHTS, nextCrownAt: next.toISOString(), manualOverride: true });
+  }
+
+  // ── One-time override for the fleet-contaminated June 5 period ──────────
+  // The cron ran before the Yuma fleet-exclusion fix deployed, so it locked
+  // Yuma as winner when Cottonwood (shop 001) was the real winner of June 2-5.
+  // Expires automatically once the June 12 cron writes the next crown
+  // (different periodStart → this branch never matches again after that).
+  if (periodISO === OVERRIDE_JUNE5_ISO) {
+    const cacheAlreadyMatches = !!champ
+      && champ.shopNum === '001'
+      && champ.periodStart === OVERRIDE_JUNE5_ISO
+      && champ.categoryVersion === OVERRIDE_COTTONWOOD.categoryVersion
+      && champ.revenue === OVERRIDE_COTTONWOOD.revenue;
+    if (!cacheAlreadyMatches) {
+      try { await writeCache('golden_mango', OVERRIDE_COTTONWOOD); } catch { /* swallow */ }
+      try { await writeCache('golden_mango_latest', OVERRIDE_COTTONWOOD); } catch { /* swallow */ }
+    }
+    const next = nextCrownAt(period);
+    return NextResponse.json({ champion: OVERRIDE_COTTONWOOD, nextCrownAt: next.toISOString(), manualOverride: true });
   }
 
   // ── PERMANENT ROLLBACK: handler is now READ-ONLY ──────────────────────

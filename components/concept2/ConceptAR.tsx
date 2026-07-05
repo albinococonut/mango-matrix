@@ -24,7 +24,7 @@ const fmtDate = (iso: string) => { const d = new Date(iso); return isNaN(d.getTi
 type ARSortKey = 'customerName' | 'shopName' | 'roNumber' | 'invoiceDate' | 'daysOverdue' | 'balance' | 'totalOwedByCustomer' | 'status';
 
 export default function ConceptAR({ id = 'receivables', eyebrow = 'Accounts Receivable' }: { id?: string; eyebrow?: string }) {
-  const [mode, setMode] = useState('total');
+  const [mode, setMode] = useState('over30');
   const [range, setRange] = useState('ytd');
   const [shopSel, setShopSel] = useState('all');
   const [data, setData] = useState<any | null>(null);

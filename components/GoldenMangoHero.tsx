@@ -188,9 +188,9 @@ export default function GoldenMangoHero() {
 
                 <div className="mt-7 flex flex-wrap gap-x-10 gap-y-4 pt-5"
                   style={{ borderTop: `1px solid ${GOLD_SOFT}` }}>
-                  <Stat label="Revenue" value={fmtUsd(champ.revenue)} />
-                  <Stat label="GP %" value={`${(champ.gpPct * 100).toFixed(1)}%`} />
-                  <Stat label="Cars Serviced" value={String(champ.cars)} />
+                  <Stat label="Revenue" value={champ.revenue > 0 ? fmtUsd(champ.revenue) : '—'} />
+                  <Stat label="GP %" value={champ.gpPct > 0 ? `${(champ.gpPct * 100).toFixed(1)}%` : '—'} />
+                  <Stat label="Cars Serviced" value={champ.cars > 0 ? String(champ.cars) : '—'} />
                   <Stat label="Defending Since" value={fmtDate(champ.defendingSince)} />
                 </div>
               </div>

@@ -38,3 +38,4 @@ data/cache/*
 # Disabled/scratch routes (kept locally, not deployed)
 _disabled_routes/
 _disabled_jobs/
+.env*

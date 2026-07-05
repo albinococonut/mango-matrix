@@ -104,8 +104,9 @@ function useCountdown(targetISO: string | null) {
 }
 
 function useClock() {
-  const [now, setNow] = useState<Date>(new Date());
+  const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
+    setNow(new Date());
     const id = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(id);
   }, []);
@@ -127,9 +128,16 @@ export default function Concept2TVDashboard() {
   // -- fetch all data sources, refresh every 60 s
   useEffect(() => {
     let alive = true;
-    const safe = async <T,>(url: string): Promise<T | null> => {
-      try { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) return null; return await r.json(); }
-      catch { return null; }
+    const safe = async <T,>(url: string, ms = 25000): Promise<T | null> => {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), ms);
+        try {
+          const r = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+          if (!r.ok) return null;
+          return await r.json();
+        } finally { clearTimeout(timer); }
+      } catch { return null; }
     };
     const refetch = async () => {
       const [gm, met, br, tk, fr, cb] = await Promise.all([
@@ -187,7 +195,7 @@ export default function Concept2TVDashboard() {
       // tint gradient that lives behind every concept2 page, scaled up for
       // a TV. Renders as ambient color around the letterboxed 1920×1080
       // content when the host screen isn't a perfect 16:9.
-      background: 'radial-gradient(120% 90% at 30% 10%, #FBF6E7 0%, #F7F1DD 45%, #F4ECD0 100%)',
+      background: 'radial-gradient(120% 90% at 30% 10%, #FBFAF8 0%, #F5F4F1 45%, #EFEDE9 100%)',
       fontFamily: FF_UI,
       color: C2_INK,
     }}>
@@ -196,7 +204,7 @@ export default function Concept2TVDashboard() {
         // The .tv-root surface is a soft cream-on-cream gradient so tiles
         // (white-frosted) read as elevated panels floating on a warm bed
         // rather than white-on-white. Matches concept2 page surfaces.
-        background: 'linear-gradient(160deg, #FBF6E7 0%, #F7F1DD 60%, #F2E9CB 100%)',
+        background: 'linear-gradient(160deg, #FBFAF8 0%, #F5F4F1 60%, #EEECE8 100%)',
         boxSizing: 'border-box', padding: 16, gap: 14,
         display: 'grid',
         gridTemplateRows: '160px 1fr 1fr',
@@ -254,7 +262,7 @@ function HeroStrip({ champion, nextCrownAt, lastUpdated }: {
       // than the page cream so the hero feels like a stage. Triple shadow:
       // 1 px inset gold thread, 1 px inset white highlight (depth),
       // outer drop-shadow for lift. Reads as a piece of editorial chrome.
-      background: 'linear-gradient(140deg, #FFFDF5 0%, #FDF6E2 55%, #F8EBC6 100%)',
+      background: 'linear-gradient(140deg, #FEFEFE 0%, #F9F8F5 55%, #F3F1EC 100%)',
       boxShadow:
         'inset 0 0 0 1px rgba(201,162,39,0.32), ' +
         'inset 0 1px 0 rgba(255,255,255,0.75), ' +
@@ -277,7 +285,7 @@ function HeroStrip({ champion, nextCrownAt, lastUpdated }: {
           any letterbox bands when the photo's aspect ratio doesn't match. */}
       <div style={{
         width: 220, height: '100%', borderRadius: '22px 0 0 22px', overflow: 'hidden',
-        background: '#FBF6E7',
+        background: '#F5F4F1',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         position: 'relative',
         boxShadow: 'inset -1px 0 0 rgba(34,32,28,0.06)',

@@ -1,0 +1,42 @@
+/* ── Concept2 UI Refinements ────────────────────────────────────────────────
+   All polish tweaks are isolated here. To rollback entirely:
+   1. Remove the @import line from globals.css
+   2. Run: cp components/concept2/kit.tsx.prerefinements components/concept2/kit.tsx
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Skeleton shimmer animation ──────────────────────────────────────────── */
+@keyframes c2-shimmer-move {
+  0%   { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+.c2-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.0) 0%,
+    rgba(255,255,255,0.55) 40%,
+    rgba(255,255,255,0.55) 60%,
+    rgba(255,255,255,0.0) 100%
+  );
+  background-size: 600px 100%;
+  animation: c2-shimmer-move 1.6s ease-in-out infinite;
+}
+
+/* ── Dropdown hover — warm orange blush border ───────────────────────────── */
+.c2-select:hover {
+  border-color: rgba(232,134,62,0.45) !important;
+  outline: none;
+}
+.c2-select:focus {
+  border-color: rgba(232,134,62,0.6) !important;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(232,134,62,0.12), 0 1px 3px rgba(31,41,55,0.07) !important;
+}
+
+/* ── Thin custom scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(34,32,28,0.14); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(34,32,28,0.24); }
+
+/* ── Page header h1 — slightly bigger + tighter tracking ────────────────── */
+.c2-page-h1 { font-size: 44px !important; letter-spacing: -0.03em !important; }

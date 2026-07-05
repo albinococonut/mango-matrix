@@ -37,14 +37,21 @@ export async function rosForShop(shopId: number, w: WindowKey, maxAgeMs = SHORT_
 }
 
 export async function rosForChain(w: WindowKey, opts: { excludeSecondary?: boolean } = {}): Promise<RepairOrder[]> {
-  const out: RepairOrder[] = [];
+  // Build the full list of shop IDs to fetch in one pass, then fan out in
+  // parallel. Sequential fetching (the old pattern) wasted ~250ms per shop
+  // on every cache miss — with 8+ shops that adds up to 2–4s of dead wait.
+  const ids: number[] = [];
   for (const shop of SHOPS) {
-    out.push(...(await rosForShop(shop.tekmetricId, w)));
+    ids.push(shop.tekmetricId);
     if (shop.tekmetricIdSecondary && !opts.excludeSecondary) {
-      out.push(...(await rosForShop(shop.tekmetricIdSecondary, w)));
+      // Fleet-only secondaries (e.g. Yuma-B / 18346) are included here so their
+      // revenue reaches chainKpi for the Net Sales reconciliation. chainKpi
+      // buckets them separately and adds only revenue — never cars, GP, or ARO.
+      ids.push(shop.tekmetricIdSecondary);
     }
   }
-  return out;
+  const results = await Promise.all(ids.map(id => rosForShop(id, w)));
+  return results.flat();
 }
 
 /**
@@ -55,23 +62,31 @@ export async function rosForChain(w: WindowKey, opts: { excludeSecondary?: boole
  * shop windows were actually available so callers can flag partial data.
  */
 export async function rosForChainCached(w: WindowKey): Promise<{ ros: RepairOrder[]; hits: number; total: number }> {
-  const out: RepairOrder[] = [];
-  let hits = 0;
-  let total = 0;
+  const ids: number[] = [];
   for (const shop of SHOPS) {
-    const ids = [shop.tekmetricId, ...(shop.tekmetricIdSecondary ? [shop.tekmetricIdSecondary] : [])];
-    for (const id of ids) {
-      total++;
-      const v = await readCache<RepairOrder[]>(cacheKey(id, w));
-      if (v) { out.push(...v); hits++; }
-    }
+    // Same fleet-only exclusion as rosForChain — cached path must stay consistent.
+    ids.push(shop.tekmetricId);
+    if (shop.tekmetricIdSecondary) ids.push(shop.tekmetricIdSecondary);
   }
-  return { ros: out, hits, total };
+  const total = ids.length;
+  const values = await Promise.all(ids.map(id => readCache<RepairOrder[]>(cacheKey(id, w))));
+  const ros: RepairOrder[] = [];
+  let hits = 0;
+  for (const v of values) {
+    if (v) { ros.push(...v); hits++; }
+  }
+  return { ros, hits, total };
 }
 
 export async function rosForShopNum(num: ShopNum, w: WindowKey): Promise<RepairOrder[]> {
   const shop = SHOP_BY_NUM[num];
-  const out = await rosForShop(shop.tekmetricId, w);
-  if (shop.tekmetricIdSecondary) out.push(...(await rosForShop(shop.tekmetricIdSecondary, w)));
-  return out;
+  // Fleet-only secondaries excluded — same rule as rosForChain.
+  if (shop.tekmetricIdSecondary && !shop.tekmetricIdSecondaryFleetOnly) {
+    const [primary, secondary] = await Promise.all([
+      rosForShop(shop.tekmetricId, w),
+      rosForShop(shop.tekmetricIdSecondary, w),
+    ]);
+    return [...primary, ...secondary];
+  }
+  return rosForShop(shop.tekmetricId, w);
 }

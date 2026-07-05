@@ -25,7 +25,7 @@ jobs:
           # schedule) so this sweep stays well under Vercel's 300s function
           # cap. Without the split the full sweep ran ~5min and 504-timed-out.
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
-            -X POST "${SYNC_CRON_URL}?skip=warm-return-customers,refresh-booked-rate-strict" \
+            -X POST "${SYNC_CRON_URL}?skip=warm-return-customers,refresh-booked-rate-strict,warm-parts-matrix" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
             --max-time 290)

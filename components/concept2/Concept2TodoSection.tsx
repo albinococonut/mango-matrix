@@ -20,7 +20,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { ListChecks, CalendarX, Repeat, Wrench, Check, X, ExternalLink } from 'lucide-react';
+import { ListChecks, CalendarX, Repeat, Wrench, Check, X, ExternalLink, MessageSquare, PlayCircle } from 'lucide-react';
 import { usd, usdK } from '@/lib/format';
 import { SHOPS, SHOP_BY_NUM } from '@/lib/shops';
 
@@ -93,6 +93,8 @@ type CallbackRow = {
   resolvedAt?: string;
   resolvedBy?: string;
   tekmetricCustomerId?: number;   // set iff this caller matches an existing Tekmetric customer
+  transcriptPreview?: string;
+  recording?: string;
   _localStatus?: ResKind | null;
   _localCheckedAt?: string;
   _localResolvedBy?: string;
@@ -287,16 +289,18 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
   // recovered so visibly-checkmarked customers always get credited too.
   const [recoveredLedgerByShop, setRecoveredLedgerByShop] = useState<Record<string, string[]>>({});
 
-  const [shopNum, setShopNum] = useState<string>(() => {
-    if (typeof window === 'undefined') return SHOPS[0].num;
-    return window.sessionStorage.getItem(SHOP_SS_KEY) || SHOPS[0].num;
-  });
+  // Initialize from static defaults so server and client render identically
+  // (prevents hydration mismatch). Restore saved session values after mount.
+  const [shopNum, setShopNum] = useState<string>(SHOPS[0].num);
+  useEffect(() => {
+    try { const s = window.sessionStorage.getItem(SHOP_SS_KEY); if (s) setShopNum(s); } catch {}
+  }, []);
   useEffect(() => { try { window.sessionStorage.setItem(SHOP_SS_KEY, shopNum); } catch {} }, [shopNum]);
 
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === 'undefined') return 'callbacks';
-    return (window.sessionStorage.getItem(TAB_SS_KEY) as Tab) || 'callbacks';
-  });
+  const [tab, setTab] = useState<Tab>('callbacks');
+  useEffect(() => {
+    try { const t = window.sessionStorage.getItem(TAB_SS_KEY) as Tab; if (t) setTab(t); } catch {}
+  }, []);
   useEffect(() => { try { window.sessionStorage.setItem(TAB_SS_KEY, tab); } catch {} }, [tab]);
 
   // ---- Live presence ---------------------------------------------------
@@ -515,6 +519,8 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
                 resolvedAt: c.resolution?.resolvedAt,
                 resolvedBy: c.resolution?.resolvedBy,
                 tekmetricCustomerId: typeof c.tekmetricCustomerId === 'number' ? c.tekmetricCustomerId : undefined,
+                transcriptPreview: c.transcriptPreview ?? undefined,
+                recording: c.recording ?? undefined,
               });
             }
           }
@@ -675,7 +681,7 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
   return (
     <div className="rounded-[26px] border mb-6" style={{
       // Frosted ivory surface — same chrome as every other concept2 card.
-      background: 'linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.58))',
+      background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.82))',
       backdropFilter: 'blur(22px)',
       WebkitBackdropFilter: 'blur(22px)',
       borderColor: 'rgba(255,255,255,0.75)',
@@ -831,7 +837,7 @@ function TabButton({ active, onClick, icon, label, count, subtotal, loading }: {
       aria-pressed={active}
       className="c2ui shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-full text-[13px] transition"
       style={active
-        ? { background: '#221F1A', color: '#fff', boxShadow: '0 4px 14px -6px rgba(40,34,26,0.30)' }
+        ? { background: '#E8863E', color: '#fff', boxShadow: '0 4px 14px -6px rgba(140,60,10,0.30)' }
         : { background: 'rgba(255,255,255,0.6)', color: '#221F1A', boxShadow: 'inset 0 0 0 1px rgba(34,32,28,0.12)' }}
     >
       {icon}
@@ -973,48 +979,172 @@ function TaskRow({
 }
 
 function CallbackRowView({ c, onSet }: { c: CallbackRow; onSet: (leadId: number, kind: ResKind, shopNum: string) => void }) {
+  const [showTranscript, setShowTranscript] = useState(false);
   const kind = rowKind(c);
+  const done = kind !== 'open';
   const phoneStr = c.callerPhone == null ? '' : String(c.callerPhone);
-  // Link only if we have a verified Tekmetric customer match. The previous
-  // phone-search URL has been dropped — too often it just landed on an
-  // empty Tekmetric search page, which looked broken.
   const shopId = shopIdForNum(c.shopNum);
   const customerUrl = shopId && c.tekmetricCustomerId
     ? tekmetricCustomerUrl(shopId, c.tekmetricCustomerId)
     : undefined;
-  const probColor = c.probability >= 0.65 ? '#8B1F1F' : c.probability >= 0.45 ? '#7A5300' : '#6B7280';
-  const probBg   = c.probability >= 0.65 ? '#FDE2E2' : c.probability >= 0.45 ? '#FFE9B8' : '#F2EFE7';
+
+  // Concept2 design tokens (matches kit.tsx)
+  const INK   = '#221F1A';
+  const INK2  = '#5C5852';
+  const FAINT = '#938C81';
+  const LINE  = 'rgba(34,32,28,0.10)';
+  const LINE_STRONG = 'rgba(34,32,28,0.08)';
+
+  // Probability tier — card background tinted to signal urgency (concept2 pattern)
+  const probHigh = c.probability >= 0.65;
+  const probMid  = c.probability >= 0.45;
+  const cardBg      = probHigh ? 'rgba(192,90,46,0.07)' : probMid ? 'rgba(176,120,32,0.06)' : 'rgba(255,255,255,0.60)';
+  const cardBorder  = probHigh ? '1px solid rgba(192,90,46,0.22)' : probMid ? '1px solid rgba(176,120,32,0.18)' : `1px solid ${LINE}`;
+  const badgeBg     = probHigh ? 'rgba(192,90,46,0.12)' : probMid ? 'rgba(176,120,32,0.10)' : 'rgba(34,32,28,0.06)';
+  const badgeColor  = probHigh ? '#8E3F22' : probMid ? '#7A5200' : FAINT;
 
   return (
-    <TaskRow
-      rowKey={c.leadId}
-      kind={kind}
-      onRecover={() => onSet(c.leadId, kind === 'recovered' ? 'open' : 'recovered', c.shopNum)}
-      onNotRecover={() => onSet(c.leadId, kind === 'not_recovered' ? 'open' : 'not_recovered', c.shopNum)}
-      completedAt={checkedAt(c)}
-      completedBy={checkedBy(c)}
+    <motion.div
+      layout="position"
+      key={c.leadId}
+      transition={{ type: 'spring', stiffness: 500, damping: 40, mass: 0.6 }}
+      animate={{ opacity: done ? 0.42 : 1 }}
+      className="rounded-2xl p-4"
+      style={{ background: cardBg, border: cardBorder }}
     >
-      <div className="flex items-start gap-2 flex-wrap">
-        <CustomerLink name={c.callerName || 'Unknown caller'} customerUrl={customerUrl} existing={false} />
-        <span className="inline-block text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 mt-1" style={{ background: probBg, color: probColor }}>
-          {(c.probability * 100).toFixed(0)}%
-        </span>
-        <span className="text-[11px] text-mango-muted mt-1">· called {formatRelative(c.dateCreated)}</span>
+      {/* Header: name + badge + controls */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <CustomerLink name={c.callerName || 'Unknown caller'} customerUrl={customerUrl} existing={false} />
+          <span
+            className="c2ui shrink-0 text-[10.5px] font-bold uppercase tracking-[0.12em] rounded-full px-2.5 py-0.5"
+            style={{ background: badgeBg, color: badgeColor }}
+          >
+            {(c.probability * 100).toFixed(0)}%
+          </span>
+        </div>
+
+        {/* Concept2-native action controls */}
+        <div className="shrink-0 flex items-center gap-1.5">
+          {kind === 'recovered' ? (
+            <button
+              onClick={() => onSet(c.leadId, 'open', c.shopNum)}
+              className="c2ui inline-flex items-center gap-1 rounded-full text-[10.5px] font-semibold uppercase tracking-wide px-2.5 py-1 transition"
+              style={{ background: 'rgba(62,142,94,0.12)', border: '1px solid rgba(62,142,94,0.28)', color: '#2F6E3A' }}
+              title="Recovered — click to undo"
+            >
+              <Check className="w-3 h-3" strokeWidth={3} /> Recovered
+            </button>
+          ) : kind === 'not_recovered' ? (
+            <button
+              onClick={() => onSet(c.leadId, 'open', c.shopNum)}
+              className="c2ui inline-flex items-center gap-1 rounded-full text-[10.5px] font-semibold uppercase tracking-wide px-2.5 py-1 transition"
+              style={{ background: 'rgba(34,32,28,0.06)', border: `1px solid ${LINE}`, color: FAINT }}
+              title="Not recovered — click to undo"
+            >
+              <X className="w-3 h-3" strokeWidth={3} /> Not recovered
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => onSet(c.leadId, 'not_recovered', c.shopNum)}
+                className="c2ui inline-flex items-center gap-1 rounded-full text-[10.5px] font-medium px-2.5 py-1 transition"
+                style={{ background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: FAINT }}
+                title="Not recovered — worked it but couldn't win them back"
+              >
+                <X className="w-3 h-3" strokeWidth={2.5} /> Not recovered
+              </button>
+              <button
+                onClick={() => onSet(c.leadId, 'recovered', c.shopNum)}
+                className="c2ui inline-flex items-center justify-center w-7 h-7 rounded-full transition"
+                style={{ background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: FAINT }}
+                title="Mark recovered — counts toward this week's tally"
+              >
+                <Check className="w-3.5 h-3.5" strokeWidth={2.5} />
+              </button>
+            </>
+          )}
+        </div>
       </div>
-      {phoneStr ? (
-        <div className="text-lg font-semibold text-mango-ink tabular-nums mt-1 tracking-wide">{formatPhone(phoneStr)}</div>
-      ) : (
-        <div className="text-sm text-mango-muted italic mt-1">no phone on file</div>
+
+      {/* Phone — display numeral */}
+      <div className="mt-2">
+        {phoneStr
+          ? <div className="c2disp tabular-nums leading-none" style={{ color: INK, fontSize: 20, letterSpacing: '-0.01em' }}>{formatPhone(phoneStr)}</div>
+          : <div className="c2ui text-[13px]" style={{ color: FAINT, fontStyle: 'italic' }}>no phone on file</div>}
+      </div>
+
+      {/* Reason */}
+      {c.reason && <div className="c2ui mt-1.5 text-[12.5px]" style={{ color: INK2 }}>{c.reason}</div>}
+
+      {/* Angle */}
+      {c.angle && (
+        <div className="c2ui mt-0.5 text-[12px]" style={{ color: FAINT }}>
+          <span style={{ color: INK2, fontWeight: 600 }}>Angle:</span>{' '}{c.angle}
+        </div>
       )}
-      <div className="text-xs text-mango-ink/80 mt-1">{c.reason || '—'}</div>
-      {c.angle && <div className="text-xs text-mango-ink/70 mt-0.5 italic"><span className="font-medium not-italic">Angle:</span> {c.angle}</div>}
-      <div className="flex items-baseline justify-between mt-1.5">
-        <span className="text-[10px] uppercase text-mango-muted">est. lost</span>
-        <span className="text-sm font-bold text-mango-red tabular-nums" title="Salvageability probability × shop ARO from last 7 days">
-          {c.estimatedMissedRevenue > 0 ? usd(Math.round(c.estimatedMissedRevenue)) : '—'}
-        </span>
+
+      {/* Footer: time · est. lost · media buttons */}
+      <div className="mt-3 pt-2.5 flex items-end justify-between gap-2" style={{ borderTop: `1px solid ${LINE_STRONG}` }}>
+        <div className="flex items-center gap-3">
+          {c.estimatedMissedRevenue > 0 && (
+            <div>
+              <div className="c2ui text-[10.5px] uppercase tracking-[0.12em]" style={{ color: FAINT }}>Est. lost</div>
+              <div className="c2disp tabular-nums" style={{ color: '#8E3F22', fontSize: 16, fontWeight: 600 }}>
+                {usd(Math.round(c.estimatedMissedRevenue))}
+              </div>
+            </div>
+          )}
+          <div className="c2ui text-[11px]" style={{ color: FAINT }}>{formatRelative(c.dateCreated)}</div>
+        </div>
+
+        {(c.transcriptPreview || c.recording) && (
+          <div className="flex items-center gap-1.5">
+            {c.transcriptPreview && (
+              <button
+                onClick={() => setShowTranscript(v => !v)}
+                className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition"
+                style={showTranscript
+                  ? { background: 'rgba(232,134,62,0.12)', border: '1px solid rgba(232,134,62,0.35)', color: '#B5631F' }
+                  : { background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 }}
+              >
+                <MessageSquare className="w-3 h-3" /> Transcript
+              </button>
+            )}
+            {/* Recording always opens in a new tab — WhatConverts player or direct audio */}
+            {c.recording && (
+              <a
+                href={c.recording}
+                target="_blank"
+                rel="noreferrer"
+                className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition"
+                style={{ background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 }}
+              >
+                <PlayCircle className="w-3 h-3" /> Recording
+              </a>
+            )}
+          </div>
+        )}
       </div>
-    </TaskRow>
+
+      {/* Done: who/when */}
+      {done && (checkedAt(c) || checkedBy(c)) && (
+        <div className="c2ui flex items-center gap-1.5 mt-2 text-[11px]" style={{ color: FAINT }}>
+          {checkedAt(c) && <span>{formatRelative(checkedAt(c)!)}</span>}
+          {checkedBy(c) && <span>· by {shortActor(checkedBy(c)!)}</span>}
+        </div>
+      )}
+
+      {/* Transcript expand */}
+      {showTranscript && c.transcriptPreview && (
+        <div
+          className="c2ui mt-2 text-[12px] whitespace-pre-wrap rounded-xl p-3 max-h-48 overflow-y-auto"
+          style={{ background: 'rgba(255,255,255,0.55)', color: INK2, border: `1px solid ${LINE}`, lineHeight: 1.6 }}
+        >
+          {c.transcriptPreview}
+        </div>
+      )}
+    </motion.div>
   );
 }
 
