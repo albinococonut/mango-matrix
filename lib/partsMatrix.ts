@@ -39,20 +39,22 @@ export function matrixRetail(costCents: number): number {
 
 export type PricingType = 'canned' | 'matrix' | 'manual' | 'no_charge';
 
-// Classify a single part's pricing.
-// - canned: job came from a canned job template (cannedJobId set on the job)
-// - matrix: retail matches the compound matrix calculation within ±$0.10
-// - manual: retail deviates from matrix (price was manually set)
-// - no_charge: both cost and retail are $0 (e.g. included/free item outside canned job)
+// Classify a single part's pricing against the matrix.
+// - canned:    price matches matrix AND the job is a canned-job template
+// - matrix:    price matches matrix, job was built manually
+// - manual:    price deviates from matrix — always flagged, even inside canned jobs
+//              (so manual overrides within templates are visible, not hidden)
+// - no_charge: both cost and retail are $0
 export function classifyPricing(
   costCents: number,
   retailCents: number,
   cannedJobId: number | null,
 ): PricingType {
-  if (cannedJobId !== null) return 'canned';
   if (costCents === 0 && retailCents === 0) return 'no_charge';
   if (costCents <= 0) return 'manual';
   const expected = matrixRetail(costCents);
-  if (Math.abs(retailCents - expected) <= 10) return 'matrix';
+  if (Math.abs(retailCents - expected) <= 10) {
+    return cannedJobId !== null ? 'canned' : 'matrix';
+  }
   return 'manual';
 }
