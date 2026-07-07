@@ -184,10 +184,10 @@ const PAGE_SECTIONS = [
   { id: 'trends',  label: 'Trends' },
 ];
 
-// ── Chart palette — uses design-system tokens, not semantic GOOD/BAD ─────────
-const C_MATRIX  = '#5B9A6B';   // mg-green
-const C_MANUAL  = '#D1675A';   // mg-red
-const C_CANNED  = '#F5A623';   // mg-orange (Mango brand)
+// ── Chart palette — matches the shared design-system tokens ──────────────────
+const C_MATRIX  = '#3E8E5E';   // GOOD green (same as badge/status throughout)
+const C_MANUAL  = '#C05A2E';   // BAD red-orange (same as bad-variance indicators)
+const C_CANNED  = '#E8863E';   // AMBER orange (same as sidebar accent + WARN tones)
 
 // ── Main component ───────────────────────────────────────────────────────────
 export default function PartsMatrixUsage({ email }: { email: string }) {
