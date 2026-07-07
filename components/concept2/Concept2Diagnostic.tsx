@@ -1089,10 +1089,18 @@ function rowMed(cells: any[], pick: (c: any) => number) { const xs = cells.filte
 function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; weeks: string[]; metric: string; setMetric: (v: string) => void }) {
   const now = new Date();
   function revGoal(num: string, wkISO: string): number | undefined {
-    const weekly = DEFAULT_GOALS[num]?.revenueWeekly; if (!weekly) return undefined;
     const ws = new Date(wkISO + 'T12:00:00'); const we = new Date(ws); we.setDate(we.getDate() + 6); we.setHours(23, 59, 59);
-    if (we > now) { const total = workingDaysBetween(ws, we); const done = workingDaysBetween(ws, now); return total ? weekly * (done / total) : undefined; }
-    return weekly;
+    const prorate = (weekly: number): number | undefined => {
+      if (we > now) { const total = workingDaysBetween(ws, we); const done = workingDaysBetween(ws, now); return total ? weekly * (done / total) : undefined; }
+      return weekly;
+    };
+    if (num === 'all') {
+      let sum = 0, hasAny = false;
+      for (const s of SHOP_META) { const weekly = DEFAULT_GOALS[s.num]?.revenueWeekly; if (!weekly) continue; const v = prorate(weekly); if (v != null) { sum += v; hasAny = true; } }
+      return hasAny ? sum : undefined;
+    }
+    const weekly = DEFAULT_GOALS[num]?.revenueWeekly; if (!weekly) return undefined;
+    return prorate(weekly);
   }
   function colMax(pick: (c: any) => number) { let m = 0; for (const s of shops) for (const c of (s.cells || [])) { const v = c ? pick(c) : 0; if (v > m) m = v; } return m; }
   // Conversion bunches up against the absolute 60% target (everything reads
@@ -1110,7 +1118,7 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
       case 'gpDollars': { const m = rowMed(s.cells, (x) => x.gpDollars); const r = m ? c.gpDollars / m : null; return { tier: pctTier(r), big: usdK(c.gpDollars) }; }
       case 'gpPct': return { tier: gpTier(c.gpPct), big: (c.gpPct * 100).toFixed(0) + '%' };
       case 'closeRate': return { tier: closeTier(c.closeRate), big: (c.closeRate * 100).toFixed(0) + '%' };
-      case 'conversion': { const v = c.conversion == null || c.conversion < 0 ? null : c.conversion; if (v == null) return { tier: null, big: '--' }; const rel = convMax > convMin ? (v - convMin) / (convMax - convMin) : 0.6; const tier = (1 + Math.round((1 - rel) * 4)) as Tier; return { tier, big: v.toFixed(0) + '%' }; }
+      case 'conversion': { const v = c.conversion == null || c.conversion <= 0 ? null : c.conversion; if (v == null) return { tier: null, big: '--' }; const rel = convMax > convMin ? (v - convMin) / (convMax - convMin) : 0.6; const tier = (1 + Math.round((1 - rel) * 4)) as Tier; return { tier, big: v.toFixed(0) + '%' }; }
       case 'rebook': { const v = c.rebook == null || c.rebook < 0 ? null : c.rebook; return { tier: rebookTier(v), big: v == null ? '--' : v.toFixed(0) + '%' }; }
       case 'comebacks': { const v = c.comebackDollars ?? 0; return { tier: comebackTier(v, colMax((x) => x.comebackDollars ?? 0)), big: usdK(v) }; }
       case 'billedHours': { const m = rowMed(s.cells, (x) => x.billedHours ?? 0); const v = c.billedHours ?? 0; const r = m ? v / m : null; return { tier: pctTier(r), big: Math.round(v) + 'h' }; }
@@ -1118,6 +1126,36 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
       default: return { tier: null, big: '--' };
     }
   }
+  // Aggregate all shops into one combined row
+  const allRow = {
+    shopNum: 'all',
+    shopName: 'All Shops',
+    cells: weeks.map((_, wi) => {
+      const sc = shops.map((s) => (s.cells || [])[wi]).filter(Boolean);
+      if (!sc.length) return null;
+      const revenue = sc.reduce((a: number, c: any) => a + (c.revenue ?? 0), 0);
+      const cars = sc.reduce((a: number, c: any) => a + (c.cars ?? 0), 0);
+      const gpDollars = sc.reduce((a: number, c: any) => a + (c.gpDollars ?? 0), 0);
+      const crNumer = sc.reduce((a: number, c: any) => a + (c.closeRate ?? 0) * (c.cars ?? 0), 0);
+      const rebookVals = sc.map((c: any) => c.rebook).filter((v: any): v is number => v != null && v >= 0);
+      const convVals = sc.map((c: any) => c.conversion).filter((v: any): v is number => v != null && v >= 0);
+      const ratingVals = sc.map((c: any) => c.rating).filter((v: any): v is number => v != null && v > 0);
+      return {
+        revenue, cars,
+        aro: cars > 0 ? revenue / cars : 0,
+        closeRate: cars > 0 ? crNumer / cars : 0,
+        gpDollars, gpPct: revenue > 0 ? gpDollars / revenue : 0,
+        partsGpPct: 0, laborGpPct: 0,
+        discounts: sc.reduce((a: number, c: any) => a + (c.discounts ?? 0), 0),
+        comebacks: sc.reduce((a: number, c: any) => a + (c.comebacks ?? 0), 0),
+        comebackDollars: sc.reduce((a: number, c: any) => a + (c.comebackDollars ?? 0), 0),
+        billedHours: sc.reduce((a: number, c: any) => a + (c.billedHours ?? 0), 0),
+        rebook: rebookVals.length ? rebookVals.reduce((a: number, v: number) => a + v, 0) / rebookVals.length : undefined,
+        conversion: convVals.length ? convVals.reduce((a: number, v: number) => a + v, 0) / convVals.length : undefined,
+        rating: ratingVals.length ? ratingVals.reduce((a: number, v: number) => a + v, 0) / ratingVals.length : undefined,
+      };
+    }),
+  };
   const wkLabel = (iso: string, i: number) => (i === weeks.length - 1 ? 'now' : new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }));
   return (
     <Card id="performance" eyebrow="Shop Performance" title="Performance heatmap" sub="Every shop across the last 12 weeks. Cooler = on pace, warmer = needs attention."
@@ -1137,6 +1175,20 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
                     <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 12.5 }}>{big}</span>
                   </td>); })}
               </tr>); })}
+            {/* Spacer + All Shops combined row */}
+            <tr aria-hidden><td colSpan={1 + weeks.length} style={{ height: 8, padding: 0 }} /></tr>
+            <tr key="all">
+              <td className="c2ui pr-3 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: INK }}>
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: 'rgba(34,32,28,0.30)' }} />
+                  All Shops
+                </span>
+              </td>
+              {weeks.map((w, i) => { const c = allRow.cells[i]; const { tier, big } = cellRender(allRow, c, w); return (
+                <td key={w} className="rounded-lg text-center align-middle" style={{ ...(c ? heatCell(tierScore(tier)) : { background: 'rgba(34,32,28,0.03)' }), height: 42 }}>
+                  <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 12.5 }}>{big}</span>
+                </td>); })}
+            </tr>
           </tbody>
         </table>
       </div>

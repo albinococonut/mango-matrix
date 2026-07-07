@@ -272,7 +272,7 @@ export async function backfillWeekMetricsForShop(weekStartYmd: string, shopNum: 
       conversionPct = Math.round((booked / eligible.length) * 1000) / 10;
       convDetail = `conv ${booked}/${eligible.length} (${conversionPct}%)`;
     } else {
-      conversionPct = 0; convDetail = 'conv 0 eligible';
+      conversionPct = null; convDetail = 'conv 0 eligible';
     }
   } catch (e: any) {
     convDetail = `conv FAILED: ${e?.message || e}`;

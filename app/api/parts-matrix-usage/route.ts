@@ -7,6 +7,7 @@ import { classifyPricing, matrixRetail, PricingType } from '@/lib/partsMatrix';
 import { readCache, writeCache } from '@/lib/cache';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export interface PartLine {
   id: string;           // stable: pm_${roId}_${jobId}_${partIdx}
@@ -70,9 +71,20 @@ export async function GET(req: NextRequest) {
 
   const lines: PartLine[] = [];
 
+  // 60-day lookback for the open-estimates sweep (always runs alongside the
+  // main date-range fetch). Estimates/in-progress ROs created before the
+  // selected window are still on the floor and still need matrix pricing —
+  // this catches them without requiring the user to change the date range.
+  const openSweepStart = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 60);
+    return d.toISOString().slice(0, 10) + 'T00:00:00Z';
+  })();
+  const openSweepEnd = new Date().toISOString().slice(0, 19) + 'Z';
+  const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
+
   await Promise.all(shops.map(async (shop) => {
     let ros;
-    const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
     try {
       if (mode === 'posted') {
         // rosForShop checks the rosForChain cache first — warmTekmetric already
@@ -86,8 +98,20 @@ export async function GET(req: NextRequest) {
           return !CLOSED.has(s);
         });
       } else {
-        // 'all' or 'created' — fetch by createdDate, all statuses
-        ros = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        // 'all' / 'created' — fetch by createdDate for the selected window, then
+        // merge in any open/estimate-status ROs from the past 60 days so estimates
+        // created before this week still appear on the parts matrix.
+        const [rangeRos, openRos] = await Promise.all([
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
+          fetchROsByCreatedDate(shop.tekmetricId, openSweepStart, openSweepEnd),
+        ]);
+        const seen = new Set(rangeRos.map((r: any) => r.id));
+        const extraOpen = openRos.filter((ro: any) => {
+          if (seen.has(ro.id)) return false; // already in range fetch
+          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+          return !CLOSED.has(s); // only open/estimate-status from the sweep
+        });
+        ros = [...rangeRos, ...extraOpen];
       }
     } catch {
       return;

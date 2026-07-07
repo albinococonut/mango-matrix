@@ -100,7 +100,7 @@ async function applyLiveCurrentWeek(payload: any) {
     }
     const conv: Record<string, number> = {};
     const br = await readCache<any>('booked_rate_week_to_date_strict');
-    for (const sh of (br?.shops || [])) if (typeof sh.bookedRatePct === 'number') conv[sh.shopNum] = sh.bookedRatePct;
+    for (const sh of (br?.shops || [])) if (typeof sh.bookedRatePct === 'number' && sh.bookedRatePct > 0) conv[sh.shopNum] = sh.bookedRatePct;
     for (const shop of payload.shops) {
       const cell = shop.cells?.[idx];
       if (!cell) continue;

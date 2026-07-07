@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { customRange } from '@/lib/dates';
-import { loadGoals, revenueGoalForRange, prorateRevenueGoal, isWorkingDay, workingDaysBetween } from '@/lib/goals';
+import { loadGoals, revenueGoalForRange, prorateRevenueGoal, isWorkingDay, workingDaysBetween, DEFAULT_GOALS } from '@/lib/goals';
 import { SHOPS, SHOP_BY_NUM, ShopNum } from '@/lib/shops';
 import type { ChainKpi, ShopKpi } from '@/lib/metrics';
 import { startOfWeek, endOfWeek, addDays } from 'date-fns';
@@ -59,6 +59,83 @@ const heatScoreFromPct = (pctOfGoal: number) => norm(pctOfGoal, 0.8, 1.05);
 const heatScoreFromGpPct = (gp: number) => norm(gp, 0.5, 0.6); // matches Employee leaderboard
 const heatColor = (score: number) => { const [r, g, b] = heatRGB(score); return `rgb(${r},${g},${b})`; };
 const heatFill = (score: number) => { const [r, g, b] = heatRGB(score); return `linear-gradient(90deg, rgba(${r},${g},${b},0.55), rgba(${r},${g},${b},0.95))`; };
+const heatCell = (score: number): React.CSSProperties => { const [r, g, b] = heatRGB(score); return { background: `radial-gradient(135% 160% at 28% -10%, rgba(${r},${g},${b},0.50), rgba(${r},${g},${b},0.16) 70%, rgba(${r},${g},${b},0.08))`, boxShadow: `inset 0 0 0 1px rgba(${r},${g},${b},0.28)` }; };
+
+// ── GP$ diagnostic tree (exact copy of Diagnostic's buildGpTree) ─────────────
+const pf = (v: number) => (v * 100).toFixed(0) + '%';
+const pn = (v: number | null) => (v == null ? '--' : v.toFixed(0) + '%');
+const leakScore = (gp$: number, gap: number) => (gp$ <= 0 ? 0.85 : Math.max(0.05, 1 - Math.min(1, (gap > 0 ? gp$ / gap : 0) / 0.6)));
+interface BenchLevels { revenue: number; cars: number; aro: number; closeRate: number; gpPct: number; conversion: number | null; rebook: number | null }
+interface ShopBenchmark { shopNum: string; goalWeeks: number; sampleWeeks: number; method: 'goal-met' | 'best-weeks'; benchmark: BenchLevels; recent: BenchLevels }
+type LeafKey = 'cars' | 'aro' | 'gpPct';
+interface GpBranch { label: string; detail: string; active: boolean }
+interface GpLeaf { key: LeafKey; label: string; gp$: number; metricCur: string; metricGoal: string; branches: GpBranch[]; primaryCause: string; primaryFix: string; note?: string }
+interface GpTree {
+  num: string; name: string; district: string; color: string; ramping: boolean;
+  hasGoal: boolean; onTrack: boolean;
+  gp$Proj: number; gp$Goal: number; gap: number;
+  revGp$: number; gpPctGp$: number;
+  revProj: number; revGoal: number; gpPctProj: number; gpPctGoal: number;
+  carsGp$: number; aroGp$: number;
+  carsProj: number; carsGoal: number; aroProj: number; aroGoal: number;
+  leaves: GpLeaf[]; primary: GpLeaf | null;
+  method: 'goal-met' | 'best-weeks'; goalWeeks: number; sampleWeeks: number;
+}
+interface ProjShopForTree { num: string; name: string; district: string; color: string; expected: number; goal: number | null; cars: number; aro: number; gpPct: number; ramping?: boolean }
+function buildGpTree(p: ProjShopForTree, b: ShopBenchmark | undefined, cur?: { closeRate?: number; conversion?: number | null; rebook?: number | null; partsGp?: number | null; laborGp?: number | null }): GpTree {
+  const revProj = p.expected, revGoal = p.goal ?? 0;
+  const gpPctProj = (p.gpPct ?? 0) / 100, gpPctGoal = DEFAULT_GOALS[p.num as ShopNum]?.gpPct ?? 0.58;
+  const carsProj = p.cars, aroProj = p.aro;
+  const gp$Proj = revProj * gpPctProj, gp$Goal = revGoal * gpPctGoal;
+  const gap = gp$Goal - gp$Proj, hasGoal = revGoal > 0;
+  const onTrack = !hasGoal || gap <= gp$Goal * 0.005;
+  const aroGoal = b && b.benchmark.aro > 0 ? b.benchmark.aro : aroProj;
+  const carsGoal = aroGoal > 0 ? revGoal / aroGoal : carsProj;
+  const revGapRev = revGoal - revProj;
+  const carsGp$ = gpPctProj * aroProj * (carsGoal - carsProj);
+  const aroGp$ = gpPctProj * carsGoal * (aroGoal - aroProj);
+  const revGp$ = gpPctProj * revGapRev;
+  const gpPctGp$ = revGoal * (gpPctGoal - gpPctProj);
+  const convCur = cur?.conversion ?? b?.recent.conversion ?? null, convGoal = b?.benchmark.conversion ?? null;
+  const closeCur = cur?.closeRate ?? b?.recent.closeRate ?? 0, closeGoal = b?.benchmark.closeRate ?? 0;
+  const partsGp = cur?.partsGp ?? null, laborGp = cur?.laborGp ?? null;
+  const convAvail = convGoal != null && convCur != null && convGoal > 0;
+  const convBelow = convAvail && (convCur as number) < (convGoal as number) * 0.98;
+  const carsBranches: GpBranch[] = [
+    { label: 'Call volume', detail: !convAvail ? 'inbound calls / leads -- marketing & phone coverage' : convBelow ? 'conversion is the constraint here, not lead volume' : `conversion already at goal (${pn(convGoal)}) -- the gap is inbound calls & leads: marketing & phone coverage`, active: convAvail ? !convBelow : false },
+    { label: 'Call conversion', detail: !convAvail ? 'booking rate of the calls you get (no history yet)' : convBelow ? `${pn(convCur)} → ${pn(convGoal)} -- book more of the calls you already get` : `${pn(convCur)} -- already at the goal-week level`, active: convBelow },
+  ];
+  const carsPrimaryCause = !convAvail ? 'Calls & conversion' : convBelow ? 'Call conversion' : 'Call volume';
+  const carsPrimaryFix = !convAvail ? 'check inbound call volume and booking rate' : convBelow ? `lift conversion ${pn(convCur)} → ${pn(convGoal)}` : 'grow inbound call & lead volume (marketing, phone coverage)';
+  const aroBranches: GpBranch[] = [
+    { label: 'Close rate', detail: `${pf(closeCur)} → ${pf(closeGoal)} -- presentation, financing, declined-work follow-up`, active: true },
+    { label: 'Ticket size (AWRO)', detail: 'recommend more work per car -- thorough inspections', active: false },
+  ];
+  let partsActive = false, laborActive = false;
+  if (partsGp != null && laborGp != null) { if (partsGp <= laborGp) partsActive = true; else laborActive = true; }
+  else if (partsGp != null) partsActive = true;
+  else if (laborGp != null) laborActive = true;
+  const gpBranches: GpBranch[] = [
+    { label: 'Parts GP%', detail: `${partsGp != null ? pf(partsGp) : '--'} (margin on parts sales) -- big jobs at low GP%, or parts not run through the pricing matrix`, active: partsActive },
+    { label: 'Labor GP%', detail: `${laborGp != null ? pf(laborGp) : '--'} (margin on labor sales) -- comebacks eating hours, or labor discounted on the ticket`, active: laborActive },
+  ];
+  const gpPrimaryCause = partsActive ? 'Parts GP%' : laborActive ? 'Labor GP%' : 'Parts & labor margin';
+  const gpPrimaryFix = partsActive ? 'lift parts GP% -- pricing matrix + check big low-GP jobs' : laborActive ? 'lift labor GP% -- cut comebacks + stop discounting labor' : 'check parts & labor margin';
+  const leaves: GpLeaf[] = ([
+    { key: 'cars' as LeafKey, label: 'Car count', gp$: carsGp$, metricCur: Math.round(carsProj) + ' cars', metricGoal: Math.round(carsGoal) + ' cars', branches: carsBranches, primaryCause: carsPrimaryCause, primaryFix: carsPrimaryFix },
+    { key: 'aro' as LeafKey, label: 'ARO', gp$: aroGp$, metricCur: usd(aroProj), metricGoal: usd(aroGoal), branches: aroBranches, primaryCause: 'Close rate', primaryFix: `raise close rate ${pf(closeCur)} → ${pf(closeGoal)}` },
+    { key: 'gpPct' as LeafKey, label: 'GP %', gp$: gpPctGp$, metricCur: pf(gpPctProj), metricGoal: pf(gpPctGoal), branches: gpBranches, primaryCause: gpPrimaryCause, primaryFix: gpPrimaryFix, note: 'blended GP% runs higher than each component because fees & shop supplies carry near-100% margin' },
+  ] as GpLeaf[]).sort((a, c) => c.gp$ - a.gp$);
+  const primary = leaves[0] && leaves[0].gp$ > 0 ? leaves[0] : null;
+  return {
+    num: p.num, name: p.name, district: p.district, color: p.color, ramping: !!p.ramping,
+    hasGoal, onTrack, gp$Proj, gp$Goal, gap,
+    revGp$, gpPctGp$, revProj, revGoal, gpPctProj, gpPctGoal,
+    carsGp$, aroGp$, carsProj, carsGoal, aroProj, aroGoal,
+    leaves, primary,
+    method: b?.method ?? 'best-weeks', goalWeeks: b?.goalWeeks ?? 0, sampleWeeks: b?.sampleWeeks ?? 0,
+  };
+}
 
 // ── data shapes ──────────────────────────────────────────────────────────────
 interface ARCustomer { customerId: number; customerName: string; shopNum: string; shopName: string; roNumber: number; invoiceDate: string; daysOverdue: number; balance: number; totalOwedByCustomer: number }
@@ -141,6 +218,7 @@ export default function Concept2Review() {
   const [driftTab, setDriftTab] = useState<'review' | 'approved'>('review');
   const [driftLoading, setDriftLoading] = useState(true);
   const [pendingNotes, setPendingNotes] = useState<Record<string, string>>({});
+  const [gpBench, setGpBench] = useState<Record<string, any>>({});
   const [partsGpDiag, setPartsGpDiag] = useState<{
     weekStart: string;
     summary: { actualGpPct: number; totalDragDollars: number; top5ConcentrationPct: number; likelyCause: 'canned-jobs' | 'mixed' | 'manual-overrides'; uniqueJobNames: number };
@@ -228,6 +306,16 @@ export default function Concept2Review() {
     });
   }, []);
 
+  // GP benchmarks (goal-meeting week ARO/close/conversion rates) -- once on mount.
+  // Used to correctly decompose the GP$ gap into cars vs ARO vs GP% per shop.
+  useEffect(() => {
+    safe<any>('/api/exec-metrics?view=goal-benchmarks').then((d) => {
+      const m: Record<string, any> = {};
+      for (const sb of d?.shops ?? []) m[sb.shopNum] = sb;
+      setGpBench(m);
+    });
+  }, []);
+
   // A/R + calls are range-independent (live / chain-level) -- fetch once.
   // Hydrate from the same snapshot store so the A/R panel doesn't show
   // "Loading A/R…" on every re-open.
@@ -290,6 +378,37 @@ export default function Concept2Review() {
       };
     });
   }, [lwKpi, mtdKpi, arByShop, goals, lwWorkingDays]);
+
+  // GP$ diagnostic trees for the currently displayed week -- full GpTree objects,
+  // same shape and logic as Concept2Diagnostic so the expandable tree is identical.
+  const gpTrees = useMemo<Record<string, GpTree>>(() => {
+    if (!lwKpi) return {};
+    const byShop: Record<string, any> = {};
+    for (const s of lwKpi.byShop) byShop[s.shopNum] = s;
+    const out: Record<string, GpTree> = {};
+    for (const shop of SHOPS) {
+      const lw = byShop[shop.num];
+      if (!lw) continue;
+      const weekly = revenueGoalForRange(goals[shop.num as ShopNum], 'last_week') || 0;
+      const revGoal = weekly ? weekly * (lwWorkingDays / 5) : 0;
+      const p: ProjShopForTree = {
+        num: shop.num, name: shop.name, district: shop.district, color: shop.color,
+        expected: lw.revenue ?? 0,
+        goal: revGoal || null,
+        cars: lw.cars ?? 0,
+        aro: lw.aro ?? 0,
+        gpPct: (lw.gpPct ?? 0) * 100,  // buildGpTree expects 0-100
+      };
+      const cur = {
+        closeRate: lw.closeRate ?? undefined,
+        partsGp: lw.partsGpPct ?? null,
+        laborGp: lw.laborGpPct ?? null,
+        conversion: null as null,
+      };
+      out[shop.num] = buildGpTree(p, gpBench[shop.num] as ShopBenchmark | undefined, cur);
+    }
+    return out;
+  }, [lwKpi, goals, gpBench, lwWorkingDays]);
 
   const summary = useMemo(() => {
     if (!lwKpi || !mtdKpi) return null;
@@ -569,7 +688,7 @@ export default function Concept2Review() {
       {/* 02 Shop-by-shop */}
       <Section eyebrow="02 . Per-shop review" title="Shop-by-shop weekly performance" sub="Last week . MTD . GP $ goal progress . operations . live A/R for every shop." />
       <div className="grid gap-4 grid-cols-1 xl:grid-cols-2 mb-8">
-        {shopRows.map((r) => <ShopCard key={r.shopNum} row={r} mtdRangeLabel={mtdRangeLabel} />)}
+        {shopRows.map((r) => <ShopCard key={r.shopNum} row={r} mtdRangeLabel={mtdRangeLabel} gpTree={gpTrees[r.shopNum]} />)}
       </div>
 
       {/* 03 Diagnostic callouts */}
@@ -744,7 +863,7 @@ function GpBar({ label, windowLabel, actual, target, fullMonthGoal, compact }: {
 // MTD as a smaller right-column echo, monthly-pace strip, then GP$ progress
 // (compact bullet bars + parts/labor chips), Operations as a flowing inline
 // row, and the A/R strip last. Reads like a one-page shop profile.
-function ShopCard({ row, mtdRangeLabel }: { row: ShopRow; mtdRangeLabel: string }) {
+function ShopCard({ row, mtdRangeLabel, gpTree }: { row: ShopRow; mtdRangeLabel: string; gpTree?: GpTree }) {
   // REVERTED (user request): the heat-tinted background wash made every
   // card a different color -- eight wildly different surfaces side by side
   // read as visual noise, not signal. Returned to the white-frosted card
@@ -752,6 +871,7 @@ function ShopCard({ row, mtdRangeLabel }: { row: ShopRow; mtdRangeLabel: string 
   // it should: the LW bar's heat-fill, the variance pill, the GP%/Parts/
   // Labor figures -- readers compare those values, not the card chrome.
   const [open, setOpen] = useState(false);
+  const [openTree, setOpenTree] = useState(false);
   const hasOverdue = row.ar.kind === 'loaded' && row.ar.customers.length > 0;
   const shopColor = SHOP_BY_NUM[row.shopNum as ShopNum]?.color ?? FAINT;
   const meta = SHOP_BY_NUM[row.shopNum as ShopNum];
@@ -842,6 +962,88 @@ function ShopCard({ row, mtdRangeLabel }: { row: ShopRow; mtdRangeLabel: string 
             <GpBar label="Last Week GP $" actual={row.lwGpActual} target={row.lwGpGoal} compact />
             <GpBar label="MTD GP $" actual={row.mtdGpActual} target={row.mtdGpGoal} fullMonthGoal={row.fullMonthGpGoal} compact />
           </div>
+          {gpTree && (() => {
+            const t = gpTree;
+            const sc = !t.hasGoal ? 0.5 : t.onTrack ? 0.9 : norm(t.gp$Goal > 0 ? t.gp$Proj / t.gp$Goal : 1, 0.80, 1.02);
+            const carsLeaf = t.leaves.find((l) => l.key === 'cars')!;
+            const aroLeaf = t.leaves.find((l) => l.key === 'aro')!;
+            const gpLeaf = t.leaves.find((l) => l.key === 'gpPct')!;
+            type TNode = { kind: '$' | 'branch'; depth: number; label: string; gp$?: number; cur?: string; goal?: string; detail?: string; active?: boolean; note?: string };
+            const nodes: TNode[] = [
+              { kind: '$', depth: 0, label: 'Revenue', gp$: t.revGp$, cur: usdK(t.revProj), goal: usdK(t.revGoal) },
+              { kind: '$', depth: 1, label: carsLeaf.label, gp$: carsLeaf.gp$, cur: carsLeaf.metricCur, goal: carsLeaf.metricGoal },
+              ...(carsLeaf.gp$ > 0 ? carsLeaf.branches.map((br) => ({ kind: 'branch' as const, depth: 2, label: br.label, detail: br.detail, active: br.active })) : []),
+              { kind: '$', depth: 1, label: aroLeaf.label, gp$: aroLeaf.gp$, cur: aroLeaf.metricCur, goal: aroLeaf.metricGoal },
+              ...(aroLeaf.gp$ > 0 ? aroLeaf.branches.map((br) => ({ kind: 'branch' as const, depth: 2, label: br.label, detail: br.detail, active: br.active })) : []),
+              { kind: '$', depth: 0, label: gpLeaf.label, gp$: gpLeaf.gp$, cur: gpLeaf.metricCur, goal: gpLeaf.metricGoal, note: gpLeaf.gp$ > 0 ? gpLeaf.note : undefined },
+              ...(gpLeaf.gp$ > 0 ? gpLeaf.branches.map((br) => ({ kind: 'branch' as const, depth: 1, label: br.label, detail: br.detail, active: br.active })) : []),
+            ];
+            return (
+              <div className="mt-4 rounded-2xl overflow-hidden" style={{ border: `1px solid ${LINE}` }}>
+                <button onClick={() => setOpenTree(!openTree)} className="w-full text-left px-4 py-3 flex items-center gap-3" style={heatCell(sc)}>
+                  <span className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0">
+                    {t.onTrack ? (
+                      <span className="c2ui text-[13px]" style={{ color: '#3E8E5E' }}>On GP$ goal ✓</span>
+                    ) : t.primary ? (
+                      <span className="c2ui inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[12.5px]" style={{ background: 'rgba(255,255,255,0.6)' }}>
+                        <span style={{ color: INK, fontWeight: 600 }}>{t.primary.label}</span>
+                        <span style={{ color: '#B5631F' }}>{usdK(t.primary.gp$)}</span>
+                        <span style={{ color: INK2 }}>via {t.primary.primaryCause.toLowerCase()}</span>
+                      </span>
+                    ) : <span className="c2ui text-[13px]" style={{ color: INK2 }}>--</span>}
+                  </span>
+                  <span className="c2disp tabular-nums shrink-0 text-right" style={{ color: t.onTrack ? '#3E8E5E' : '#B5631F', fontSize: 15, width: 88 }}>{t.onTrack ? '✓' : usdK(t.gap) + ' short'}</span>
+                </button>
+                {openTree && (
+                  <div className="px-4 py-4" style={{ background: 'rgba(255,255,255,0.7)' }}>
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
+                      <div className="c2ui text-[12.5px]" style={{ color: INK2 }}>
+                        <span className="c2disp" style={{ color: INK, fontSize: 16 }}>GP$ {usdK(t.gp$Proj)}</span> actual vs <span style={{ fontWeight: 600, color: INK }}>{usdK(t.gp$Goal)}</span> goal
+                        {t.onTrack ? <span style={{ color: '#3E8E5E', fontWeight: 600 }}> · on goal ✓</span> : <span style={{ color: '#B5631F', fontWeight: 600 }}> · short {usdK(t.gap)} last week</span>}
+                      </div>
+                      <span className="c2ui text-[12.5px]" style={{ color: FAINT }}>{t.method === 'goal-met' ? `benchmarked vs ${t.goalWeeks} goal-hitting week${t.goalWeeks === 1 ? '' : 's'}` : `best-weeks benchmark · rarely hits goal (${t.sampleWeeks} wks)`}</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {nodes.map((nd, i) => {
+                        if (nd.kind === 'branch') {
+                          return (
+                            <div key={i} className="flex items-stretch gap-2" style={{ paddingLeft: nd.depth * 22 }}>
+                              <span className="shrink-0 self-stretch" style={{ width: 2, borderRadius: 2, background: nd.active ? 'rgba(232,134,62,0.5)' : 'rgba(34,32,28,0.10)' }} />
+                              <div className="flex-1 rounded-xl px-3 py-2" style={nd.active ? { background: 'rgba(232,134,62,0.10)', border: '1px solid rgba(232,134,62,0.35)' } : { background: 'rgba(34,32,28,0.03)', border: `1px solid ${LINE}` }}>
+                                <div className="flex items-center gap-2">
+                                  <span className="c2ui font-semibold" style={{ color: nd.active ? INK : INK2, fontSize: 13 }}>{nd.label}</span>
+                                  {nd.active && <span className="c2ui text-[13px] font-semibold uppercase tracking-wide rounded-full px-1.5 py-0.5" style={{ background: 'rgba(232,134,62,0.18)', color: '#B5631F' }}>likely cause</span>}
+                                </div>
+                                <div className="c2ui text-[12.5px] mt-0.5" style={{ color: nd.active ? INK2 : FAINT }}>{nd.detail}</div>
+                              </div>
+                            </div>
+                          );
+                        }
+                        const leak = (nd.gp$ ?? 0) > 0;
+                        const nsc = leak ? leakScore(nd.gp$ ?? 0, t.gap) : 0.85;
+                        return (
+                          <div key={i} className="flex items-stretch gap-2" style={{ paddingLeft: nd.depth * 22 }}>
+                            {nd.depth > 0 && <span className="shrink-0 self-stretch" style={{ width: 2, borderRadius: 2, background: 'rgba(34,32,28,0.10)' }} />}
+                            <div className="flex-1 rounded-xl px-3 py-2" style={leak ? heatCell(nsc) : { background: 'rgba(62,142,94,0.07)', border: `1px solid ${LINE}` }}>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="c2ui font-semibold" style={{ color: INK, fontSize: nd.depth ? 12 : 13 }}>{nd.label}</span>
+                                <span className="c2disp tabular-nums" style={{ color: leak ? '#B5631F' : '#3E8E5E', fontSize: 12.5 }}>{leak ? usdK(nd.gp$ ?? 0) + ' short' : '+' + usdK(-(nd.gp$ ?? 0)) + ' ahead'}</span>
+                              </div>
+                              <div className="c2ui text-[12.5px] mt-0.5" style={{ color: INK2 }}>
+                                <span className="tabular-nums">{nd.cur}</span> → <span className="tabular-nums" style={{ color: INK, fontWeight: 600 }}>{nd.goal}</span>
+                              </div>
+                              {nd.note && leak && <div className="c2ui text-[12.5px] mt-0.5" style={{ color: FAINT }}>{nd.note}</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {t.primary && <div className="c2ui text-[13px] mt-3" style={{ color: INK2 }}><span style={{ color: INK, fontWeight: 600 }}>Start here:</span> {t.primary.label} → {t.primary.primaryCause} -- the biggest single GP$ lever for {t.name} last week ({usdK(t.primary.gp$)}; {t.primary.primaryFix}).</div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Operations -- flowing inline row */}
@@ -862,7 +1064,7 @@ function ShopCard({ row, mtdRangeLabel }: { row: ShopRow; mtdRangeLabel: string 
             <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: INK2 }}>Rev / bay / wk</div>
             <div className="c2disp tabular-nums mt-1" style={{ color: INK, fontSize: 19 }}>{usdK(row.revPerBayPerWeek)}</div>
           </div>
-          <div className="ml-auto text-right">
+          <div>
             <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: INK2 }}>Annualized / bay</div>
             <div className="c2disp tabular-nums mt-1" style={{ color: INK2, fontSize: 17 }}>{usdK(row.revPerBayPerYear)}<span className="c2ui text-[12.5px] ml-1" style={{ color: INK2 }}>/ yr</span></div>
           </div>

@@ -23,7 +23,10 @@ export const dynamic = 'force-dynamic';
 // Period comparison can span ~10 months × 8 shops (this_year vs last_year) —
 // far too heavy to recompute on every refresh. Cache in durable Redis and
 // serve stale on failure so the section is never empty once computed.
-const PC_FRESH_MS = 6 * 60 * 60 * 1000; // 6h
+// Historical weeks are immutable once posted, so a 24h freshness window is safe.
+// Stale-while-revalidate: up to 72h, serve cached immediately and refresh in background.
+const PC_FRESH_MS = 24 * 60 * 60 * 1000;  // 24h — serve from cache
+const PC_STALE_MS = 72 * 60 * 60 * 1000;  // 72h — max stale ceiling before sync recompute
 
 // Static frozen backfill of historical weekly Re-Book % / Call-Conversion %
 // (same file the heatmap uses). Used as the fallback for weeks that predate
@@ -211,123 +214,28 @@ export async function GET(req: NextRequest) {
   // v4 forces a clean recompute so stale fleet-inclusive data is never served.
   const cachePrefix = 'pc_v4';
   const respKey = `${cachePrefix}_${granularity}_${shopFilter}_${range}_${compMode}_${start || ''}_${end || ''}_${compStart || ''}_${compEnd || ''}`;
-  if (await isFresh(respKey, PC_FRESH_MS)) {
-    const cached = await readCache<any>(respKey);
-    // Patch the current week's chain Re-Book/Conversion live even on a cache
-    // hit (the response is cached 6h but the current week must match the
-    // Employee view, which reads these caches live).
-    if (cached) return NextResponse.json({ ...(await patchCurrentWeekLive(cached)), cached: true });
+  const cached = await readCache<any>(respKey);
+  if (cached) {
+    const fresh = await isFresh(respKey, PC_FRESH_MS);
+    if (fresh) {
+      // Cache is current — serve immediately.
+      return NextResponse.json({ ...(await patchCurrentWeekLive(cached)), cached: true });
+    }
+    const withinStaleCeiling = await isFresh(respKey, PC_STALE_MS);
+    if (withinStaleCeiling) {
+      // Stale but not ancient: serve cached data immediately so the user sees
+      // results instantly, then recompute in the background so the next request
+      // gets fresh data. This is the same stale-while-revalidate pattern the
+      // heatmap uses.
+      fetchAndCacheComparison(req, respKey, currWindow, prevWindow, shopFilter, granularity, compMode, start, end, compStart, compEnd, range)
+        .catch(e => console.error('[period-comparison] bg refresh failed:', e));
+      return NextResponse.json({ ...(await patchCurrentWeekLive(cached)), cached: true, staleRevalidating: true });
+    }
+    // Cache is older than 72h: fall through to synchronous recompute.
   }
 
   try {
-    // Fetch ROs. For a single-shop request we use rosForShopNum directly —
-    // it's exact, uses the per-shop RO cache, and avoids any shopId-injection
-    // ambiguity from the chain fetch. For all-shops we fetch chain-wide and
-    // also fan out per-shop payloads in the background so switching shops is
-    // instant on the next request.
-    // Build a set of shopIds that were open during a given window start date.
-    // This prevents pre-opening data (e.g. prior-business data in a Tekmetric
-    // shop ID before Mango took over) from polluting YoY comparison periods.
-    const shopOpenMs = (shopNum: ShopNum) => {
-      const s = SHOP_BY_NUM[shopNum];
-      return s?.openedAt ? new Date(s.openedAt).getTime() : 0;
-    };
-    const filterByOpenDate = (ros: RepairOrder[], windowStartISO: string) => {
-      const wsMs = new Date(windowStartISO).getTime();
-      // Build set of tekmetric IDs that were open by this window start
-      const openIds = new Set(SHOPS.filter(s => !s.openedAt || new Date(s.openedAt).getTime() <= wsMs).flatMap(s => s.tekmetricIdSecondary ? [s.tekmetricId, s.tekmetricIdSecondary] : [s.tekmetricId]));
-      return ros.filter(r => openIds.has(r.shopId));
-    };
-
-    const [currRaw, prevRaw] = await Promise.all([
-      shopFilter === 'all'
-        ? rosForChain({ startISO: currWindow.startISO, endISO: currWindow.endISO })
-        : rosForShopNum(shopFilter, { startISO: currWindow.startISO, endISO: currWindow.endISO }),
-      shopFilter === 'all'
-        ? rosForChain({ startISO: prevWindow.startISO, endISO: prevWindow.endISO })
-        : (() => {
-            // For single shop, check if shop was open during comparison period
-            const shop = SHOP_BY_NUM[shopFilter];
-            const shopOpen = shop?.openedAt ? new Date(shop.openedAt).getTime() : 0;
-            if (shopOpen > new Date(prevWindow.startISO).getTime()) {
-              return Promise.resolve([] as RepairOrder[]); // shop didn't exist yet
-            }
-            return rosForShopNum(shopFilter, { startISO: prevWindow.startISO, endISO: prevWindow.endISO });
-          })(),
-    ]);
-    // Filter out pre-opening data from chain fetches
-    const curr = shopFilter === 'all' ? filterByOpenDate(currRaw, currWindow.startISO) : currRaw;
-    const prev = shopFilter === 'all' ? filterByOpenDate(prevRaw, prevWindow.startISO) : prevRaw;
-
-    // Merge live weekly snapshots (preferred) with the frozen backfill
-    // (fallback) into one weekStart -> {conversion, rebook} chain-average map.
-    const snaps = await metricSnapshotMap();
-    const extras = loadExtras();
-    const convRebookByWeek = new Map<string, { conversion: number | null; rebook: number | null }>();
-    const allWeekKeys = new Set<string>([...snaps.keys(), ...extras.keys()]);
-    for (const wk of allWeekKeys) {
-      const snap = snaps.get(wk);
-      const ex = extras.get(wk);
-      convRebookByWeek.set(wk, {
-        conversion: chainAvg(snap?.conversion) ?? chainAvg(ex?.conversion),
-        rebook: chainAvg(snap?.rebook) ?? chainAvg(ex?.rebook),
-      });
-    }
-
-    // CURRENT week: override with the live week-to-date caches and use the
-    // SAME weighted chain rate the FBR leaderboard / Call Conversion sections
-    // show — so "this week" matches the rest of the dashboard instead of the
-    // staler, unweighted snapshot average.
-    const thisWeek = startOfWeek(toZonedTime(new Date(), CHAIN_TZ), { weekStartsOn: 1 }).toISOString().slice(0, 10);
-    let fwd = 0, elig = 0;
-    for (const s of SHOPS) {
-      const fb = await readCache<any>(fbrShopWtdKey(s.num));
-      if (fb?.fbr) { fwd += fb.fbr.forwardBookedROs || 0; elig += fb.fbr.eligibleROs || 0; }
-    }
-    const br = await readCache<any>('booked_rate_week_to_date_strict');
-    const liveConv = typeof br?.chain?.bookedRatePct === 'number' ? br.chain.bookedRatePct : null;
-    const liveRebook = elig > 0 ? Math.round((fwd / elig) * 1000) / 10 : null;
-    const existing = convRebookByWeek.get(thisWeek) || { conversion: null, rebook: null };
-    convRebookByWeek.set(thisWeek, {
-      conversion: liveConv ?? existing.conversion,
-      rebook: liveRebook ?? existing.rebook,
-    });
-
-    // Conversion / Re-Book snapshots are chain averages — meaningless for a
-    // single-shop filter. Pass an empty map so those columns show null.
-    const emptyMap = new Map<string, { conversion: number | null; rebook: number | null }>();
-
-    // Build the payload from the ROs we just fetched (chain or single-shop).
-    const crMap = shopFilter === 'all' ? convRebookByWeek : emptyMap;
-    const payload = {
-      current: buildPeriod(curr, currWindow.label, crMap, granularity),
-      comparison: buildPeriod(prev, prevWindow.label, crMap, granularity),
-      granularity,
-      shop: shopFilter,
-    };
-
-    // Cache the result under respKey so subsequent requests are instant.
-    await writeCache(respKey, payload);
-
-    // ── All-shops fan-out — pre-warm per-shop caches in the background ────
-    // When shopFilter === 'all', curr + prev contain all shops' ROs. Fan out
-    // per-shop payloads now so switching to a single shop is instant next time.
-    // shopId is guaranteed on every RO via the stamp in fetchAllRepairOrders.
-    if (shopFilter === 'all') {
-      Promise.all(SHOPS.map(async (s) => {
-        const shopKey = `pc_v4_${granularity}_${s.num}_${range}_${compMode}_${start || ''}_${end || ''}_${compStart || ''}_${compEnd || ''}`;
-        if (await isFresh(shopKey, PC_FRESH_MS)) return;
-        const shopIds = new Set([s.tekmetricId, ...(s.tekmetricIdSecondary ? [s.tekmetricIdSecondary] : [])]);
-        const shopCurr = curr.filter((r) => shopIds.has(r.shopId));
-        const shopPrev = prev.filter((r) => shopIds.has(r.shopId));
-        await writeCache(shopKey, {
-          current: buildPeriod(shopCurr, currWindow.label, emptyMap, granularity),
-          comparison: buildPeriod(shopPrev, prevWindow.label, emptyMap, granularity),
-          granularity, shop: s.num,
-        });
-      })).catch(() => {});
-    }
-
+    const payload = await fetchAndCacheComparison(req, respKey, currWindow, prevWindow, shopFilter, granularity, compMode, start, end, compStart, compEnd, range);
     return NextResponse.json(await patchCurrentWeekLive(payload));
   } catch (e: any) {
     console.error('[period-comparison] failed:', e);
@@ -335,6 +243,100 @@ export async function GET(req: NextRequest) {
     if (stale) return NextResponse.json({ ...(await patchCurrentWeekLive(stale)), stale: true });
     return NextResponse.json({ error: 'period comparison unavailable' }, { status: 500 });
   }
+}
+
+async function fetchAndCacheComparison(
+  _req: NextRequest,
+  respKey: string,
+  currWindow: { startISO: string; endISO: string; label: string },
+  prevWindow: { startISO: string; endISO: string; label: string },
+  shopFilter: ShopNum | 'all',
+  granularity: Granularity,
+  compMode: ComparisonMode,
+  start: string | null,
+  end: string | null,
+  compStart: string | null,
+  compEnd: string | null,
+  range: RangeKey | string,
+): Promise<any> {
+  const filterByOpenDate = (ros: RepairOrder[], windowStartISO: string) => {
+    const wsMs = new Date(windowStartISO).getTime();
+    const openIds = new Set(SHOPS.filter(s => !s.openedAt || new Date(s.openedAt).getTime() <= wsMs).flatMap(s => s.tekmetricIdSecondary ? [s.tekmetricId, s.tekmetricIdSecondary] : [s.tekmetricId]));
+    return ros.filter(r => openIds.has(r.shopId));
+  };
+
+  const [currRaw, prevRaw] = await Promise.all([
+    shopFilter === 'all'
+      ? rosForChain({ startISO: currWindow.startISO, endISO: currWindow.endISO })
+      : rosForShopNum(shopFilter, { startISO: currWindow.startISO, endISO: currWindow.endISO }),
+    shopFilter === 'all'
+      ? rosForChain({ startISO: prevWindow.startISO, endISO: prevWindow.endISO })
+      : (() => {
+          const shop = SHOP_BY_NUM[shopFilter];
+          const shopOpen = shop?.openedAt ? new Date(shop.openedAt).getTime() : 0;
+          if (shopOpen > new Date(prevWindow.startISO).getTime()) return Promise.resolve([] as RepairOrder[]);
+          return rosForShopNum(shopFilter, { startISO: prevWindow.startISO, endISO: prevWindow.endISO });
+        })(),
+  ]);
+  const curr = shopFilter === 'all' ? filterByOpenDate(currRaw, currWindow.startISO) : currRaw;
+  const prev = shopFilter === 'all' ? filterByOpenDate(prevRaw, prevWindow.startISO) : prevRaw;
+
+  const snaps = await metricSnapshotMap();
+  const extras = loadExtras();
+  const convRebookByWeek = new Map<string, { conversion: number | null; rebook: number | null }>();
+  const allWeekKeys = new Set<string>([...snaps.keys(), ...extras.keys()]);
+  for (const wk of allWeekKeys) {
+    const snap = snaps.get(wk);
+    const ex = extras.get(wk);
+    convRebookByWeek.set(wk, {
+      conversion: chainAvg(snap?.conversion) ?? chainAvg(ex?.conversion),
+      rebook: chainAvg(snap?.rebook) ?? chainAvg(ex?.rebook),
+    });
+  }
+
+  const thisWeek = startOfWeek(toZonedTime(new Date(), CHAIN_TZ), { weekStartsOn: 1 }).toISOString().slice(0, 10);
+  let fwd = 0, elig = 0;
+  for (const s of SHOPS) {
+    const fb = await readCache<any>(fbrShopWtdKey(s.num));
+    if (fb?.fbr) { fwd += fb.fbr.forwardBookedROs || 0; elig += fb.fbr.eligibleROs || 0; }
+  }
+  const br = await readCache<any>('booked_rate_week_to_date_strict');
+  const liveConv = typeof br?.chain?.bookedRatePct === 'number' ? br.chain.bookedRatePct : null;
+  const liveRebook = elig > 0 ? Math.round((fwd / elig) * 1000) / 10 : null;
+  const existing = convRebookByWeek.get(thisWeek) || { conversion: null, rebook: null };
+  convRebookByWeek.set(thisWeek, {
+    conversion: liveConv ?? existing.conversion,
+    rebook: liveRebook ?? existing.rebook,
+  });
+
+  const emptyMap = new Map<string, { conversion: number | null; rebook: number | null }>();
+  const crMap = shopFilter === 'all' ? convRebookByWeek : emptyMap;
+  const payload = {
+    current: buildPeriod(curr, currWindow.label, crMap, granularity),
+    comparison: buildPeriod(prev, prevWindow.label, crMap, granularity),
+    granularity,
+    shop: shopFilter,
+  };
+
+  await writeCache(respKey, payload);
+
+  // ── All-shops fan-out — pre-warm per-shop caches in the background ────
+  if (shopFilter === 'all') {
+    Promise.all(SHOPS.map(async (s) => {
+      const shopKey = `pc_v4_${granularity}_${s.num}_${range}_${compMode}_${start || ''}_${end || ''}_${compStart || ''}_${compEnd || ''}`;
+      if (await isFresh(shopKey, PC_FRESH_MS)) return;
+      const shopIds = new Set([s.tekmetricId, ...(s.tekmetricIdSecondary ? [s.tekmetricIdSecondary] : [])]);
+      const shopCurr = curr.filter((r) => shopIds.has(r.shopId));
+      const shopPrev = prev.filter((r) => shopIds.has(r.shopId));
+      await writeCache(shopKey, {
+        current: buildPeriod(shopCurr, currWindow.label, emptyMap, granularity),
+        comparison: buildPeriod(shopPrev, prevWindow.label, emptyMap, granularity),
+        granularity, shop: s.num,
+      });
+    })).catch(() => {});
+  }
+
+  return payload;
 }
 
 // Overwrite the current week's chain Re-Book/Conversion in the `current`
