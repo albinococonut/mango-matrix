@@ -26,7 +26,8 @@ type YearStore = Record<string, Omit<PartsWeekBucket, 'weekStart'>>;
 // Earliest Monday we'll backfill — start of 2024 gives ~2.5 yrs from mid-2026
 export const PM_HIST_FLOOR = '2024-01-01';
 
-const yearKey = (y: number) => `pm_hist_${y}`;
+// v2: classification fix — canned-job manual overrides now counted as manual
+const yearKey = (y: number) => `pm_hist_v2_${y}`;
 
 async function readYear(y: number): Promise<YearStore> {
   return (await readCache<YearStore>(yearKey(y))) ?? {};
