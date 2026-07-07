@@ -975,7 +975,7 @@ const warmGoogleRatings: SyncJob = {
 // Exported so an operator can trigger a specific range via the admin route:
 // POST /api/cron/run-syncs?job=warm-parts-matrix[&start=YYYY-MM-DD&end=YYYY-MM-DD&mode=all]
 export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mode = 'all'): Promise<string> {
-  const cacheKey = `parts_matrix_usage_all_${startYmd}_${endYmd}_${mode}`;
+  const cacheKey = `parts_matrix_usage_v2_all_${startYmd}_${endYmd}_${mode}`;
   const startISO = `${startYmd}T00:00:00Z`;
   const endISO   = `${endYmd}T23:59:59Z`;
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
@@ -1044,7 +1044,7 @@ const warmPartsMatrix: SyncJob = {
   isEnabled: () => !!process.env.TEKMETRIC_CLIENT_ID,
   async run() {
     // Warm exactly the ranges the Parts Pricing page requests by default.
-    // Cache key format: parts_matrix_usage_all_START_END_MODE — must match.
+    // Cache key format: parts_matrix_usage_v2_all_START_END_MODE — must match.
     // Page default: 'this_week' (Monday of current week → today).
     const now = new Date();
     const fmt = (d: Date) => d.toISOString().slice(0, 10);

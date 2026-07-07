@@ -217,6 +217,7 @@ export default function Concept2Review() {
   const [driftLog, setDriftLog] = useState<DriftLogEntry[]>([]);
   const [driftTab, setDriftTab] = useState<'review' | 'approved'>('review');
   const [driftLoading, setDriftLoading] = useState(true);
+  const [driftRefreshing, setDriftRefreshing] = useState(false);
   const [pendingNotes, setPendingNotes] = useState<Record<string, string>>({});
   const [gpBench, setGpBench] = useState<Record<string, any>>({});
   const [partsGpDiag, setPartsGpDiag] = useState<{
@@ -305,6 +306,17 @@ export default function Concept2Review() {
       setDriftLoading(false);
     });
   }, []);
+
+  const refreshDrift = async () => {
+    setDriftRefreshing(true);
+    try {
+      const res = await fetch('/api/drift-log', { method: 'POST' });
+      const d = await res.json();
+      if (d?.entries) setDriftLog(d.entries);
+    } finally {
+      setDriftRefreshing(false);
+    }
+  };
 
   // GP benchmarks (goal-meeting week ARO/close/conversion rates) -- once on mount.
   // Used to correctly decompose the GP$ gap into cars vs ARO vs GP% per shop.
@@ -496,9 +508,19 @@ export default function Concept2Review() {
         );
 
         if (driftLog.length === 0) return (
-          <div className="rounded-2xl px-4 py-3 mb-6 c2ui text-[12.5px] flex items-center gap-2" style={{ background: 'rgba(79,180,119,0.08)', border: '1px solid rgba(79,180,119,0.28)', color: INK2 }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={GOOD} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-            <span>No post-close ticket edits on record — all weeks clean.</span>
+          <div className="rounded-2xl px-4 py-3 mb-6 c2ui text-[12.5px] flex items-center justify-between gap-2" style={{ background: 'rgba(79,180,119,0.08)', border: '1px solid rgba(79,180,119,0.28)', color: INK2 }}>
+            <div className="flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={GOOD} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              <span>No post-close ticket edits on record — all weeks clean.</span>
+            </div>
+            <button
+              onClick={refreshDrift}
+              disabled={driftRefreshing}
+              className="c2ui rounded-full px-3 py-1 text-[12.5px] font-semibold transition flex-shrink-0"
+              style={{ background: 'rgba(255,255,255,0.7)', color: driftRefreshing ? FAINT : INK2, border: `1px solid ${LINE}`, opacity: driftRefreshing ? 0.6 : 1 }}
+            >
+              {driftRefreshing ? 'Scanning…' : '↻ Scan now'}
+            </button>
           </div>
         );
 
@@ -521,6 +543,15 @@ export default function Concept2Review() {
                   style={{ background: driftTab === 'approved' ? 'rgba(79,180,119,0.15)' : 'rgba(255,255,255,0.5)', color: driftTab === 'approved' ? '#2A7A4F' : FAINT, border: driftTab === 'approved' ? '1px solid rgba(79,180,119,0.3)' : `1px solid ${LINE}` }}
                 >
                   Approved {approved.length > 0 && <span className="ml-1 inline-flex items-center justify-center rounded-full px-1.5 text-[11px] font-bold" style={{ background: 'rgba(79,180,119,0.2)', color: '#2A7A4F', minWidth: 18 }}>{approved.length}</span>}
+                </button>
+                <button
+                  onClick={refreshDrift}
+                  disabled={driftRefreshing}
+                  className="c2ui rounded-full px-3 py-1 text-[12.5px] font-semibold transition"
+                  style={{ background: 'rgba(255,255,255,0.5)', color: driftRefreshing ? FAINT : INK2, border: `1px solid ${LINE}`, opacity: driftRefreshing ? 0.6 : 1 }}
+                  title="Re-scan last 4 weeks for post-close edits"
+                >
+                  {driftRefreshing ? 'Scanning…' : '↻ Refresh'}
                 </button>
               </div>
             </div>
