@@ -256,7 +256,7 @@ export default function ShopPerformanceHeatmap() {
               <tr>
                 <th className="text-left text-[10px] font-medium text-mango-faint px-2 pb-2"></th>
                 {data.weeks.map((w, i) => (
-                  <th key={i} className="px-0.5 pb-2 align-bottom">
+                  <th key={i} className="px-0.5 pb-2 align-bottom" style={{ opacity: i === currentIdx ? 0.4 : 1 }}>
                     {i === currentIdx && (
                       <div className="mb-0.5 text-[8px] font-semibold uppercase tracking-wide text-mango-info leading-tight">Partial</div>
                     )}
@@ -278,12 +278,12 @@ export default function ShopPerformanceHeatmap() {
                     const isCurrent = i === currentIdx;
                     return (
                       <td key={i}
-                        className={`text-center align-middle overflow-hidden ${isCurrent ? 'partial-week' : ''}`}
+                        className="text-center align-middle overflow-hidden"
                         style={{
                           background: bg, color: fg, borderRadius: 8,
                           height: 44, padding: '3px 2px',
                           boxShadow: isCurrent ? 'inset 0 0 0 1.5px #E08E1A' : 'inset 0 0 0 1px rgba(31,41,55,0.04)',
-                          opacity: isCurrent ? 0.55 : 1,
+                          opacity: isCurrent ? 0.4 : 1,
                         }}
                         title={c ? `${r.shopName} · week of ${data.weeks[i]} · ${big}${small ? ` (${small})` : ''}` : 'no data'}>
                         <div className="text-[12px] font-semibold leading-tight tnum">{big}</div>
@@ -307,12 +307,12 @@ export default function ShopPerformanceHeatmap() {
                     const isCurrent = i === currentIdx;
                     return (
                       <td key={i}
-                        className={`text-center align-middle overflow-hidden ${isCurrent ? 'partial-week' : ''}`}
+                        className="text-center align-middle overflow-hidden"
                         style={{
                           background: bg, color: fg, borderRadius: 8,
                           height: 44, padding: '3px 2px',
                           boxShadow: isCurrent ? 'inset 0 0 0 1.5px #E08E1A' : 'inset 0 0 0 1px rgba(31,41,55,0.04)',
-                          opacity: isCurrent ? 0.55 : 1,
+                          opacity: isCurrent ? 0.4 : 1,
                         }}
                         title={c ? `All Shops · week of ${data.weeks[i]} · ${big}${small ? ` (${small})` : ''}` : 'no data'}>
                         <div className="text-[12px] font-semibold leading-tight tnum">{big}</div>
