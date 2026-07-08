@@ -162,8 +162,12 @@ export async function POST(req: NextRequest) {
   if (targetJob === 'warm-parts-matrix') {
     const now = new Date();
     const endParam  = url.searchParams.get('end')   || now.toISOString().slice(0, 10);
-    const startD    = new Date(now); startD.setDate(startD.getDate() - 6);
-    const startParam = url.searchParams.get('start') || startD.toISOString().slice(0, 10);
+    // Default start = Monday of current week so the warmed key matches the page's
+    // default "this_week" range. Using today-6 was a persistent cache miss since
+    // the page always requests Monday-to-today, not a rolling 7-day window.
+    const dow = now.getUTCDay() || 7; // 1=Mon … 7=Sun
+    const monDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - dow));
+    const startParam = url.searchParams.get('start') || monDate.toISOString().slice(0, 10);
     const modeParam  = url.searchParams.get('mode')  || 'all';
     try {
       const msg = await warmPartsMatrixRange(startParam, endParam, modeParam);
