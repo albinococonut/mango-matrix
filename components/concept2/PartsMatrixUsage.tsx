@@ -184,10 +184,10 @@ const PAGE_SECTIONS = [
   { id: 'trends',  label: 'Trends' },
 ];
 
-// ── Chart palette — matches the shared design-system tokens ──────────────────
-const C_MATRIX  = '#3E8E5E';   // GOOD green (same as badge/status throughout)
-const C_MANUAL  = '#C05A2E';   // BAD red-orange (same as bad-variance indicators)
-const C_CANNED  = '#E8863E';   // AMBER orange (same as sidebar accent + WARN tones)
+// ── Chart palette — shop sparkline colors ────────────────────────────────────
+const C_MATRIX  = '#18B6C9';   // bright teal
+const C_MANUAL  = '#FF6B4A';   // coral
+const C_CANNED  = '#F5A623';   // mango
 
 // ── Main component ───────────────────────────────────────────────────────────
 export default function PartsMatrixUsage({ email }: { email: string }) {
@@ -196,7 +196,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
 
   // ── Table / summary state ──
   const [range, setRange]         = useState('this_week');
-  const [mode, setMode]           = useState('all');
+  const [mode, setMode]           = useState('posted');
   const [filterType, setFilterType] = useState('manual');
   const [search, setSearch]       = useState('');
   const [page, setPage]           = useState(0);
@@ -331,23 +331,25 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   const histMap = new Map(history.map((b) => [b.weekStart, b]));
   const xInterval = chartRange === 'last_90_days' ? 1 : chartRange === 'last_year' ? 7 : 12;
 
-  const chartData = primaryWeeks.map((pw) => {
-    const compDate = new Date(pw.weekStart + 'T00:00:00Z');
-    compDate.setUTCDate(compDate.getUTCDate() - 364);
-    const comp = histMap.get(compDate.toISOString().slice(0, 10));
-    const safe = (n: number, d: number) => (d > 0 ? (n / d) * 100 : 0);
-    return {
-      label: fmtWeekLabel(pw.weekStart),
-      matrixPct: safe(pw.matrix, pw.total),
-      manualPct: safe(pw.manual, pw.total),
-      cannedPct: safe(pw.canned, pw.total),
-      lostDollars: pw.lostCents / 100,
-      compMatrixPct: comp ? safe(comp.matrix, comp.total) : undefined,
-      compManualPct: comp ? safe(comp.manual, comp.total) : undefined,
-      compCannedPct: comp ? safe(comp.canned, comp.total) : undefined,
-      compLostDollars: comp ? comp.lostCents / 100 : undefined,
-    };
-  });
+  const chartData = primaryWeeks
+    .filter((pw) => pw.total > 0)
+    .map((pw) => {
+      const compDate = new Date(pw.weekStart + 'T00:00:00Z');
+      compDate.setUTCDate(compDate.getUTCDate() - 364);
+      const comp = histMap.get(compDate.toISOString().slice(0, 10));
+      const safe = (n: number, d: number) => (d > 0 ? (n / d) * 100 : 0);
+      return {
+        label: fmtWeekLabel(pw.weekStart),
+        matrixPct: safe(pw.matrix, pw.total),
+        manualPct: safe(pw.manual, pw.total),
+        cannedPct: safe(pw.canned, pw.total),
+        lostDollars: pw.lostCents / 100,
+        compMatrixPct: comp ? safe(comp.matrix, comp.total) : undefined,
+        compManualPct: comp ? safe(comp.manual, comp.total) : undefined,
+        compCannedPct: comp ? safe(comp.canned, comp.total) : undefined,
+        compLostDollars: comp ? comp.lostCents / 100 : undefined,
+      };
+    });
 
   // ── All lines (scope is now controlled by projView display, not filter) ────
   const scopedLines = useMemo(() => data?.lines ?? [], [data]);
