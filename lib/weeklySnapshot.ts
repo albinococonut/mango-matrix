@@ -241,9 +241,12 @@ export async function checkDriftByUpdatedDate(weekStart: string): Promise<DriftR
   // Cutoff: Tuesday 07:00 UTC (≈ Monday 11 PM MST / Yuma time).
   // Using an explicit UTC timestamp prevents the server's local timezone from
   // pulling Yuma's normal Sunday-evening close activity into the diff list.
-  // weekEnd is always a Sunday; ed+2 = Tuesday.
+  // weekEnd is always a Sunday; ed+1 = Monday.
+  // Originally set to Tuesday (ed+2) to avoid Tekmetric batch updates, but the
+  // per-minute frequency filter below already handles those — lowering to Monday
+  // so same-day post-close edits (Monday) are caught.
   const [ey, em, ed] = weekEnd.split('-').map(Number);
-  const firstDayAfter = new Date(Date.UTC(ey, em - 1, ed + 2, 7)); // Tue 07:00 UTC
+  const firstDayAfter = new Date(Date.UTC(ey, em - 1, ed + 1, 7)); // Mon 07:00 UTC
 
   // Count how many ROs share each updatedDate minute — Tekmetric batch-processes
   // tickets and stamps dozens of ROs within the same minute (not necessarily the
