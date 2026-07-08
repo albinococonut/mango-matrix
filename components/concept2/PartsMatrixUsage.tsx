@@ -461,25 +461,25 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
         {s ? (<>
           {/* ── Portfolio view ─────────────────────────────────────────────── */}
           {projView === 'portfolio' && (<>
-            <div className="rounded-3xl p-6 mb-4" style={{ background: 'linear-gradient(160deg, rgba(139,205,197,0.12), rgba(242,206,112,0.08) 55%, rgba(232,134,62,0.10))', border: `1px solid ${LINE}` }}>
+            <div className="rounded-3xl p-6 mb-4" style={{ background: 'linear-gradient(160deg, rgba(232,134,62,0.12), rgba(242,206,112,0.08) 55%, rgba(139,205,197,0.10))', border: `1px solid ${LINE}` }}>
               <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-8 items-center">
                 <div>
                   <BigStat
-                    label="Matrix priced"
-                    value={pct(s.matrix / s.total)}
-                    sub={`${s.matrix.toLocaleString()} of ${s.total.toLocaleString()} parts correctly matrix-priced`}
-                    color={GOOD}
+                    label="Manual price adjustments"
+                    value={pct(s.manual / s.total)}
+                    sub={`${s.manual.toLocaleString()} of ${s.total.toLocaleString()} parts manually adjusted`}
+                    color={s.total > 0 && s.manual / s.total > 0.15 ? BAD : GOOD}
                   />
                   <div className="flex flex-wrap gap-x-6 gap-y-1 mt-5 c2ui text-[13px]" style={{ color: INK2 }}>
+                    <span>Matrix <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{pct(s.matrix / s.total)}</span></span>
                     <span>Canned <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{pct(s.canned / s.total)}</span></span>
-                    <span>Manual <span className="c2disp tabular-nums" style={{ color: s.total > 0 && s.manual / s.total > 0.15 ? BAD : INK, fontSize: 16 }}>{pct(s.manual / s.total)}</span></span>
                     <span>No charge <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{s.no_charge.toLocaleString()}</span></span>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <MiniStat label="Canned job" value={pct(s.canned / s.total)} />
                   <MiniStat label="Manual" value={pct(s.manual / s.total)} />
-                  <MiniStat label="No charge" value={s.no_charge.toLocaleString()} />
+                  <MiniStat label="Matrix" value={pct(s.matrix / s.total)} />
+                  <MiniStat label="Canned job" value={pct(s.canned / s.total)} />
                   <MiniStat label="Total parts" value={s.total.toLocaleString()} />
                 </div>
               </div>
@@ -502,14 +502,14 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
           {projView === 'districts' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               {districtStats.map((d) => {
-                const sc = d.total > 0 ? norm(d.matrix / d.total, 0.55, 0.95) : 0.5;
+                const sc = d.total > 0 ? 1 - norm(d.manual / d.total, 0.05, 0.40) : 0.5;
                 return (
                   <div key={d.name} className="rounded-3xl p-5" style={heatCell(sc)}>
                     <div className="c2disp" style={{ color: INK, fontSize: 19 }}>{d.name}</div>
-                    <div className="c2disp tabular-nums mt-2" style={{ color: INK, fontSize: 30, letterSpacing: '-0.02em' }}>{pct(d.matrix / d.total)}</div>
-                    <div className="c2ui text-[12px] mt-0.5" style={{ color: INK2 }}>matrix priced</div>
+                    <div className="c2disp tabular-nums mt-2" style={{ color: INK, fontSize: 30, letterSpacing: '-0.02em' }}>{pct(d.manual / d.total)}</div>
+                    <div className="c2ui text-[12px] mt-0.5" style={{ color: INK2 }}>manually adjusted</div>
                     <div className="c2ui text-[13px] mt-3 flex flex-wrap gap-x-4 gap-y-1" style={{ color: INK2 }}>
-                      <span>Manual {pct(d.manual / d.total)}</span>
+                      <span>Matrix {pct(d.matrix / d.total)}</span>
                       <span>Lost {usd(d.lostCents / 100)}</span>
                       <span>{d.total.toLocaleString()} parts</span>
                     </div>
@@ -523,17 +523,17 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
           {projView === 'shops' && (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4">
               {shopStats.map((sh) => {
-                const sc = sh.total > 0 ? norm(sh.matrix / sh.total, 0.55, 0.95) : 0.5;
+                const sc = sh.total > 0 ? 1 - norm(sh.manual / sh.total, 0.05, 0.40) : 0.5;
                 return (
                   <div key={sh.shopNum} className="rounded-3xl p-5" style={heatCell(sc)}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="c2disp" style={{ color: INK, fontSize: 17 }}>{sh.shopName}</div>
                       <span className="c2ui text-[12px] font-semibold rounded-full px-2 py-0.5 shrink-0" style={{ background: 'rgba(255,255,255,0.6)', color: INK2 }}>{sh.district}</span>
                     </div>
-                    <div className="c2disp tabular-nums mt-2" style={{ color: INK, fontSize: 28, letterSpacing: '-0.02em' }}>{pct(sh.matrix / sh.total)}</div>
-                    <div className="c2ui text-[12px] mt-0.5" style={{ color: INK2 }}>matrix priced</div>
+                    <div className="c2disp tabular-nums mt-2" style={{ color: INK, fontSize: 28, letterSpacing: '-0.02em' }}>{pct(sh.manual / sh.total)}</div>
+                    <div className="c2ui text-[12px] mt-0.5" style={{ color: INK2 }}>manually adjusted</div>
                     <div className="c2ui text-[13px] mt-3 flex flex-wrap gap-x-4 gap-y-1" style={{ color: INK2 }}>
-                      <span>Manual {pct(sh.manual / sh.total)}</span>
+                      <span>Matrix {pct(sh.matrix / sh.total)}</span>
                       <span>Lost {usd(sh.lostCents / 100)}</span>
                       <span>{sh.total.toLocaleString()} parts</span>
                     </div>
