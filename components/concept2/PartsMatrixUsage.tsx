@@ -645,28 +645,28 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                                 <td className="px-4 py-2" style={{ minWidth: 160 }}>
                                   {l.pricingType === 'manual' ? (
                                     isApproved
-                                      ? <span className="c2ui text-[12px]" style={{ color: INK2 }}>{review?.notes || '—'}</span>
+                                      ? <span className="c2ui text-[12px]" style={{ color: FAINT, fontStyle: review?.notes ? undefined : 'italic' }}>{review?.notes || 'No notes'}</span>
                                       : <NotesCell id={l.id} notes={review?.notes ?? ''} onSave={(v) => handleReview(l, { notes: v })} />
                                   ) : null}
                                 </td>
                                 <td className="px-4 py-2 whitespace-nowrap">
                                   {l.pricingType === 'manual' ? (
-                                    <div className="inline-flex rounded-full p-0.5" style={{ background: 'rgba(34,32,28,0.05)', border: `1px solid ${LINE}` }}>
+                                    <div className="flex items-center gap-1.5">
                                       <button
                                         onClick={() => handleReview(l, { status: status === 'approved' ? 'pending' : 'approved' })}
-                                        className="c2ui rounded-full px-2.5 py-1 text-[11.5px] font-semibold transition whitespace-nowrap"
-                                        style={status === 'approved'
-                                          ? { background: '#fff', color: '#3E8E5E', boxShadow: '0 1px 3px rgba(0,0,0,0.14), 0 1px 2px rgba(0,0,0,0.08)' }
-                                          : { color: INK2, background: 'transparent' }}>
-                                        ✓ Approve
+                                        title="Approve"
+                                        className="c2ui rounded-full w-7 h-7 flex items-center justify-center transition"
+                                        style={{ background: 'rgba(79,180,119,0.15)', border: '1px solid rgba(79,180,119,0.35)', color: '#2A7A4F' }}
+                                      >
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
                                       </button>
                                       <button
                                         onClick={() => handleReview(l, { status: status === 'rejected' ? 'pending' : 'rejected' })}
-                                        className="c2ui rounded-full px-2.5 py-1 text-[11.5px] font-semibold transition whitespace-nowrap"
-                                        style={status === 'rejected'
-                                          ? { background: '#fff', color: '#C05A2E', boxShadow: '0 1px 3px rgba(0,0,0,0.14), 0 1px 2px rgba(0,0,0,0.08)' }
-                                          : { color: INK2, background: 'transparent' }}>
-                                        ⚑ Flag
+                                        title={isRejected ? 'Clear flag' : 'Flag — Not Approved'}
+                                        className="c2ui rounded-full w-7 h-7 flex items-center justify-center transition"
+                                        style={{ background: isRejected ? 'rgba(163,53,35,0.2)' : 'rgba(163,53,35,0.08)', border: isRejected ? '1px solid rgba(163,53,35,0.45)' : '1px solid rgba(163,53,35,0.2)', color: '#A33523' }}
+                                      >
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                                       </button>
                                     </div>
                                   ) : null}
