@@ -212,7 +212,8 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   const [histRemaining, setHistRemaining]     = useState(0);
   const [chartRange, setChartRange]   = useState('last_year');
   const [showComparison, setShowComparison] = useState(false);
-  const [histShop, setHistShop]       = useState('all');
+  const [histShop, setHistShop]       = useState('combined');
+  const [trendFocus, setTrendFocus]   = useState<string | null>(null);
   const [showTable, setShowTable] = useState(false);
 
   // ── Load review state ────────────────────────────────────────────────────
@@ -331,13 +332,33 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   const histMap = new Map(history.map((b) => [b.weekStart, b]));
   const xInterval = chartRange === 'last_90_days' ? 1 : chartRange === 'last_year' ? 7 : 12;
 
+  const isSpecificShop = histShop !== 'combined' && histShop !== 'all';
+
   const chartData = primaryWeeks
-    .filter((pw) => pw.total > 0)
+    .filter((pw) => {
+      if (isSpecificShop) { const sb = pw.shops?.[histShop]; return !!(sb && sb.total > 0); }
+      return pw.total > 0;
+    })
     .map((pw) => {
       const compDate = new Date(pw.weekStart + 'T00:00:00Z');
       compDate.setUTCDate(compDate.getUTCDate() - 364);
       const comp = histMap.get(compDate.toISOString().slice(0, 10));
       const safe = (n: number, d: number) => (d > 0 ? (n / d) * 100 : 0);
+      if (isSpecificShop) {
+        const sb = pw.shops![histShop];
+        const csb = comp?.shops?.[histShop];
+        return {
+          label: fmtWeekLabel(pw.weekStart),
+          matrixPct: safe(sb.matrix, sb.total),
+          manualPct: safe(sb.manual, sb.total),
+          cannedPct: safe(sb.canned, sb.total),
+          lostDollars: sb.lostCents / 100,
+          compMatrixPct: csb ? safe(csb.matrix, csb.total) : undefined,
+          compManualPct: csb ? safe(csb.manual, csb.total) : undefined,
+          compCannedPct: csb ? safe(csb.canned, csb.total) : undefined,
+          compLostDollars: csb ? csb.lostCents / 100 : undefined,
+        };
+      }
       return {
         label: fmtWeekLabel(pw.weekStart),
         matrixPct: safe(pw.matrix, pw.total),
@@ -350,6 +371,19 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
         compLostDollars: comp ? comp.lostCents / 100 : undefined,
       };
     });
+
+  // Per-shop series for 'All Shops' SVG chart
+  const shopWeeks = primaryWeeks.filter((pw) => pw.total > 0);
+  const allShopsXLabels = shopWeeks.map((pw) => fmtWeekLabel(pw.weekStart));
+  const allShopsSeries = SHOPS.map((sh) => ({
+    num: sh.num,
+    name: sh.name,
+    color: sh.color,
+    vals: shopWeeks.map((pw): number | null => {
+      const sb = pw.shops?.[sh.num];
+      return (sb && sb.total > 0) ? (sb.manual / sb.total) * 100 : null;
+    }),
+  }));
 
   // ── All lines (scope is now controlled by projView display, not filter) ────
   const scopedLines = useMemo(() => data?.lines ?? [], [data]);
@@ -704,16 +738,11 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
       {/* ── Pricing trends charts ──────────────────────────────────────────── */}
       <Card id="trends" eyebrow="Historical · chain-wide" title="Pricing trends" colHeader right={
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          <Dropdown value={histShop} onChange={setHistShop} opts={[{ key: 'all', label: 'All Shops' }, ...SHOPS.map((s) => ({ key: s.num, label: s.name }))]} />
+          <Dropdown value={histShop} onChange={(v) => { setHistShop(v); setTrendFocus(null); }} opts={[{ key: 'combined', label: 'Combined' }, { key: 'all', label: 'All Shops' }, ...SHOPS.map((s) => ({ key: s.num, label: s.name }))]} />
           <Dropdown value={chartRange} onChange={setChartRange} opts={CHART_RANGES} />
           <Dropdown value={showComparison ? 'prior_year' : 'none'} onChange={(v) => setShowComparison(v !== 'none')} opts={[{ key: 'none', label: 'No Comparison' }, { key: 'prior_year', label: 'vs Prior Year' }]} />
         </div>
       }>
-        {histShop !== 'all' && (
-          <div className="c2ui text-[12px] mb-4" style={{ color: FAINT }}>
-            Trend history is chain-wide — per-shop breakdown coming soon
-          </div>
-        )}
         {(histLoading || histBackfilling) && (
           <div className="c2ui text-[11.5px] flex items-center gap-1.5 mb-4" style={{ color: FAINT }}>
             <span className="inline-block w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
@@ -733,63 +762,152 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
         {!histLoading && history.length > 0 && (() => {
           const latest = history[history.length - 1];
           const safeP = (n: number, d: number) => d > 0 ? (n / d * 100).toFixed(1) + '%' : '—';
+          if (histShop === 'all') {
+            return (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mb-6 c2ui text-[12px]" style={{ color: INK2 }}>
+                <span style={{ color: FAINT }}>Manual % · {fmtWeekLabel(latest.weekStart)}</span>
+                {SHOPS.map((sh) => {
+                  const sb = latest.shops?.[sh.num];
+                  return (
+                    <span key={sh.num} title={sh.name} className="inline-flex items-center gap-1">
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: sh.color, display: 'inline-block' }} />
+                      <span className="c2disp tabular-nums" style={{ color: sh.color, fontSize: 15 }}>{sb ? safeP(sb.manual, sb.total) : '—'}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          }
+          const src = isSpecificShop && latest.shops?.[histShop]
+            ? latest.shops[histShop]
+            : { matrix: latest.matrix, manual: latest.manual, canned: latest.canned, total: latest.total };
           return (
             <div className="flex flex-wrap items-center gap-x-8 gap-y-1.5 mb-6 c2ui text-[13px]" style={{ color: INK2 }}>
               <span style={{ color: FAINT, fontSize: 12 }}>Latest week {fmtWeekLabel(latest.weekStart)}</span>
-              <span>Matrix <span className="c2disp tabular-nums" style={{ color: C_MATRIX, fontSize: 16 }}>{safeP(latest.matrix, latest.total)}</span></span>
-              <span>Manual <span className="c2disp tabular-nums" style={{ color: C_MANUAL, fontSize: 16 }}>{safeP(latest.manual, latest.total)}</span></span>
-              <span>Canned <span className="c2disp tabular-nums" style={{ color: C_CANNED, fontSize: 16 }}>{safeP(latest.canned, latest.total)}</span></span>
-              <span style={{ color: FAINT }}>{latest.total.toLocaleString()} parts</span>
+              <span>Matrix <span className="c2disp tabular-nums" style={{ color: C_MATRIX, fontSize: 16 }}>{safeP(src.matrix, src.total)}</span></span>
+              <span>Manual <span className="c2disp tabular-nums" style={{ color: C_MANUAL, fontSize: 16 }}>{safeP(src.manual, src.total)}</span></span>
+              <span>Canned <span className="c2disp tabular-nums" style={{ color: C_CANNED, fontSize: 16 }}>{safeP(src.canned, src.total)}</span></span>
+              <span style={{ color: FAINT }}>{src.total.toLocaleString()} parts</span>
             </div>
           );
         })()}
 
         {!histLoading && history.length > 0 && (
           <>
-            <div className="mb-8">
-              <div className="c2ui text-[11px] font-semibold uppercase tracking-[0.14em] mb-4" style={{ color: FAINT }}>Pricing Mix Over Time</div>
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                  <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: LINE }} tickLine={false} interval={xInterval} />
-                  <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={axisStyle} axisLine={false} tickLine={false} width={36} domain={[0, 100]} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: INK2 }} />
-                  <Line type="monotone" dataKey="matrixPct" name="Matrix %" stroke={C_MATRIX} dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="manualPct" name="Manual %" stroke={C_MANUAL} dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="cannedPct" name="Canned %" stroke={C_CANNED} dot={false} strokeWidth={2} />
-                  {showComparison && <>
-                    <Line type="monotone" dataKey="compMatrixPct" name="Matrix % (−1yr)" stroke={C_MATRIX} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
-                    <Line type="monotone" dataKey="compManualPct" name="Manual % (−1yr)" stroke={C_MANUAL} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
-                    <Line type="monotone" dataKey="compCannedPct" name="Canned % (−1yr)" stroke={C_CANNED} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
-                  </>}
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <div>
-              <div className="c2ui text-[11px] font-semibold uppercase tracking-[0.14em] mb-4" style={{ color: FAINT }}>Revenue Left on Table (Manual Underpriced vs Matrix)</div>
-              <ResponsiveContainer width="100%" height={180}>
-                <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="lostGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={C_MANUAL} stopOpacity={0.18} />
-                      <stop offset="95%" stopColor={C_MANUAL} stopOpacity={0.02} />
-                    </linearGradient>
-                    <linearGradient id="compGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={AMBER} stopOpacity={0.12} />
-                      <stop offset="95%" stopColor={AMBER} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: LINE }} tickLine={false} interval={xInterval} />
-                  <YAxis tickFormatter={(v) => v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`} tick={axisStyle} axisLine={false} tickLine={false} width={42} />
-                  <Tooltip content={<ChartTooltip isDollar />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: INK2 }} />
-                  <Area type="monotone" dataKey="lostDollars" name="Rev left on table" stroke={C_MANUAL} strokeWidth={2} fill="url(#lostGrad)" dot={false} />
-                  {showComparison && (
-                    <Area type="monotone" dataKey="compLostDollars" name="Prior year" stroke={AMBER} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.55} fill="url(#compGrad)" dot={false} />
-                  )}
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            {histShop === 'all' ? (
+              <div>
+                <div className="c2ui text-[11px] font-semibold uppercase tracking-[0.14em] mb-3" style={{ color: FAINT }}>Manual Pricing % Per Shop</div>
+                <div className="flex flex-wrap gap-2 mb-5">
+                  {SHOPS.map((sh) => (
+                    <button key={sh.num}
+                      onClick={() => setTrendFocus((f) => f === sh.num ? null : sh.num)}
+                      className="c2ui inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-semibold transition"
+                      style={{
+                        background: trendFocus === sh.num ? `${sh.color}28` : 'rgba(34,32,28,0.05)',
+                        border: `1.5px solid ${trendFocus === sh.num ? sh.color : 'transparent'}`,
+                        color: trendFocus === sh.num ? sh.color : INK2,
+                        opacity: trendFocus !== null && trendFocus !== sh.num ? 0.28 : 1,
+                      }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: sh.color, display: 'inline-block', flexShrink: 0 }} />
+                      {sh.name}
+                    </button>
+                  ))}
+                </div>
+                {(() => {
+                  const W = 900, H = 220, padL = 32, padR = 8, padT = 12, padB = 26;
+                  const cW = W - padL - padR;
+                  const cH = H - padT - padB;
+                  const n = allShopsXLabels.length;
+                  const xAt = (i: number) => padL + (n <= 1 ? cW / 2 : (i / (n - 1)) * cW);
+                  const yAt = (v: number) => padT + (1 - v / 100) * cH;
+                  const pathFor = (vals: (number | null)[]) => {
+                    let d = '';
+                    for (let i = 0; i < vals.length; i++) {
+                      const v = vals[i];
+                      if (v == null) continue;
+                      if (!d || vals[i - 1] == null) d += `M ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`;
+                      else d += ` L ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`;
+                    }
+                    return d;
+                  };
+                  const gridLines = [0, 25, 50, 75, 100];
+                  const xTickInterval = n <= 13 ? 1 : n <= 26 ? 2 : 4;
+                  return (
+                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', display: 'block', overflow: 'visible' }}>
+                      {gridLines.map((v) => (
+                        <g key={v}>
+                          <line x1={padL} y1={yAt(v)} x2={W - padR} y2={yAt(v)} stroke={LINE} strokeWidth={1} />
+                          <text x={padL - 4} y={yAt(v) + 4} textAnchor="end" fontSize={10} fill={FAINT}>{v}%</text>
+                        </g>
+                      ))}
+                      {allShopsXLabels.map((lbl, i) => (
+                        i % xTickInterval === 0 ? (
+                          <text key={i} x={xAt(i)} y={H - 4} textAnchor="middle" fontSize={10} fill={FAINT}>{lbl}</text>
+                        ) : null
+                      ))}
+                      {allShopsSeries.map((s) => {
+                        const isFocused = trendFocus === s.num;
+                        const isDimmed = trendFocus !== null && !isFocused;
+                        return (
+                          <path key={s.num} d={pathFor(s.vals)}
+                            fill="none" stroke={s.color}
+                            strokeWidth={isFocused ? 2.5 : 1.8}
+                            strokeOpacity={isDimmed ? 0.07 : 1}
+                            strokeLinejoin="round" strokeLinecap="round" />
+                        );
+                      })}
+                    </svg>
+                  );
+                })()}
+              </div>
+            ) : (
+              <>
+                <div className="mb-8">
+                  <div className="c2ui text-[11px] font-semibold uppercase tracking-[0.14em] mb-4" style={{ color: FAINT }}>Pricing Mix Over Time</div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                      <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: LINE }} tickLine={false} interval={xInterval} />
+                      <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={axisStyle} axisLine={false} tickLine={false} width={36} domain={[0, 100]} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Legend wrapperStyle={{ fontSize: 11, color: INK2 }} />
+                      <Line type="monotone" dataKey="matrixPct" name="Matrix %" stroke={C_MATRIX} dot={false} strokeWidth={2} />
+                      <Line type="monotone" dataKey="manualPct" name="Manual %" stroke={C_MANUAL} dot={false} strokeWidth={2} />
+                      <Line type="monotone" dataKey="cannedPct" name="Canned %" stroke={C_CANNED} dot={false} strokeWidth={2} />
+                      {showComparison && <>
+                        <Line type="monotone" dataKey="compMatrixPct" name="Matrix % (−1yr)" stroke={C_MATRIX} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
+                        <Line type="monotone" dataKey="compManualPct" name="Manual % (−1yr)" stroke={C_MANUAL} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
+                        <Line type="monotone" dataKey="compCannedPct" name="Canned % (−1yr)" stroke={C_CANNED} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
+                      </>}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <div className="c2ui text-[11px] font-semibold uppercase tracking-[0.14em] mb-4" style={{ color: FAINT }}>Revenue Left on Table (Manual Underpriced vs Matrix)</div>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="lostGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={C_MANUAL} stopOpacity={0.18} />
+                          <stop offset="95%" stopColor={C_MANUAL} stopOpacity={0.02} />
+                        </linearGradient>
+                        <linearGradient id="compGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={AMBER} stopOpacity={0.12} />
+                          <stop offset="95%" stopColor={AMBER} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: LINE }} tickLine={false} interval={xInterval} />
+                      <YAxis tickFormatter={(v) => v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`} tick={axisStyle} axisLine={false} tickLine={false} width={42} />
+                      <Tooltip content={<ChartTooltip isDollar />} />
+                      <Legend wrapperStyle={{ fontSize: 11, color: INK2 }} />
+                      <Area type="monotone" dataKey="lostDollars" name="Rev left on table" stroke={C_MANUAL} strokeWidth={2} fill="url(#lostGrad)" dot={false} />
+                      {showComparison && (
+                        <Area type="monotone" dataKey="compLostDollars" name="Prior year" stroke={AMBER} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.55} fill="url(#compGrad)" dot={false} />
+                      )}
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
           </>
         )}
       </Card>

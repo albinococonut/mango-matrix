@@ -9,6 +9,15 @@ import { fetchAllRepairOrders } from './tekmetric';
 import { classifyPricing, matrixRetail, type PricingType } from './partsMatrix';
 import { SHOPS } from './shops';
 
+export interface PartsShopBucket {
+  total: number;
+  canned: number;
+  matrix: number;
+  manual: number;
+  no_charge: number;
+  lostCents: number;
+}
+
 export interface PartsWeekBucket {
   weekStart: string;   // YYYY-MM-DD (Monday UTC)
   total: number;
@@ -19,6 +28,7 @@ export interface PartsWeekBucket {
   lostCents: number;   // sum |matrix - retail| where retail < matrix (manual only)
   gainedCents: number; // sum  retail - matrix  where retail > matrix (manual only)
   computedAt: string;
+  shops?: Record<string, PartsShopBucket>;
 }
 
 type YearStore = Record<string, Omit<PartsWeekBucket, 'weekStart'>>;
@@ -87,9 +97,13 @@ export async function computeAndSaveWeek(weekStart: string): Promise<PartsWeekBu
   let lostCents = 0;
   let gainedCents = 0;
 
+  const shopBuckets: Record<string, PartsShopBucket> = {};
+
   await Promise.all(SHOPS.map(async (shop) => {
     try {
       const ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO });
+      const sbc: Record<'total' | PricingType, number> = { total: 0, canned: 0, matrix: 0, manual: 0, no_charge: 0 };
+      let sbLost = 0;
       for (const ro of ros) {
         for (const job of (ro.jobs ?? [])) {
           for (const part of (job.parts ?? [])) {
@@ -100,13 +114,19 @@ export async function computeAndSaveWeek(weekStart: string): Promise<PartsWeekBu
             const variance = retailCents - mxCents;
             counts.total++;
             counts[type]++;
+            sbc.total++;
+            sbc[type]++;
             if (type === 'manual') {
-              if (variance < 0) lostCents += Math.abs(variance);
+              if (variance < 0) { lostCents += Math.abs(variance); sbLost += Math.abs(variance); }
               else gainedCents += variance;
             }
           }
         }
       }
+      shopBuckets[shop.num] = {
+        total: sbc.total, canned: sbc.canned, matrix: sbc.matrix,
+        manual: sbc.manual, no_charge: sbc.no_charge, lostCents: sbLost,
+      };
     } catch {
       // skip shop on Tekmetric error — partial data still useful
     }
@@ -124,6 +144,7 @@ export async function computeAndSaveWeek(weekStart: string): Promise<PartsWeekBu
     lostCents,
     gainedCents,
     computedAt,
+    shops: shopBuckets,
   };
   await writeYear(year, store);
 
