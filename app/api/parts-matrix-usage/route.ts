@@ -71,16 +71,6 @@ export async function GET(req: NextRequest) {
 
   const lines: PartLine[] = [];
 
-  // 60-day lookback for the open-estimates sweep (always runs alongside the
-  // main date-range fetch). Estimates/in-progress ROs created before the
-  // selected window are still on the floor and still need matrix pricing —
-  // this catches them without requiring the user to change the date range.
-  const openSweepStart = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 60);
-    return d.toISOString().slice(0, 10) + 'T00:00:00Z';
-  })();
-  const openSweepEnd = new Date().toISOString().slice(0, 19) + 'Z';
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
 
   await Promise.all(shops.map(async (shop) => {
@@ -98,20 +88,11 @@ export async function GET(req: NextRequest) {
           return !CLOSED.has(s);
         });
       } else {
-        // 'all' / 'created' — fetch by createdDate for the selected window, then
-        // merge in any open/estimate-status ROs from the past 60 days so estimates
-        // created before this week still appear on the parts matrix.
-        const [rangeRos, openRos] = await Promise.all([
-          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
-          fetchROsByCreatedDate(shop.tekmetricId, openSweepStart, openSweepEnd),
-        ]);
-        const seen = new Set(rangeRos.map((r: any) => r.id));
-        const extraOpen = openRos.filter((ro: any) => {
-          if (seen.has(ro.id)) return false; // already in range fetch
-          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
-          return !CLOSED.has(s); // only open/estimate-status from the sweep
-        });
-        ros = [...rangeRos, ...extraOpen];
+        // 'all' / 'created' — fetch by createdDate for the selected window only.
+        // The 60-day open sweep was removed because it doubled Tekmetric API calls
+        // (8 shops × 2 calls = 16 concurrent), causing consistent 30s+ cold loads
+        // and payloads too large for the Redis size limit, breaking the cache.
+        ros = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
       }
     } catch {
       return;

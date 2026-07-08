@@ -274,7 +274,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
     setPage(0);
     setSearch('');
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const timer = setTimeout(() => ctrl.abort(), 90000);
     try {
       const { start, end } = rangeToDateParams(range);
       const p = new URLSearchParams({ shop: 'all', start, end, mode });
