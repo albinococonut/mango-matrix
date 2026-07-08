@@ -109,7 +109,7 @@ export async function computeAndSaveWeek(weekStart: string): Promise<PartsWeekBu
           for (const part of (job.parts ?? [])) {
             const costCents = part.cost ?? 0;
             const retailCents = part.retail ?? 0;
-            const type = classifyPricing(costCents, retailCents, job.cannedJobId ?? null);
+            const type = classifyPricing(costCents, retailCents, job.cannedJobId ?? null, part.partType?.code);
             const mxCents = matrixRetail(costCents);
             const variance = retailCents - mxCents;
             counts.total++;

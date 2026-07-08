@@ -45,13 +45,22 @@ export type PricingType = 'canned' | 'matrix' | 'manual' | 'no_charge';
 // - manual:    price deviates from matrix — always flagged, even inside canned jobs
 //              (so manual overrides within templates are visible, not hidden)
 // - no_charge: both cost and retail are $0
+//
+// partTypeCode: Tekmetric's partType.code ('INVENTORY', 'PART', etc.)
+// 'INVENTORY' parts are auto-priced by Tekmetric's inventory pricing system,
+// not by a technician. They're treated as system-priced (matrix-equivalent)
+// even if the stored inventory price doesn't exactly match our compound matrix.
 export function classifyPricing(
   costCents: number,
   retailCents: number,
   cannedJobId: number | null,
+  partTypeCode?: string,
 ): PricingType {
   if (costCents === 0 && retailCents === 0) return 'no_charge';
   if (costCents <= 0) return 'manual';
+  if (partTypeCode === 'INVENTORY') {
+    return cannedJobId !== null ? 'canned' : 'matrix';
+  }
   const expected = matrixRetail(costCents);
   if (Math.abs(retailCents - expected) <= 10) {
     return cannedJobId !== null ? 'canned' : 'matrix';

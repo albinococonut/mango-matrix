@@ -139,8 +139,8 @@ export interface Part {
   partNumber: string;
   cost: number; // cents
   retail: number; // cents
-  partType: { code: string; name: string };
-  partStatus: { code: string; name: string };
+  partType?: { code: string; name: string };
+  partStatus?: { code: string; name: string };
 }
 
 export interface Appointment {

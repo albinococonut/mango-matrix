@@ -124,7 +124,7 @@ export async function GET(req: NextRequest) {
           const part = job.parts[partIdx];
           const costCents = part.cost ?? 0;
           const retailCents = part.retail ?? 0;
-          const pricingType = classifyPricing(costCents, retailCents, job.cannedJobId ?? null);
+          const pricingType = classifyPricing(costCents, retailCents, job.cannedJobId ?? null, part.partType?.code);
           const matrixCents = matrixRetail(costCents);
           const varianceCents = retailCents - matrixCents;
 
