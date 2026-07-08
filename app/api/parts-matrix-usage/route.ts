@@ -88,11 +88,26 @@ export async function GET(req: NextRequest) {
           return !CLOSED.has(s);
         });
       } else {
-        // 'all' / 'created' — fetch by createdDate for the selected window only.
-        // The 60-day open sweep was removed because it doubled Tekmetric API calls
-        // (8 shops × 2 calls = 16 concurrent), causing consistent 30s+ cold loads
-        // and payloads too large for the Redis size limit, breaking the cache.
-        ros = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        // 'all' mode: current range + 60-day open-estimate sweep.
+        // ROs created before the range start but still open (estimates on the floor
+        // from prior weeks) must be included — without this, "This Week" shows 0
+        // parts when all active work was opened before Monday.
+        // Client timeout is 90s, Vercel maxDuration is 120s — both calls run
+        // concurrently per shop so the wall-clock cost is ~max(call1, call2) per shop.
+        const sweepStartDate = new Date(startISO);
+        sweepStartDate.setDate(sweepStartDate.getDate() - 60);
+        const sweepEnd = new Date(startISO);
+        sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
+        const [rangeRos, sweepRos] = await Promise.all([
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
+          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
+        ]);
+        const openFromSweep = sweepRos.filter((ro: any) => {
+          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+          return !CLOSED.has(s);
+        });
+        const seenIds = new Set(rangeRos.map((ro: any) => ro.id));
+        ros = [...rangeRos, ...openFromSweep.filter((ro: any) => !seenIds.has(ro.id))];
       }
     } catch {
       return;

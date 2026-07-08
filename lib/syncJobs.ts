@@ -993,7 +993,21 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
           return !CLOSED.has(s);
         });
       } else {
-        ros = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        // 'all' mode: current range + 60-day open-estimate sweep (same logic as API cold path)
+        const sweepStartDate = new Date(startISO);
+        sweepStartDate.setDate(sweepStartDate.getDate() - 60);
+        const sweepEnd = new Date(startISO);
+        sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
+        const [rangeRos, sweepRos] = await Promise.all([
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
+          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
+        ]);
+        const openFromSweep = sweepRos.filter((ro: any) => {
+          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+          return !CLOSED.has(s);
+        });
+        const seenIds = new Set(rangeRos.map((ro: any) => ro.id));
+        ros = [...rangeRos, ...openFromSweep.filter((ro: any) => !seenIds.has(ro.id))];
       }
       for (const ro of ros) {
         const roDate = ro.postedDate ?? ro.createdDate ?? null;
