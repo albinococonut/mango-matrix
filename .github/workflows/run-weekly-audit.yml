@@ -1,0 +1,87 @@
+name: Weekly Revenue Audit
+
+# Two jobs:
+#   1. Friday ~7 PM MT (01:00 UTC Sat) — take the close-of-week snapshot
+#   2. Daily noon MT (18:00 UTC) — check for post-close ticket changes
+#
+# Mountain Daylight Time (MDT, summer) = UTC-6
+# Mountain Standard Time (MST, winter) = UTC-7
+# Using MDT offsets (Jun-Nov). Both jobs also have workflow_dispatch so
+# the snapshot/drift check can be re-run manually if needed.
+
+on:
+  schedule:
+    # Friday 8 PM MDT = Saturday 02:00 UTC  (take snapshot — Yuma MST closes at 7 PM)
+    - cron: "0 2 * * 6"
+    # Daily noon MDT   = 18:00 UTC          (drift check)
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Job to run: take-weekly-snapshot | check-weekly-drift"
+        required: true
+        default: "check-weekly-drift"
+      week:
+        description: "Week start date (YYYY-MM-DD Monday). Defaults to current completed week."
+        required: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run weekly audit job
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+
+          # Determine which job to run based on trigger
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            JOB="${{ github.event.inputs.job }}"
+            WEEK="${{ github.event.inputs.week }}"
+          else
+            # schedule: infer from UTC hour
+            HOUR=$(date -u +%H)
+            DAY=$(date -u +%u)   # 1=Mon … 7=Sun
+            if [ "$DAY" = "6" ] && [ "$HOUR" = "02" ]; then
+              JOB="take-weekly-snapshot"
+            else
+              JOB="check-weekly-drift"
+            fi
+            WEEK=""
+          fi
+
+          QUERY="job=${JOB}"
+          if [ -n "$WEEK" ]; then
+            QUERY="${QUERY}&week=${WEEK}"
+          fi
+
+          echo "Running: ${JOB} (week=${WEEK:-auto})"
+
+          HTTP_CODE=$(curl -sS -o /tmp/audit.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?${QUERY}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 290)
+
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/audit.out
+          echo
+
+          if command -v jq >/dev/null 2>&1; then
+            echo "--- Result ---"
+            jq '.' /tmp/audit.out || true
+            # Surface any diffs in the GH Actions summary
+            DIFF_COUNT=$(jq -r '.diffCount // 0' /tmp/audit.out 2>/dev/null || echo "0")
+            if [ "$DIFF_COUNT" -gt "0" ]; then
+              echo "::warning::${DIFF_COUNT} post-close ticket change(s) detected — check Weekly Review"
+              jq -r '.diffs[] | "  \(.shopName) RO-\(.roNumber): \(.revenueBefore) → \(.revenueAfter) (\(.statusBefore) → \(.statusAfter))"' /tmp/audit.out || true
+            fi
+          fi
+
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Audit endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi

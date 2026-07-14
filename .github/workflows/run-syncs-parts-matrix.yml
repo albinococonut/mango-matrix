@@ -1,0 +1,40 @@
+name: Run Mango Dashboard Syncs (Parts Matrix)
+
+# Pre-warms the parts-matrix-usage cache for the default date range (last 7 days,
+# mode=all) so the Parts Pricing page loads instantly instead of waiting 15-30s
+# for Tekmetric to respond across all 8 shops on every cold hit.
+#
+# Runs every 30 minutes — more frequent than the 2-hour TTL so there's always a
+# warm cache ready. Offset by 12 min from the main sweep so the two never hit
+# Tekmetric at the same time.
+
+on:
+  schedule:
+    # 12,42 past each hour — offset from main sweep (0,15,30,45) and the
+    # heavy jobs (2,7,17,22,32,37,47,52) so Tekmetric capacity is staggered.
+    - cron: "12,42 * * * *"
+  workflow_dispatch:
+
+jobs:
+  warm-parts-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger parts-matrix warm
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?job=warm-parts-matrix" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 290)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Parts-matrix warm endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi
