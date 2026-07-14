@@ -592,8 +592,16 @@ export default function Concept2Review() {
                               <div className="c2ui text-[11px] mt-0.5" style={{ color: FAINT }}>by {shortActor(entry.reviewedBy)}</div>
                             )}
                           </td>
-                          <td className="px-3 py-2 tabular-nums text-right font-semibold" style={{ color: isApproved ? FAINT : (entry.delta < 0 ? BAD : GOOD), ...textDecor }}>
-                            {entry.snapshotBased ? `${entry.delta >= 0 ? '+' : ''}${usd(entry.delta)}` : usd(entry.revenueAfter)}
+                          <td className="px-3 py-2 tabular-nums text-right" style={textDecor}>
+                            <div className="font-semibold" style={{ color: isApproved ? FAINT : (entry.delta < 0 ? BAD : GOOD) }}>
+                              {entry.snapshotBased ? `${entry.delta >= 0 ? '+' : ''}${usd(entry.delta)}` : usd(entry.revenueAfter)}
+                            </div>
+                            <div className="c2ui text-[10.5px] mt-0.5" style={{ color: FAINT }}>
+                              {entry.statusBefore === '(new)' ? 'new post-close'
+                                : entry.statusAfter === '(removed)' ? 'voided / re-opened'
+                                : !entry.snapshotBased ? 'current total (no baseline)'
+                                : 'revenue edit'}
+                            </div>
                           </td>
                           <td className="px-3 py-2 text-[12px]" style={{ color: FAINT, whiteSpace: 'nowrap' }}>{weekLabel}</td>
                           <td className="px-3 py-2" style={{ minWidth: 160 }}>

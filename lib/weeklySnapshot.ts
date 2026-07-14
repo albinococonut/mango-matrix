@@ -179,7 +179,14 @@ export async function checkWeeklyDrift(weekStart: string): Promise<DriftReport |
       });
       continue;
     }
-    if (curr.revenueCents !== snapped.revenueCents || curr.status !== snapped.status) {
+    const revenueChanged = curr.revenueCents !== snapped.revenueCents;
+    // A POSTED ↔ ACCRECV transition with identical revenue is normal billing
+    // workflow — not a post-close edit. Skip it so managers don't see "+$0.00"
+    // entries and aren't prompted to open the ticket in Tekmetric (which can
+    // trigger customer-visible "re-opened" notifications from Tekmetric).
+    const meaningfulStatusChange = curr.status !== snapped.status &&
+      !(COUNTED.has(curr.status) && COUNTED.has(snapped.status));
+    if (revenueChanged || meaningfulStatusChange) {
       const bdAfter: LineBreakdown = { labor: c2d(curr.breakdown.labor), parts: c2d(curr.breakdown.parts), sublet: c2d(curr.breakdown.sublet), fee: c2d(curr.breakdown.fee), discount: c2d(curr.breakdown.discount) };
       diffs.push({
         roId: snapped.id, roNumber: snapped.roNumber,
