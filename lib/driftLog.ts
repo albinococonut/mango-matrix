@@ -11,6 +11,14 @@ import { SHOP_BY_NUM } from './shops';
 import type { ShopNum } from './shops';
 import type { DriftReport } from './weeklySnapshot';
 
+export interface LineBreakdown {
+  labor: number;
+  parts: number;
+  sublet: number;
+  fee: number;
+  discount: number;
+}
+
 export interface DriftLogEntry {
   id: string;             // `${roId}_${weekStart}` — stable per RO per week
   roId: number;
@@ -19,14 +27,17 @@ export interface DriftLogEntry {
   shopName: string;
   shopTekmetricId: number;
   weekStart: string;      // Monday of the week this edit was detected in
-  detectedAt: string;     // ISO — when first logged
-  revenueBefore: number;  // dollars
+  detectedAt: string;     // ISO — when our system first caught the change
+  revenueBefore: number;  // dollars (0 when no snapshot baseline)
   revenueAfter: number;   // dollars
   delta: number;          // dollars (0 when no snapshot baseline)
   statusBefore: string;
   statusAfter: string;
-  updatedAt?: string;     // Tekmetric updatedDate (non-snapshot path)
+  updatedAt?: string;     // Tekmetric updatedDate (non-snapshot path only)
   snapshotBased: boolean;
+  // Line-item breakdown — only present for snapshot-based entries
+  breakdownBefore?: LineBreakdown; // dollars at Friday close
+  breakdownAfter?: LineBreakdown;  // dollars at detection time
   // Review
   status: 'pending' | 'approved' | 'rejected';
   notes: string;
@@ -102,6 +113,8 @@ export async function seedDriftFromReport(
       statusAfter: diff.statusAfter,
       updatedAt: diff.updatedAt,
       snapshotBased,
+      breakdownBefore: diff.breakdownBefore,
+      breakdownAfter: diff.breakdownAfter,
       status: 'pending',
       notes: '',
     });

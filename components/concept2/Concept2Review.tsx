@@ -140,11 +140,13 @@ function buildGpTree(p: ProjShopForTree, b: ShopBenchmark | undefined, cur?: { c
 // ── data shapes ──────────────────────────────────────────────────────────────
 interface ARCustomer { customerId: number; customerName: string; shopNum: string; shopName: string; roNumber: number; invoiceDate: string; daysOverdue: number; balance: number; totalOwedByCustomer: number }
 interface ARPayload { summary: { total: number; count: number; byShop: { shopNum: string; shopName: string; amount: number; count: number }[] }; customers: ARCustomer[] }
+interface DriftBreakdown { labor: number; parts: number; sublet: number; fee: number; discount: number }
 interface DriftLogEntry {
   id: string; roId: number; roNumber: number; shopNum: string; shopName: string;
   shopTekmetricId: number; weekStart: string; detectedAt: string;
   revenueBefore: number; revenueAfter: number; delta: number;
   statusBefore: string; statusAfter: string; updatedAt?: string; snapshotBased: boolean;
+  breakdownBefore?: DriftBreakdown; breakdownAfter?: DriftBreakdown;
   status: 'pending' | 'approved' | 'rejected'; notes: string; reviewedAt?: string; reviewedBy?: string;
 }
 type ShopARState = { kind: 'loading' } | { kind: 'no-data' } | { kind: 'loaded'; total: number; over30: number; customers: ARCustomer[] };
@@ -567,8 +569,9 @@ export default function Concept2Review() {
                     <tr className="uppercase tracking-wide text-[11.5px]" style={{ background: 'rgba(163,53,35,0.06)', borderBottom: '1px solid rgba(163,53,35,0.1)' }}>
                       <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>Shop</th>
                       <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>RO #</th>
-                      <th className="text-right px-3 py-2 font-semibold" style={{ color: FAINT }}>Change</th>
-                      <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>Week</th>
+                      <th className="text-right px-3 py-2 font-semibold" style={{ color: FAINT }}>Revenue change</th>
+                      <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>What changed</th>
+                      <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>Detected</th>
                       <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>Notes</th>
                       {driftTab === 'review' && <th className="text-left px-3 py-2 font-semibold" style={{ color: FAINT }}>Action</th>}
                     </tr>
@@ -579,7 +582,26 @@ export default function Concept2Review() {
                       const isRejected = entry.status === 'rejected';
                       const rowStyle: React.CSSProperties = { borderTop: i > 0 ? '1px solid rgba(163,53,35,0.07)' : undefined, opacity: isApproved ? 0.7 : 1, background: isRejected ? 'rgba(163,53,35,0.06)' : undefined };
                       const textDecor: React.CSSProperties = isApproved ? { textDecoration: 'line-through', color: FAINT } : {};
-                      const weekLabel = fmtYmd(entry.weekStart);
+                      const detectedDate = new Date(entry.detectedAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+                      // Compute line-item movers from breakdown (snapshot-based only)
+                      const lineMovers: { label: string; delta: number }[] = [];
+                      if (entry.breakdownBefore && entry.breakdownAfter) {
+                        const { breakdownBefore: b, breakdownAfter: a } = entry;
+                        [
+                          { label: 'Labor',   delta: a.labor   - b.labor   },
+                          { label: 'Parts',   delta: a.parts   - b.parts   },
+                          { label: 'Sublet',  delta: a.sublet  - b.sublet  },
+                          { label: 'Fee',     delta: a.fee     - b.fee     },
+                          { label: 'Discount',delta: a.discount - b.discount},
+                        ].forEach(m => { if (Math.abs(m.delta) >= 1) lineMovers.push(m); });
+                        lineMovers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+                      }
+
+                      const changeType = entry.statusBefore === '(new)' ? 'Added after close'
+                        : entry.statusAfter === '(removed)' ? 'Voided / removed'
+                        : 'Revenue edited';
+
                       return (
                         <tr key={entry.id} style={rowStyle}>
                           <td className="px-3 py-2 font-medium" style={{ color: INK, ...textDecor }}>
@@ -592,28 +614,55 @@ export default function Concept2Review() {
                               <div className="c2ui text-[11px] mt-0.5" style={{ color: FAINT }}>by {shortActor(entry.reviewedBy)}</div>
                             )}
                           </td>
+
+                          {/* Revenue change column */}
                           <td className="px-3 py-2 tabular-nums text-right" style={textDecor}>
                             {entry.snapshotBased ? (
                               <>
-                                <div className="font-semibold" style={{ color: isApproved ? FAINT : (entry.delta < 0 ? BAD : GOOD) }}>
-                                  {`${entry.delta >= 0 ? '+' : ''}${usd(entry.delta)}`}
+                                {/* Before → after context */}
+                                {entry.statusBefore !== '(new)' && entry.statusAfter !== '(removed)' && (
+                                  <div className="c2ui text-[10.5px]" style={{ color: FAINT }}>
+                                    {usd(entry.revenueBefore)} → {usd(entry.revenueAfter)}
+                                  </div>
+                                )}
+                                {/* Delta — the headline number */}
+                                <div className="font-semibold text-[13px]" style={{ color: isApproved ? FAINT : (entry.delta < 0 ? BAD : GOOD) }}>
+                                  {entry.delta >= 0 ? '+' : ''}{usd(entry.delta)}
                                 </div>
-                                <div className="c2ui text-[10.5px] mt-0.5" style={{ color: FAINT }}>
-                                  {entry.statusBefore === '(new)' ? 'new post-close'
-                                    : entry.statusAfter === '(removed)' ? 'voided / re-opened'
-                                    : 'revenue edit'}
-                                </div>
+                                {entry.statusBefore === '(new)' && (
+                                  <div className="c2ui text-[10.5px]" style={{ color: FAINT }}>ticket total</div>
+                                )}
                               </>
                             ) : (
-                              <>
-                                <div className="c2ui text-[11px] font-medium" style={{ color: isApproved ? FAINT : INK2 }}>
-                                  edited {entry.updatedAt ? new Date(entry.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
-                                </div>
-                                <div className="c2ui text-[10.5px] mt-0.5" style={{ color: FAINT }}>no baseline — open RO to review</div>
-                              </>
+                              <div className="c2ui text-[11px]" style={{ color: isApproved ? FAINT : INK2 }}>
+                                No baseline —<br />open RO to verify
+                              </div>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-[12px]" style={{ color: FAINT, whiteSpace: 'nowrap' }}>{weekLabel}</td>
+
+                          {/* What changed column */}
+                          <td className="px-3 py-2 text-[12px]">
+                            {entry.snapshotBased ? (
+                              <div>
+                                <div className="font-medium" style={{ color: isApproved ? FAINT : INK2 }}>{changeType}</div>
+                                {lineMovers.slice(0, 2).map(m => (
+                                  <div key={m.label} className="c2ui text-[10.5px] mt-0.5 tabular-nums" style={{ color: m.delta < 0 ? BAD : GOOD }}>
+                                    {m.label}: {m.delta >= 0 ? '+' : ''}{usd(m.delta)}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="c2ui text-[11px]" style={{ color: FAINT }}>
+                                Updated {entry.updatedAt ? new Date(entry.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Detected column */}
+                          <td className="px-3 py-2 text-[12px]" style={{ color: FAINT, whiteSpace: 'nowrap' }}>
+                            {detectedDate}
+                          </td>
+
                           <td className="px-3 py-2" style={{ minWidth: 160 }}>
                             {isApproved ? (
                               <span className="text-[12px]" style={{ color: FAINT, fontStyle: entry.notes ? undefined : 'italic' }}>{entry.notes || 'No notes'}</span>
