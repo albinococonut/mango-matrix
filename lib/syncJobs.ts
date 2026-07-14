@@ -1019,7 +1019,7 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
             const costCents   = part.cost ?? 0;
             const retailCents = part.retail ?? 0;
             const pricingType = classifyPricing(costCents, retailCents, job.cannedJobId ?? null, part.partType?.code);
-            const matrixCents = matrixRetail(costCents);
+            const matrixCents = matrixRetail(costCents, retailCents);
             lines.push({
               id: `pm_${ro.id}_${job.id}_${partIdx}`,
               roId: ro.id, roNumber: ro.repairOrderNumber,

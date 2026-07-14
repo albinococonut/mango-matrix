@@ -97,12 +97,6 @@ const ALL_SIMPLE_MATRICES: Tier[][] = [
 
 // ---- Public API ----
 
-// Returns expected retail in cents using the default compound matrix.
-// Used for variance / lost-revenue calculations in the UI.
-export function matrixRetail(costCents: number): number {
-  return compoundRetail(costCents);
-}
-
 export type PricingType = 'canned' | 'matrix' | 'manual' | 'no_charge';
 
 // Returns true if the retail price matches any known Tekmetric pricing matrix
@@ -114,6 +108,22 @@ function matchesAnyMatrix(costCents: number, retailCents: number): boolean {
     if (Math.abs(retailCents - simpleRetail(costCents, tiers)) <= tol) return true;
   }
   return false;
+}
+
+// Returns the expected matrix retail price in cents for a given cost.
+// If the actual retail matches a specific matrix, returns that matrix's price
+// (so variance shows $0 for correctly-priced parts). Falls back to compound
+// for manual parts — compound is the target benchmark for lost-revenue display.
+export function matrixRetail(costCents: number, actualRetailCents?: number): number {
+  if (actualRetailCents !== undefined) {
+    const tol = 10;
+    if (Math.abs(actualRetailCents - compoundRetail(costCents)) <= tol) return compoundRetail(costCents);
+    for (const tiers of ALL_SIMPLE_MATRICES) {
+      const expected = simpleRetail(costCents, tiers);
+      if (Math.abs(actualRetailCents - expected) <= tol) return expected;
+    }
+  }
+  return compoundRetail(costCents);
 }
 
 // Classify a single part's pricing against all known matrices.
