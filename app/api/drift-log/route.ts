@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getRole } from '@/lib/serverAuth';
-import { getDriftLog, seedDriftFromReport } from '@/lib/driftLog';
+import { getDriftLog, seedDriftFromReport, clearPendingEntriesForWeeks } from '@/lib/driftLog';
 import { readCache } from '@/lib/cache';
 import type { DriftReport } from '@/lib/weeklySnapshot';
 import { checkDriftByUpdatedDate } from '@/lib/weeklySnapshot';
@@ -70,40 +70,50 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
 
-  const last16 = recentWeekStarts(16);
-  const last4  = recentWeekStarts(4);
+  // Only show tickets from last week — don't go further back for now.
+  const lastWeek = recentWeekStarts(1);
+  const weekFilter = lastWeek[0];
+
   let entries = await getDriftLog();
 
-  if (entries.length === 0) {
-    await seedFromSnapshots(last16);
-    await seedFromLiveScan(last4);
+  // Seed last week in the background (or await if log is empty).
+  if (entries.filter(e => e.weekStart === weekFilter).length === 0) {
+    await seedFromSnapshots(lastWeek);
+    await seedFromLiveScan(lastWeek);
     entries = await getDriftLog();
   } else {
     Promise.all([
-      seedFromSnapshots(last16),
-      seedFromLiveScan(last4),
+      seedFromSnapshots(lastWeek),
+      seedFromLiveScan(lastWeek),
     ]).catch(() => {});
   }
 
-  const sorted = [...entries].sort(
+  const filtered = entries.filter(e => e.weekStart === weekFilter);
+  const sorted = [...filtered].sort(
     (a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime(),
   );
 
   return NextResponse.json({ entries: sorted });
 }
 
-// Force-refresh: triggered by the Refresh button in the UI.
+// Force-refresh: clears pending entries for last week and re-scans Tekmetric.
 export async function POST(req: NextRequest) {
   if ((await getRole(req)) !== 'executive') {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
 
-  const last4 = recentWeekStarts(4);
-  await seedFromSnapshots(recentWeekStarts(16));
-  const added = await seedFromLiveScan(last4);
+  const lastWeek = recentWeekStarts(1);
+  const weekFilter = lastWeek[0];
+
+  // Clear pending entries so the re-scan starts clean (preserves approved/rejected).
+  await clearPendingEntriesForWeeks(lastWeek);
+
+  await seedFromSnapshots(lastWeek);
+  const added = await seedFromLiveScan(lastWeek);
 
   const entries = await getDriftLog();
-  const sorted = [...entries].sort(
+  const filtered = entries.filter(e => e.weekStart === weekFilter);
+  const sorted = [...filtered].sort(
     (a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime(),
   );
 

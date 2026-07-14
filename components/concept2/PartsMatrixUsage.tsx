@@ -269,7 +269,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   }, []);
 
   // ── Load table data ───────────────────────────────────────────────────────
-  const load = useCallback(async () => {
+  const load = useCallback(async (bust = false) => {
     setLoading(true);
     setFailed(false);
     setPage(0);
@@ -279,6 +279,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
     try {
       const { start, end } = rangeToDateParams(range);
       const p = new URLSearchParams({ shop: 'all', start, end, mode });
+      if (bust) p.set('bust', '1');
       const res = await fetch(`/api/parts-matrix-usage?${p}`, { cache: 'no-store', signal: ctrl.signal });
       if (!res.ok) throw new Error(`${res.status}`);
       setData(await res.json() as PartsMatrixPayload);
@@ -477,7 +478,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
           <Dropdown value={range} onChange={setRange} opts={RANGES} />
         </div>
         <button
-          onClick={load}
+          onClick={() => load(true)}
           disabled={loading}
           className="c2ui text-[12px] font-medium rounded-full px-3 py-1 transition"
           style={{ color: FAINT, border: `1px solid ${LINE}`, opacity: loading ? 0.4 : 1 }}

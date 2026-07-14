@@ -55,6 +55,15 @@ async function saveDriftLog(entries: DriftLogEntry[]): Promise<void> {
   await writeCache(LOG_KEY, entries);
 }
 
+// Remove pending (un-reviewed) entries for the given week starts so they can
+// be re-seeded fresh. Reviewed (approved/rejected) entries are preserved.
+export async function clearPendingEntriesForWeeks(weekStarts: string[]): Promise<void> {
+  const entries = await getDriftLog();
+  const weekSet = new Set(weekStarts);
+  const kept = entries.filter(e => !(weekSet.has(e.weekStart) && e.status === 'pending'));
+  await saveDriftLog(kept);
+}
+
 /**
  * Merge new diffs from a DriftReport into the log without overwriting
  * existing reviewed entries. Returns the count of newly added entries.
