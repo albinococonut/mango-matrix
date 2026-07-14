@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
   const end = sp.get('end') || new Date().toISOString().slice(0, 10);
   const mode = sp.get('mode') || 'all';           // 'all'/'created' = by createdDate, 'posted' = by postedDate, 'open' = createdDate non-closed only
 
-  const cacheKey = `parts_matrix_usage_v2_${shopFilter}_${start}_${end}_${mode}`;
+  const cacheKey = `parts_matrix_usage_v3_${shopFilter}_${start}_${end}_${mode}`;
   const cached = await readCache<PartsMatrixPayload>(cacheKey);
   if (cached) return NextResponse.json({ ...cached, cached: true });
 

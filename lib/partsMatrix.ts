@@ -127,10 +127,13 @@ export function matrixRetail(costCents: number, actualRetailCents?: number): num
 }
 
 // Classify a single part's pricing against all known matrices.
-// - canned:    price matches a matrix AND the job is a canned-job template
+// - canned:    job is a canned-job template (price was set in the template, not by a tech)
 // - matrix:    price matches a matrix, job was built manually
-// - manual:    price deviates from all known matrices
+// - manual:    NOT in a canned job AND price deviates from all known matrices
 // - no_charge: both cost and retail are $0
+//
+// Canned-job parts are always 'canned' regardless of matrix match — the price
+// was intentionally set in the template, so it is never a manual override.
 //
 // partTypeCode: Tekmetric's partType.code ('INVENTORY', 'PART', etc.)
 // INVENTORY parts are auto-priced from the shop's inventory catalog and are
@@ -143,11 +146,8 @@ export function classifyPricing(
 ): PricingType {
   if (costCents === 0 && retailCents === 0) return 'no_charge';
   if (costCents <= 0) return 'manual';
-  if (partTypeCode === 'INVENTORY') {
-    return cannedJobId !== null ? 'canned' : 'matrix';
-  }
-  if (matchesAnyMatrix(costCents, retailCents)) {
-    return cannedJobId !== null ? 'canned' : 'matrix';
-  }
+  if (cannedJobId !== null) return 'canned';
+  if (partTypeCode === 'INVENTORY') return 'matrix';
+  if (matchesAnyMatrix(costCents, retailCents)) return 'matrix';
   return 'manual';
 }
