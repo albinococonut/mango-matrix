@@ -476,12 +476,14 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
           <span className="c2ui text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: FAINT }}>Timeframe</span>
           <Dropdown value={range} onChange={setRange} opts={RANGES} />
         </div>
-        {loading && (
-          <div className="c2ui text-[12px] flex items-center gap-1.5" style={{ color: FAINT }}>
-            <span className="inline-block w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
-            Loading…
-          </div>
-        )}
+        <button
+          onClick={load}
+          disabled={loading}
+          className="c2ui text-[12px] font-medium rounded-full px-3 py-1 transition"
+          style={{ color: FAINT, border: `1px solid ${LINE}`, opacity: loading ? 0.4 : 1 }}
+        >
+          {loading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
         {failed && <span className="c2ui text-[12px]" style={{ color: BAD }}>Failed — try a shorter range</span>}
       </div>
 
