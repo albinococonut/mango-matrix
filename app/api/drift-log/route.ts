@@ -32,11 +32,13 @@ function recentWeekStarts(n: number): string[] {
 }
 
 // Seed from snapshot cache (fast, no Tekmetric calls).
+// Only processes snapshot-based reports — skips any stale updatedDate-scan
+// reports that may still be in the cache.
 async function seedFromSnapshots(weeks: string[]): Promise<void> {
   for (const weekStart of weeks) {
     const report = await readCache<DriftReport>(`weekly_drift_v3_${weekStart}`);
-    if (report?.diffs?.length) {
-      await seedDriftFromReport(weekStart, report, report.snapshotBased ?? false);
+    if (report?.snapshotBased && report.diffs?.length) {
+      await seedDriftFromReport(weekStart, report, true);
     }
   }
 }
