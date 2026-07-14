@@ -36,8 +36,19 @@ export interface DriftLogEntry {
 
 const LOG_KEY = 'drift_review_log_v1';
 
+const BILLING_STATUSES = new Set(['POSTED', 'ACCRECV']);
+
 export async function getDriftLog(): Promise<DriftLogEntry[]> {
-  return (await readCache<DriftLogEntry[]>(LOG_KEY)) ?? [];
+  const all = (await readCache<DriftLogEntry[]>(LOG_KEY)) ?? [];
+  // Exclude POSTED↔ACCRECV status-only entries written before the detector
+  // was fixed — billing workflow transitions, not actual post-close edits.
+  return all.filter(e => !(
+    e.snapshotBased &&
+    e.delta === 0 &&
+    BILLING_STATUSES.has(e.statusBefore) &&
+    BILLING_STATUSES.has(e.statusAfter) &&
+    e.statusBefore !== e.statusAfter
+  ));
 }
 
 async function saveDriftLog(entries: DriftLogEntry[]): Promise<void> {
