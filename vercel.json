@@ -1,5 +1,6 @@
 {
   "functions": {
+    "app/api/cron/run-syncs/route.ts":            { "maxDuration": 800 },
     "app/api/parts-matrix-usage/route.ts":        { "maxDuration": 120 },
     "app/api/shop-performance-heatmap/route.ts":  { "maxDuration": 120 },
     "app/api/metrics/route.ts":                   { "maxDuration": 120 },

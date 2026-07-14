@@ -1,7 +1,7 @@
 name: Run Mango Dashboard Syncs
 
-# We're on Vercel Hobby, which caps Vercel Cron at 1/day. GitHub Actions runs
-# every 15 min and hits the protected sync endpoint instead.
+# GitHub Actions runs every 15 min and hits the protected sync endpoint.
+# Vercel Cron is not used — GitHub Actions gives us finer scheduling control.
 
 on:
   schedule:
@@ -21,14 +21,15 @@ jobs:
           set -e
           # Capture body + status. --fail-with-body keeps the body even on non-2xx
           # so the GH Actions log shows the error JSON, not just "curl: (22)".
-          # Skip the two heavy jobs (run by run-syncs-heavy.yml on a separate
-          # schedule) so this sweep stays well under Vercel's 300s function
-          # cap. Without the split the full sweep ran ~5min and 504-timed-out.
+          # Skip the heavy jobs (run by run-syncs-heavy.yml on a separate schedule).
+          # curl timeout is 750s — the run-syncs Vercel function has maxDuration 800
+          # (set in both the route export and vercel.json). The GH Actions job timeout
+          # is 14 min = 840s so we have 90s of headroom.
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
             -X POST "${SYNC_CRON_URL}?skip=warm-return-customers,refresh-booked-rate-strict,warm-parts-matrix" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            --max-time 290)
+            --max-time 750)
           echo "HTTP $HTTP_CODE"
           cat /tmp/sync.out
           echo
