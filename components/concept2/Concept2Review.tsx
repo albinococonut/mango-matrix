@@ -593,15 +593,25 @@ export default function Concept2Review() {
                             )}
                           </td>
                           <td className="px-3 py-2 tabular-nums text-right" style={textDecor}>
-                            <div className="font-semibold" style={{ color: isApproved ? FAINT : (entry.delta < 0 ? BAD : GOOD) }}>
-                              {entry.snapshotBased ? `${entry.delta >= 0 ? '+' : ''}${usd(entry.delta)}` : usd(entry.revenueAfter)}
-                            </div>
-                            <div className="c2ui text-[10.5px] mt-0.5" style={{ color: FAINT }}>
-                              {entry.statusBefore === '(new)' ? 'new post-close'
-                                : entry.statusAfter === '(removed)' ? 'voided / re-opened'
-                                : !entry.snapshotBased ? 'current total (no baseline)'
-                                : 'revenue edit'}
-                            </div>
+                            {entry.snapshotBased ? (
+                              <>
+                                <div className="font-semibold" style={{ color: isApproved ? FAINT : (entry.delta < 0 ? BAD : GOOD) }}>
+                                  {`${entry.delta >= 0 ? '+' : ''}${usd(entry.delta)}`}
+                                </div>
+                                <div className="c2ui text-[10.5px] mt-0.5" style={{ color: FAINT }}>
+                                  {entry.statusBefore === '(new)' ? 'new post-close'
+                                    : entry.statusAfter === '(removed)' ? 'voided / re-opened'
+                                    : 'revenue edit'}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="c2ui text-[11px] font-medium" style={{ color: isApproved ? FAINT : INK2 }}>
+                                  edited {entry.updatedAt ? new Date(entry.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                                </div>
+                                <div className="c2ui text-[10.5px] mt-0.5" style={{ color: FAINT }}>no baseline — open RO to review</div>
+                              </>
+                            )}
                           </td>
                           <td className="px-3 py-2 text-[12px]" style={{ color: FAINT, whiteSpace: 'nowrap' }}>{weekLabel}</td>
                           <td className="px-3 py-2" style={{ minWidth: 160 }}>
