@@ -30,7 +30,7 @@ jobs:
             -X POST "${SYNC_CRON_URL}?job=warm-parts-matrix" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            --max-time 290)
+            --max-time 750)
           echo "HTTP $HTTP_CODE"
           cat /tmp/sync.out
           echo
