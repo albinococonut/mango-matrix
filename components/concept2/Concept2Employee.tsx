@@ -5,12 +5,14 @@
 // from the same endpoints as production. The remaining recognition + operations
 // widgets are flagged as the next increment (built section by section).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import ChampionAnimation from './ChampionAnimation';
 import { SHOPS, SHOP_BY_NUM } from '@/lib/shops';
 import { loadGoals, GoalsByShop, weeklyMinuteProratedGoal } from '@/lib/goals';
 import { INK, INK2, FAINT, LINE, AMBER, GOOD, WARN, BAD, heatRGB, norm, usd, safe } from './kit';
 import { MissedCallbacksChainStrip, MissedCallbacksShopQueue } from '@/components/MissedCallbacks';
 import { MissedRebooksShopList } from '@/components/MissedRebooks';
+import ConceptAR from './ConceptAR';
 import { TrophyIcon } from '@/components/Trophy';
 import { toZonedTime } from 'date-fns-tz';
 import { historyWeeksSince } from '@/lib/trophyHistory';
@@ -24,7 +26,7 @@ const fmtDate = (iso: string) => { try { return new Date(iso).toLocaleDateString
 const heatBar = (score: number) => { const [r, g, b] = heatRGB(score); return `linear-gradient(90deg, rgba(${r},${g},${b},0.55), rgba(${r},${g},${b},0.95))`; };
 const heatSolid = (score: number) => { const [r, g, b] = heatRGB(score); return `rgb(${r},${g},${b})`; };
 
-interface Champion { periodStart: string; crownedAt: string; shopNum: string; shopName: string; score: number; medals: { gold: number; silver: number; bronze: number }; revenue: number; gpPct: number; cars: number; rankMovement: number | null; defendingSince: string; isNewChampion: boolean; isTie?: boolean; tiedShopNames?: string[] }
+interface Champion { periodStart: string; crownedAt: string; shopNum: string; shopName: string; score: number; medals: { gold: number; silver: number; bronze: number }; revenue: number; gpPct: number; cars: number; rankMovement: number | null; defendingSince: string; isNewChampion: boolean; isTie?: boolean; tiedShopNames?: string[]; standings?: Array<{ shopNum: string; shopName: string; score: number; rank: number }> }
 
 function useCountdown(targetISO: string | null) {
   const [p, setP] = useState<{ d: number; h: number; m: number; s: number } | null>(null);
@@ -66,165 +68,162 @@ function HeroStat({ label, value }: { label: string; value: string }) {
 
 function GoldenMango() {
   const [data, setData] = useState<{ champion: Champion | null; nextCrownAt: string } | null>(null);
+  const [showAnim, setShowAnim] = useState(false);
   const cd = useCountdown(data?.nextCrownAt ?? null);
-  const fetchOnce = () => safe<any>('/api/extras?view=golden-mango').then((d) => { setData(d); return d; });
-  useEffect(() => { fetchOnce(); }, []);
+  const fetchOnce = useCallback(() => safe<any>('/api/extras?view=golden-mango').then((d: any) => {
+    setData(d);
+    if (d?.champion?.isNewChampion && d.champion.periodStart) {
+      const key = `champion_anim_seen_v1_${String(d.champion.periodStart).slice(0, 10)}`;
+      if (typeof window !== 'undefined' && !localStorage.getItem(key)) {
+        localStorage.setItem(key, '1');
+        setShowAnim(true);
+      }
+    }
+    return d;
+  }), []);
+  useEffect(() => { fetchOnce(); }, [fetchOnce]);
+
+  // Refresh every 60 s so the new champion appears within a minute of the
+  // cron running — without this the page can miss the transition entirely.
+  useEffect(() => {
+    const id = setInterval(fetchOnce, 60_000);
+    return () => clearInterval(id);
+  }, [fetchOnce]);
+
+  // Fast-poll at ceremony time: fire every 15 s until the champion's period
+  // advances (i.e. the cron has written the new crown). Stop condition uses
+  // periodStart, NOT nextCrownAt — nextCrownAt jumps to next week as soon as
+  // the boundary passes, which previously caused the interval to clear before
+  // the cron ever ran.
   const reachedZero = cd && cd.d === 0 && cd.h === 0 && cd.m === 0 && cd.s === 0;
   useEffect(() => {
     if (!reachedZero || !data) return;
-    const startedAt = data.nextCrownAt; let polls = 0;
-    const id = setInterval(async () => { polls++; if (polls > 20) { clearInterval(id); return; } const fresh = await fetchOnce(); if (fresh?.nextCrownAt && fresh.nextCrownAt !== startedAt) clearInterval(id); }, 15000);
+    const startedPeriod = data.champion?.periodStart;
+    let polls = 0;
+    const id = setInterval(async () => {
+      polls++;
+      if (polls > 40) { clearInterval(id); return; } // ~10 min hard stop
+      const fresh = await fetchOnce();
+      if (fresh?.champion?.periodStart && fresh.champion.periodStart !== startedPeriod) clearInterval(id);
+    }, 15000);
     return () => clearInterval(id);
-  }, [reachedZero, data?.nextCrownAt]);
+  }, [reachedZero, data?.champion?.periodStart, fetchOnce]);
 
   const champ = data?.champion ?? null;
   const move = (() => { if (!champ) return null; if (champ.rankMovement === null) return { txt: 'New', c: '#3E9CB0' }; if (champ.rankMovement > 0) return { txt: `▲ ${champ.rankMovement}`, c: GOOD }; if (champ.rankMovement === 0) return { txt: 'Holding', c: INK2 }; return { txt: `▼ ${Math.abs(champ.rankMovement)}`, c: BAD }; })();
   const title = champ?.isTie ? (champ.tiedShopNames || [champ.shopName]).join('  ·  ') : champ?.shopName;
 
+  const shopColor = SHOP_BY_NUM[champ?.shopNum as keyof typeof SHOP_BY_NUM]?.color || GOLD;
+
   return (
-    <section className="relative w-full overflow-hidden mb-7" style={{
+    <section className="relative w-full mb-7 overflow-hidden" style={{
       borderRadius: 26,
-      // Same atmospheric blue → gold → coral wash the OpsHero and
-      // LeaderSpotlight chrome use, so the Golden Mango sits on the page in
-      // the same visual system instead of being a saturated-gold plaque that
-      // didn't match anything around it. Gold is reserved for: the small
-      // wordmark accent, the TrophyIcon, and the actual Golden Mango trophy
-      // image — not the chrome.
-      background: 'linear-gradient(160deg, rgba(95,169,214,0.12), rgba(242,206,112,0.12) 55%, rgba(232,134,62,0.12))',
-      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.55), 0 1px 0 rgba(255,255,255,0.7) inset, 0 18px 48px -28px rgba(40,34,26,0.30)',
+      background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.82))',
+      backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)',
+      border: '1px solid rgba(255,255,255,0.80)',
+      // Taller shadow + gold glow — this card should feel more special than others
+      boxShadow: `0 24px 60px -20px rgba(40,34,26,0.28), 0 0 0 1.5px rgba(201,162,39,0.22)`,
     }}>
-      <div className="relative px-6 sm:px-10 py-9 sm:py-11">
-        {/* Header — small TrophyIcon + refined Fraunces wordmark, both in
-            gold. That's the only gold accent in the chrome. */}
-        <div className="flex items-center gap-2.5">
-          <TrophyIcon rank={1} size={22} />
-          <div>
-            <div className="c2disp" style={{ color: GOLD, fontSize: 18, letterSpacing: '-0.005em', fontWeight: 600 }}>The Golden Mango</div>
-            <div className="c2ui text-[13px] mt-0.5" style={{ color: INK2 }}>This week’s champion · locked Fridays 6 PM MT</div>
+      {/* Thick gold accent stripe — only this card has this; signals "hero" */}
+      <div aria-hidden style={{ height: 4, background: `linear-gradient(90deg, transparent 4%, ${GOLD} 30%, rgba(255,220,60,0.95) 50%, ${GOLD} 70%, transparent 96%)` }} />
+
+      {champ ? (
+        <div className="flex flex-col md:flex-row min-h-[400px]">
+          {/* LEFT — team photo: object-contain so every person is always in
+              frame regardless of photo composition or aspect ratio. */}
+          <div className="relative md:w-[42%] shrink-0 overflow-hidden" style={{ minHeight: 260, borderRadius: '0 0 0 25px', background: 'rgba(240,238,234,0.5)' }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`/shop-photos/${encodeURIComponent(`${champ.shopNum} team photo.jpg`)}`}
+              alt={`${champ.shopName} team`}
+              className="absolute inset-0 w-full h-full object-contain"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0'; }}
+            />
+            {/* Fade into right panel */}
+            <div aria-hidden className="absolute inset-y-0 right-0 w-20 pointer-events-none" style={{ background: 'linear-gradient(to right, transparent, rgba(255,255,255,0.92))' }} />
+            {/* Shop color stripe */}
+            <div aria-hidden className="absolute bottom-0 inset-x-0 h-1" style={{ background: shopColor, opacity: 0.75 }} />
           </div>
-        </div>
 
-        {champ ? (
-          <div className="mt-7">
-            {/* HERO — 2-column editorial. LEFT: cinematic team photo.
-                RIGHT: trophy + kicker + champion shop name + medals + score.
-                Breakpoint is md (768px) not lg (1024px) so most viewports
-                land in the 2-column composition; the single-column stack
-                only fires on phone-sized widths. Photo also has a maxHeight
-                cap so it can't dominate the page when it stacks. */}
-            <div className="grid grid-cols-1 md:grid-cols-[1.05fr_1fr] gap-6 md:gap-10 items-stretch">
-              {/* LEFT — team photo only. Earlier revisions stamped the
-                  Golden Mango trophy on the top-right corner of the photo
-                  for a "magazine cover" composition, but the trophy covered
-                  the team members and read as visual clutter. The trophy
-                  now lives in the right column above the headline so the
-                  photo can breathe and the team is fully visible.
-                  maxHeight caps the stacked-on-mobile case where a wide
-                  parent + 4:3 aspect ratio would otherwise produce an
-                  absurdly tall photo that pushes the champion's name + the
-                  Weekly Score row off the visible viewport. */}
-              {/* When stacked (single-column, below md), the photo would
-                  otherwise occupy the full content width AND honor 4:3,
-                  producing a 700×525 wall poster that pushed the champion's
-                  name + medals below the fold. maxWidth caps the width
-                  ceiling so the photo never exceeds a normal "team photo"
-                  presentation; mx-auto centers it inside the parent column
-                  on small viewports; w-full lets it grow up to the cap when
-                  there's room. In the 2-col composition (md+) the parent
-                  grid column already constrains width so these caps don't
-                  fire — same composition as before. */}
-              <div className="relative rounded-3xl overflow-hidden w-full mx-auto" style={{
-                aspectRatio: '4 / 3',
-                maxWidth: 540,
-                maxHeight: 405,
-                background: 'linear-gradient(160deg, rgba(252,243,217,0.6), rgba(244,225,170,0.4))',
-                boxShadow: '0 0 0 1px rgba(255,255,255,0.7), 0 18px 40px -16px rgba(40,34,26,0.32)',
-              }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={`/shop-photos/${encodeURIComponent(`${champ.shopNum} team photo.jpg`)}`} alt={`${champ.shopName} team`} className="absolute inset-0 w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
-              </div>
-
-              {/* RIGHT — editorial text block. Vertically centers against
-                  the photo on lg+ so the champion's name + medals read as
-                  the story beside the image. Trophy lives at the top of
-                  THIS column so it's part of the headline rather than
-                  covering the team photo. */}
-              <div className="flex flex-col justify-center min-w-0">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/the-golden-mango.png" alt="The Golden Mango trophy" className="object-contain mb-3" style={{ width: 'clamp(80px, 12vw, 140px)', height: 'auto', filter: 'drop-shadow(0 10px 18px rgba(124,72,12,0.36))' }} onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
-                {champ.isTie && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em] mb-2" style={{ color: GOLD }}>Shared Title</div>}
-                <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em] mb-2.5" style={{ color: INK2 }}>Champion · this week</div>
-                {/* Title fontSize: previously fixed at 44 which would overflow
-                    or push the medals row off-screen at any column width below
-                    ~320 px (long shop names like "Cottonwood" hit ~230 px at
-                    44 px). clamp() scales the headline with viewport width so
-                    "The Valley" still reads as the hero on a phone while
-                    "Cottonwood" doesn't break the layout on a 900 px laptop
-                    in the 2-col composition. min-w-0 + break-words guard
-                    against the rare extra-long custom name. */}
-                <h2 className="c2disp leading-[1.02] break-words" style={{ color: INK, fontSize: 'clamp(28px, 3.6vw, 44px)', letterSpacing: '-0.03em' }}>{title}</h2>
-                {/* Medal + score + rank-movement row. gap-x scales from
-                    compact (5 = 20 px) on narrow screens to airy (8 = 32 px)
-                    on md+. flex-wrap + items-end keep them gracefully
-                    stacked when the column gets tight, instead of
-                    overflowing horizontally. */}
-                <div className="mt-6 flex flex-wrap items-end gap-x-5 sm:gap-x-8 gap-y-4">
-                  <div className="flex flex-col">
-                    <span className="c2disp tabular-nums flex items-center gap-2.5 flex-wrap" style={{ fontSize: 22, letterSpacing: '-0.015em', color: INK }}>
-                      <span className="inline-flex items-center gap-1.5"><TrophyIcon rank={1} size={22} />{champ.medals.gold}</span>
-                      <span className="inline-flex items-center gap-1.5"><TrophyIcon rank={2} size={22} />{champ.medals.silver}</span>
-                      <span className="inline-flex items-center gap-1.5"><TrophyIcon rank={3} size={22} />{champ.medals.bronze}</span>
-                    </span>
-                    <span className="c2ui mt-1.5 text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: INK2 }}>Medals</span>
-                  </div>
-                  <HeroStat label="Weekly Score" value={String(champ.score)} />
-                  {move && <div className="flex flex-col"><span className="c2disp tabular-nums" style={{ color: move.c, fontSize: 22, letterSpacing: '-0.015em' }}>{move.txt}</span><span className="c2ui mt-1.5 text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: INK2 }}>vs last week</span></div>}
-                </div>
-              </div>
+          {/* RIGHT — editorial text, generous padding, big name */}
+          <div className="flex flex-col justify-center px-8 sm:px-10 py-9 flex-1 min-w-0">
+            {/* Eyebrow */}
+            <div className="flex items-center gap-2 mb-5">
+              <TrophyIcon rank={1} size={18} />
+              <span className="c2ui text-[12.5px] font-bold uppercase tracking-[0.28em]" style={{ color: GOLD }}>The Golden Mango</span>
+              {champ.isTie && <span className="c2ui text-[11px] font-bold uppercase tracking-[0.16em] px-2 py-0.5 rounded-full" style={{ background: 'rgba(201,162,39,0.10)', color: GOLD }}>Shared</span>}
             </div>
 
-            {/* STATS — one unified row, not split across two stat groups. */}
-            <div className="mt-8 pt-7 grid grid-cols-2 md:grid-cols-4 gap-6" style={{ borderTop: '1px solid rgba(34,32,28,0.10)' }}>
-              <HeroStat label="Revenue" value={usd(champ.revenue)} />
-              <HeroStat label="GP %" value={`${(champ.gpPct * 100).toFixed(1)}%`} />
-              <HeroStat label="Cars Serviced" value={String(champ.cars)} />
+            {/* Champion name — the hero number, should dominate */}
+            <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em] mb-2" style={{ color: INK2 }}>Current Champion</div>
+            <h2 className="c2disp break-words" style={{ color: INK, fontSize: 'clamp(36px, 5vw, 64px)', letterSpacing: '-0.03em', fontWeight: 500, lineHeight: 0.96 }}>{title}</h2>
+
+            {/* Trophy image — moderate size, below the name */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/the-golden-mango.png" alt="trophy" className="object-contain my-4" style={{ width: 'clamp(60px, 8vw, 100px)', height: 'auto', filter: 'drop-shadow(0 8px 16px rgba(140,90,10,0.25))' }} onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+
+            {/* Medal + score row */}
+            <div className="flex flex-wrap items-end gap-x-6 gap-y-3 mb-6">
+              <div className="flex flex-col">
+                <span className="c2disp tabular-nums flex items-center gap-2.5" style={{ fontSize: 22, color: INK }}>
+                  <span className="inline-flex items-center gap-1"><TrophyIcon rank={1} size={20} />{champ.medals.gold}</span>
+                  <span className="inline-flex items-center gap-1"><TrophyIcon rank={2} size={20} />{champ.medals.silver}</span>
+                  <span className="inline-flex items-center gap-1"><TrophyIcon rank={3} size={20} />{champ.medals.bronze}</span>
+                </span>
+                <span className="c2ui mt-1 text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: INK2 }}>Medals</span>
+              </div>
+              <HeroStat label="Score" value={String(champ.score)} />
+              {move && <div className="flex flex-col"><span className="c2disp tabular-nums" style={{ color: move.c, fontSize: 20 }}>{move.txt}</span><span className="c2ui mt-1 text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: INK2 }}>vs last week</span></div>}
+            </div>
+
+            {/* Stats strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-5" style={{ borderTop: '1px solid rgba(34,32,28,0.08)' }}>
+              <HeroStat label="Revenue" value={champ.revenue > 0 ? usd(champ.revenue) : '—'} />
+              <HeroStat label="GP %" value={champ.gpPct > 0 ? `${(champ.gpPct * 100).toFixed(1)}%` : '—'} />
+              <HeroStat label="Cars" value={champ.cars > 0 ? String(champ.cars) : '—'} />
               <HeroStat label="Defending Since" value={fmtDate(champ.defendingSince)} />
             </div>
 
-            {/* FOOTER — countdown left, ceremony description right. */}
-            <div className="mt-8 pt-7 grid grid-cols-1 md:grid-cols-[auto_1fr] gap-x-12 gap-y-5 items-start" style={{ borderTop: '1px solid rgba(34,32,28,0.10)' }}>
+            {/* Countdown */}
+            <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 pt-5" style={{ borderTop: '1px solid rgba(34,32,28,0.08)' }}>
               <div>
-                <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em] mb-3" style={{ color: GOLD }}>Next Crown</div>
-                <div className="flex items-start gap-2.5"><TimeBlock n={cd?.d ?? 0} label="Days" /><TimeBlock n={cd?.h ?? 0} label="Hrs" /><TimeBlock n={cd?.m ?? 0} label="Min" /><TimeBlock n={cd?.s ?? 0} label="Sec" /></div>
+                <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.22em] mb-2" style={{ color: GOLD }}>Next Crown</div>
+                {!data ? (
+                  <div className="c2ui text-[13px]" style={{ color: FAINT }}>Loading…</div>
+                ) : reachedZero ? (
+                  <div className="c2ui text-[15px] font-semibold" style={{ color: GOLD }}>Tonight — ceremony in progress</div>
+                ) : (
+                  <div className="flex gap-2"><TimeBlock n={cd?.d ?? 0} label="Days" /><TimeBlock n={cd?.h ?? 0} label="Hrs" /><TimeBlock n={cd?.m ?? 0} label="Min" /><TimeBlock n={cd?.s ?? 0} label="Sec" /></div>
+                )}
               </div>
-              <p className="c2ui text-[12.5px] leading-relaxed max-w-xl" style={{ color: INK2 }}>Awarded to the shop with the most <span style={{ color: INK, fontWeight: 600 }}>gold</span> finishes across the weekly categories — Revenue, GP%, Top Tech, Re-Books, Comebacks, Reviews &amp; Call Conversion. Ties break by silver, then bronze.</p>
+              <p className="c2ui text-[12.5px] leading-relaxed max-w-sm" style={{ color: INK2 }}>Most gold finishes across Revenue, GP%, Top Tech, Re-Books, Comebacks &amp; Call Conversion. Ties break by silver, then bronze.</p>
             </div>
           </div>
-        ) : (
-          <div className="mt-8 flex flex-col items-center text-center">
-            <h2 className="c2disp leading-tight" style={{ color: INK, fontSize: 30, letterSpacing: '-0.025em' }}>Crown loading…</h2>
-            <p className="c2ui mt-2.5 text-[13px] max-w-md" style={{ color: INK2 }}>The current champion is being computed. The Golden Mango is locked every Friday at 6:00 PM Mountain — refresh in a moment.</p>
-            <div className="mt-7 flex items-start gap-2.5"><TimeBlock n={cd?.d ?? 0} label="Days" /><TimeBlock n={cd?.h ?? 0} label="Hrs" /><TimeBlock n={cd?.m ?? 0} label="Min" /><TimeBlock n={cd?.s ?? 0} label="Sec" /></div>
-            <div className="mt-10 w-full">
-              <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em] mb-5" style={{ color: GOLD }}>Who will it be?</div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
-                {SHOPS.map((s) => (
-                  <div key={s.num} className="flex flex-col items-center text-center">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={`/shop-photos/${encodeURIComponent(`${s.num} team photo.jpg`)}`} alt={`${s.name} team`} className="w-16 h-16 rounded-full object-cover mb-2" style={{ boxShadow: '0 0 0 1.5px rgba(255,255,255,0.7), 0 4px 12px -4px rgba(40,34,26,0.20)' }} onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }} />
-                    <span className="c2ui text-[13px] font-medium leading-tight" style={{ color: INK }}>{s.name}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex flex-col items-center justify-center text-center px-8 py-16 min-h-[360px]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/the-golden-mango.png" alt="trophy" className="object-contain mb-6 opacity-40" style={{ width: 100, height: 'auto' }} onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+          <div className="c2ui text-[12.5px] font-bold uppercase tracking-[0.28em] mb-3" style={{ color: GOLD }}>The Golden Mango</div>
+          <h2 className="c2disp" style={{ color: INK, fontSize: 32, letterSpacing: '-0.025em' }}>Next Friday 6 PM MT</h2>
+          <p className="c2ui mt-3 text-[13px] max-w-sm leading-relaxed" style={{ color: INK2 }}>Awarded to the shop with the most gold finishes. Who'll take the crown?</p>
+          {reachedZero ? (
+            <div className="mt-7 c2ui text-[17px] font-semibold" style={{ color: GOLD }}>Tonight — ceremony in progress</div>
+          ) : (
+            <div className="mt-7 flex gap-3">{!data ? <div className="c2ui text-[13px]" style={{ color: FAINT }}>Loading…</div> : <><TimeBlock n={cd?.d ?? 0} label="Days" /><TimeBlock n={cd?.h ?? 0} label="Hrs" /><TimeBlock n={cd?.m ?? 0} label="Min" /><TimeBlock n={cd?.s ?? 0} label="Sec" /></>}</div>
+          )}
+        </div>
+      )}
+
+      {showAnim && champ && (
+        <ChampionAnimation champion={champ} onDismiss={() => setShowAnim(false)} />
+      )}
     </section>
   );
 }
 
-interface ShopMetrics { shopNum: string; shopName: string; revenue: number; gpPct: number; tickets: number; approvedDollars: number }
+
+interface ShopMetrics { shopNum: string; shopName: string; revenue: number; gpDollars: number; gpPct: number; tickets: number; approvedDollars: number }
 function WeeklyLeaderboard() {
   const [metrics, setMetrics] = useState<ShopMetrics[] | null>(null);
   const [goals, setGoals] = useState<GoalsByShop>({});
@@ -234,30 +233,35 @@ function WeeklyLeaderboard() {
     safe<any>('/api/metrics?range=this_week').then((d) => {
       if (!d?.kpi?.byShop) return;
       const byNum = new Map<string, any>(d.kpi.byShop.map((s: any) => [s.shopNum, s]));
-      setMetrics(SHOPS.map((shop) => { const s = byNum.get(shop.num); return { shopNum: shop.num, shopName: shop.name, revenue: s?.revenue ?? 0, gpPct: s?.gpPct ?? 0, tickets: s?.cars ?? 0, approvedDollars: s?.approvedDollars ?? 0 }; }));
+      setMetrics(SHOPS.map((shop) => { const s = byNum.get(shop.num); return { shopNum: shop.num, shopName: shop.name, revenue: s?.revenue ?? 0, gpDollars: s?.gpDollars ?? 0, gpPct: s?.gpPct ?? 0, tickets: s?.cars ?? 0, approvedDollars: s?.approvedDollars ?? 0 }; }));
       setDataAt(new Date());
     });
   }, []);
-  const proratedRevenueGoal = (shopNum: string): number | undefined => { const raw = goals[shopNum]?.revenueWeekly; if (!raw || !dataAt) return undefined; return weeklyMinuteProratedGoal(shopNum, raw, dataAt); };
+  // Use the FULL weekly goal — not prorated. The "Pacing" view shows current
+  // revenue vs the end-of-week target so managers see the actual gap remaining,
+  // not an elapsed-time-adjusted fraction that's hard to act on.
+  const fullWeeklyGoal = (shopNum: string): number | undefined => goals[shopNum]?.revenueWeekly || undefined;
 
   if (!metrics) return <div className="rounded-[26px] mb-7" style={{ height: 360, background: 'rgba(255,255,255,0.5)', border: `1px solid ${LINE}` }} />;
-  const withRatios = metrics.map((r) => { const goal = proratedRevenueGoal(r.shopNum); return { ...r, revGoal: goal, revRatio: goal ? r.revenue / goal : 0, weeklyGoal: goals[r.shopNum]?.revenueWeekly }; });
+  const withRatios = metrics.map((r) => { const goal = fullWeeklyGoal(r.shopNum); return { ...r, revGoal: goal, revRatio: goal ? r.revenue / goal : 0, weeklyGoal: goals[r.shopNum]?.revenueWeekly }; });
   const byRevenue = [...withRatios].sort((a, b) => b.revRatio - a.revRatio);
   const byGP = [...withRatios].sort((a, b) => b.gpPct - a.gpPct);
+  const byGpDollars = [...withRatios].sort((a, b) => b.gpDollars - a.gpDollars);
 
   const revLeader = byRevenue[0];
   const gpLeader = byGP[0];
+  const gpDollarLeader = byGpDollars[0];
 
   // Editorial leader spotlight card — used twice (Revenue + GP%). Big
   // Fraunces hero number, shop-color identity stripe, heat-tinted score
   // track. The hero moment the previous side-by-side lists were missing.
-  const LeaderSpotlight = ({ r, kind }: { r: typeof withRatios[number]; kind: 'revenue' | 'gp' }) => {
+  const LeaderSpotlight = ({ r, kind }: { r: typeof withRatios[number]; kind: 'revenue' | 'gp' | 'gpdollars' }) => {
     const meta = SHOP_BY_NUM[r.shopNum as keyof typeof SHOP_BY_NUM];
     const shopColor = meta?.color || FAINT;
-    const score = kind === 'revenue' ? (r.revGoal ? norm(r.revRatio, 0.8, 1.05) : 0.5) : norm(r.gpPct, 0.5, 0.6);
+    const score = kind === 'revenue' ? (r.revGoal ? norm(r.revRatio, 0.8, 1.05) : 0.5) : kind === 'gpdollars' ? norm(r.gpDollars / Math.max(1, byGpDollars[0]?.gpDollars || 1), 0.6, 1.0) : norm(r.gpPct, 0.5, 0.6);
     const [rr, gg, bb] = heatRGB(score);
-    const headlineValue = kind === 'revenue' ? usd(r.revenue) : pct(r.gpPct);
-    const fillPct = kind === 'revenue' ? Math.min(100, Math.max(4, r.revRatio * 100)) : Math.min(100, Math.max(4, (r.gpPct / 0.6) * 100));
+    const headlineValue = kind === 'revenue' ? usd(r.revenue) : kind === 'gpdollars' ? usd(r.gpDollars) : pct(r.gpPct);
+    const fillPct = kind === 'revenue' ? Math.min(100, Math.max(4, r.revRatio * 100)) : kind === 'gpdollars' ? Math.min(100, Math.max(4, (r.gpDollars / Math.max(1, byGpDollars[0]?.gpDollars || 1)) * 100)) : Math.min(100, Math.max(4, (r.gpPct / 0.6) * 100));
     const goalMarkerX = kind === 'revenue' ? 100 : Math.min(100, (0.58 / 0.6) * 100);
     return (
       <div className="rounded-[24px] overflow-hidden" style={{
@@ -275,7 +279,7 @@ function WeeklyLeaderboard() {
           <div className="flex items-center gap-2 mb-3">
             <TrophyIcon rank={1} size={20} />
             <span className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: AMBER }}>
-              {kind === 'revenue' ? 'Revenue leader · this week' : 'Gross profit leader · this week'}
+              {kind === 'revenue' ? 'Revenue leader · this week' : kind === 'gpdollars' ? 'GP$ leader · this week' : 'GP% leader · this week'}
             </span>
           </div>
           <div className="flex items-baseline gap-3 mb-1.5 flex-wrap">
@@ -287,8 +291,12 @@ function WeeklyLeaderboard() {
             {kind === 'revenue' ? (
               <>
                 <span className="c2disp tabular-nums font-bold" style={{ color: `rgb(${rr},${gg},${bb})`, fontSize: 14 }}>{r.revGoal ? `${(r.revRatio * 100).toFixed(0)}%` : '—'}</span>
-                {r.revGoal ? <> of {usd(r.revGoal)} prorated goal · </> : ' '}
+                {r.revGoal ? <> of {usd(r.revGoal)} goal · </> : ' '}
                 <span className="tabular-nums" style={{ color: INK }}>{r.tickets}</span> tickets · approved <span className="c2disp tabular-nums" style={{ color: INK }}>{usd(r.approvedDollars)}</span>
+              </>
+            ) : kind === 'gpdollars' ? (
+              <>
+                <span className="c2disp tabular-nums font-bold" style={{ color: `rgb(${rr},${gg},${bb})`, fontSize: 14 }}>{(r.gpPct * 100).toFixed(1)}%</span> GP margin · <span className="tabular-nums" style={{ color: INK }}>{r.tickets}</span> tickets
               </>
             ) : (
               <>
@@ -299,43 +307,56 @@ function WeeklyLeaderboard() {
           </div>
           <div className="mt-4 relative h-3 rounded-full overflow-hidden" style={{ background: 'rgba(34,32,28,0.06)' }}>
             <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${fillPct}%`, background: `linear-gradient(90deg, rgba(${rr},${gg},${bb},0.55), rgba(${rr},${gg},${bb},0.95))` }} />
-            <div className="absolute top-0 bottom-0 w-px" style={{ left: `${goalMarkerX}%`, background: 'rgba(34,32,28,0.55)' }} />
-            <div className="absolute top-1/2 c2ui text-[13px] font-bold uppercase tracking-wider rounded px-1" style={{ left: `${goalMarkerX}%`, transform: `translate(${goalMarkerX > 80 ? '-100%' : '4px'}, -50%)`, background: 'rgba(255,255,255,0.9)', color: INK }}>
-              {kind === 'revenue' ? 'Goal' : '58%'}
-            </div>
+            {kind !== 'gpdollars' && <>
+              <div className="absolute top-0 bottom-0 w-px" style={{ left: `${goalMarkerX}%`, background: 'rgba(34,32,28,0.55)' }} />
+              <div className="absolute top-1/2 c2ui text-[13px] font-bold uppercase tracking-wider rounded px-1" style={{ left: `${goalMarkerX}%`, transform: `translate(${goalMarkerX > 80 ? '-100%' : '4px'}, -50%)`, background: 'rgba(255,255,255,0.9)', color: INK }}>
+                {kind === 'revenue' ? 'Goal' : '58%'}
+              </div>
+            </>}
           </div>
         </div>
       </div>
     );
   };
 
-  // Compact row for the rest of the shops — both Revenue and GP% on a
-  // single horizontal line so the eye scans the chain at once.
-  const compactRow = (r: typeof withRatios[number], idx: number) => {
+  // Compact row: GP$ first, then Revenue vs goal, then GP% — sorted by GP$
+  const compactRowWithGp = (r: typeof withRatios[number], idx: number) => {
     const meta = SHOP_BY_NUM[r.shopNum as keyof typeof SHOP_BY_NUM];
     const shopColor = meta?.color || FAINT;
     const revScore = r.revGoal ? norm(r.revRatio, 0.8, 1.05) : 0.5;
     const gpScore = norm(r.gpPct, 0.5, 0.6);
     const [rr, gg, bb] = heatRGB(revScore);
     const [gr, gg2, gb] = heatRGB(gpScore);
+    // GP$ score for bar width — relative to the chain leader
+    const maxGpD = byGpDollarsSorted[0]?.gpDollars || 1;
+    const gpDScore = r.gpDollars / maxGpD;
+    const [gdr, gdg, gdb] = heatRGB(norm(gpDScore, 0.5, 1.0));
     return (
-      <div key={r.shopNum} className="grid items-center gap-4 py-2.5 px-2" style={{ gridTemplateColumns: '20px 1.4fr 1.2fr 1.2fr', borderBottom: `1px solid ${LINE}` }}>
-        <div className="text-right c2disp text-[13px]" style={{ color: idx < 3 ? AMBER : FAINT }}>{idx + 2}</div>
+      <div key={r.shopNum} className="grid items-center gap-3 py-2.5 px-2" style={{ gridTemplateColumns: '20px 1.3fr 1fr 1fr 1fr', borderBottom: `1px solid ${LINE}` }}>
+        <div className="text-right c2disp text-[13px]" style={{ color: idx < 3 ? AMBER : FAINT }}>{idx + 1}</div>
         <div className="flex items-center gap-2 min-w-0">
           <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: shopColor }} />
           <div className="min-w-0">
             <div className="c2ui font-medium text-[13px] leading-tight truncate" style={{ color: INK }}>{r.shopName}</div>
-            <div className="c2ui text-[12.5px] leading-tight" style={{ color: FAINT }}>{r.weeklyGoal ? `Goal ${usd(r.weeklyGoal)}/wk · ${r.tickets} tkts` : `${r.tickets} tickets`}</div>
+            <div className="c2ui text-[12.5px] leading-tight" style={{ color: FAINT }}>{r.tickets} tickets</div>
           </div>
         </div>
-        <div className="flex items-center gap-2.5">
+        {/* GP$ — first and most prominent */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(34,32,28,0.06)' }}>
+            <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(2, gpDScore * 100))}%`, background: `linear-gradient(90deg, rgba(${gdr},${gdg},${gdb},0.55), rgba(${gdr},${gdg},${gdb},0.95))` }} />
+          </div>
+          <div className="c2disp text-[13px] tabular-nums w-16 text-right font-semibold" style={{ color: INK }}>{usd(r.gpDollars)}</div>
+        </div>
+        {/* Revenue vs goal */}
+        <div className="flex items-center gap-2">
           <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(34,32,28,0.06)' }}>
             <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(2, r.revRatio * 100))}%`, background: `linear-gradient(90deg, rgba(${rr},${gg},${bb},0.55), rgba(${rr},${gg},${bb},0.95))` }} />
           </div>
-          <div className="c2disp text-[13px] tabular-nums w-16 text-right" style={{ color: INK }}>{usd(r.revenue)}</div>
           <div className="c2ui text-[12.5px] tabular-nums w-9 text-right" style={{ color: FAINT }}>{r.revGoal ? `${(r.revRatio * 100).toFixed(0)}%` : '—'}</div>
         </div>
-        <div className="flex items-center gap-2.5">
+        {/* GP% */}
+        <div className="flex items-center gap-2">
           <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(34,32,28,0.06)' }}>
             <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(2, (r.gpPct / 0.6) * 100))}%`, background: `linear-gradient(90deg, rgba(${gr},${gg2},${gb},0.55), rgba(${gr},${gg2},${gb},0.95))` }} />
           </div>
@@ -345,30 +366,33 @@ function WeeklyLeaderboard() {
     );
   };
 
-  const restByRevenue = byRevenue.filter((r) => r.shopNum !== revLeader.shopNum);
+  // Sort table by GP$ (highest GP$ first) since that's what matters most
+  const byGpDollarsSorted = [...byGpDollars];
+  const gpDollarTop = byGpDollarsSorted[0];
+  const restByGpDollars = byGpDollarsSorted.filter((r) => r.shopNum !== gpDollarTop.shopNum);
 
   return (
     <div className="rounded-[26px] border mb-7" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.58))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderColor: 'rgba(255,255,255,0.75)', boxShadow: '0 18px 48px -28px rgba(40,34,26,0.30)' }}>
       <div className="px-6 pt-6 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
         <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.22em]" style={{ color: FAINT }}>This Week · live</div>
         <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 22, letterSpacing: '-0.02em' }}>Pacing to Goal &amp; GP% Target</h2>
-        <p className="c2ui text-[12.5px] mt-1.5 max-w-xl" style={{ color: INK2 }}>Two heroes leading: the shop earning the highest share of its prorated weekly revenue goal, and the shop holding the highest gross-profit percentage. The other six follow below.</p>
+        <p className="c2ui text-[12.5px] mt-1.5 max-w-xl" style={{ color: INK2 }}>GP$ leader first — the shop putting the most profit on the board. Plus revenue-to-goal and GP% leaders. All shops ranked by GP$ below.</p>
       </div>
-      <div className="px-6 py-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
+      {/* Three hero spotlights: GP$ winner first (what matters most), then revenue, then GP% */}
+      <div className="px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <LeaderSpotlight r={gpDollarLeader} kind="gpdollars" />
         <LeaderSpotlight r={revLeader} kind="revenue" />
         <LeaderSpotlight r={gpLeader} kind="gp" />
       </div>
       <div className="px-6 pb-6">
-        <div className="grid items-center gap-4 px-2 pb-2" style={{ gridTemplateColumns: '20px 1.4fr 1.2fr 1.2fr', borderBottom: `1px solid ${LINE}` }}>
+        <div className="grid items-center gap-3 px-2 pb-2" style={{ gridTemplateColumns: '20px 1.3fr 1fr 1fr 1fr', borderBottom: `1px solid ${LINE}` }}>
           <div />
           <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>Shop</div>
-          <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>Revenue · vs goal</div>
-          <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>GP% · vs 58% target</div>
+          <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: GOOD }}>GP $</div>
+          <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>Revenue · goal</div>
+          <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>GP%</div>
         </div>
-        {/* Render the rest in revenue order; each row shows BOTH metrics for
-            that shop, so the eye scans the chain once instead of cross-
-            referencing two parallel columns like the old two-up layout. */}
-        {restByRevenue.map((r, i) => compactRow(r, i))}
+        {byGpDollarsSorted.map((r, i) => compactRowWithGp(r, i))}
       </div>
     </div>
   );
@@ -387,20 +411,27 @@ export default function Concept2Employee({ role }: { role?: string }) {
             cumulative YTD ledger sits with the diagnostic narrative, this
             employee page focuses on THIS WEEK's tally and operations. */}
         <HighestLeverage />
-        <WeeklyLeaderboard />
+        <div id="leaderboard" className="scroll-mt-6"><WeeklyLeaderboard /></div>
       </div>
       <div id="operations" className="scroll-mt-6">
         <SectionOpener kicker="Operations" title="The Numbers Behind the Numbers" sub="Calls answered, jobs re-booked, comebacks avoided, hours billed. The unglamorous engine room of the chain." accent={INK2} />
         {/* Ordering matches production /employee Dashboard.tsx — Tech first,
             then loss-tracking (Comebacks, FBR), then operational levers (Reviews
             exec-only, Call Conversion, To-Do), then chain-wide comparison. */}
-        <TechProduction />
-        <Comebacks />
-        <FbrLeaderboard />
-        {isExec && <GoogleRatings />}
-        <BookedRate />
-        <TodoRecoveriesWidget />
-        <ShopPerformance isExec={isExec} />
+        <div id="tech" className="scroll-mt-6"><TechProduction /></div>
+        <div id="comebacks" className="scroll-mt-6">
+          <Comebacks />
+          <FbrLeaderboard />
+          {isExec && <GoogleRatings />}
+        </div>
+        <div id="callbacks" className="scroll-mt-6">
+          <BookedRate />
+          <TodoRecoveriesWidget />
+          <ShopPerformance isExec={isExec} />
+        </div>
+      </div>
+      <div id="receivables" className="scroll-mt-6">
+        <ConceptAR />
       </div>
     </div>
   );
@@ -416,7 +447,7 @@ function WinToggle({ value, onChange }: { value: 'rolling' | 'this_week'; onChan
     </div>
   );
 }
-function frostCard(): React.CSSProperties { return { background: 'linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.58))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid rgba(255,255,255,0.75)', boxShadow: '0 18px 48px -28px rgba(40,34,26,0.30)' }; }
+function frostCard(): React.CSSProperties { return { background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.82))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid rgba(255,255,255,0.80)', boxShadow: '0 18px 48px -28px rgba(40,34,26,0.22)' }; }
 function tileInset(): React.CSSProperties { return { background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }; }
 const numFmt = (n: number) => Math.round(n).toLocaleString('en-US');
 const pctR = (v: number, d = 1) => (v * 100).toFixed(d) + '%';
@@ -431,29 +462,27 @@ function OpsHero({ kicker, heroValue, heroLabel, heroAccent, micros, footnote }:
   const accent = heroAccent || INK;
   return (
     <div className="rounded-[22px] px-7 py-6 mb-5" style={{
-      // Concept-1 atmospheric wash — same blue → gold → coral gradient the
-      // diagnostic's projection portfolio panel uses. Replaces the prior
-      // ivory inset, which read as "box of stats." This wash gives every
-      // ops widget a luminous lede that the eye treats as a hero.
-      background: 'linear-gradient(160deg, rgba(95,169,214,0.12), rgba(242,206,112,0.10) 55%, rgba(232,134,62,0.12))',
-      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.55), 0 1px 0 rgba(255,255,255,0.7) inset, 0 6px 18px -10px rgba(40,34,26,0.18)'
+      background: 'linear-gradient(160deg, rgba(95,169,214,0.10), rgba(242,206,112,0.08) 55%, rgba(232,134,62,0.10))',
+      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.55), 0 1px 0 rgba(255,255,255,0.7) inset, 0 6px 18px -10px rgba(40,34,26,0.14)'
     }}>
-      <div className="grid grid-cols-1 md:grid-cols-[1.15fr_1fr] gap-x-8 gap-y-4 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-[1.2fr_auto] gap-x-10 gap-y-4 items-center">
+        {/* LEFT — kicker (single line), hero number, description */}
         <div>
-          <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: accent }}>{kicker}</div>
-          <div className="c2disp tabular-nums leading-none mt-2.5" style={{ color: INK, fontSize: 44, letterSpacing: '-0.025em' }}>{heroValue}</div>
+          <div className="c2ui text-[11.5px] font-semibold uppercase tracking-[0.18em] mb-2.5" style={{ color: accent }}>{kicker}</div>
+          <div className="c2disp tabular-nums leading-none" style={{ color: INK, fontSize: 44, letterSpacing: '-0.025em' }}>{heroValue}</div>
           <div className="c2ui text-[13px] mt-2" style={{ color: INK2 }}>{heroLabel}</div>
         </div>
-        <div className="flex flex-wrap items-start gap-x-8 gap-y-3 md:justify-end md:border-l md:pl-8" style={{ borderColor: 'rgba(34,32,28,0.08)' }}>
+        {/* RIGHT — micro stats as a tight vertical stack, left-aligned with divider */}
+        <div className="flex flex-col gap-4 md:border-l md:pl-8 pt-1" style={{ borderColor: 'rgba(34,32,28,0.08)' }}>
           {micros.map((m) => (
             <div key={m.label} className="flex flex-col">
-              <span className="c2disp tabular-nums" style={{ color: m.emphasis === 'cost' ? BAD : INK, fontSize: 22, letterSpacing: '-0.005em' }}>{m.value}</span>
-              <span className="c2ui mt-1 text-[12.5px] uppercase tracking-[0.16em]" style={{ color: m.emphasis === 'mute' ? FAINT : INK2 }}>{m.label}</span>
+              <span className="c2disp tabular-nums leading-none" style={{ color: m.emphasis === 'cost' ? BAD : INK, fontSize: 24, letterSpacing: '-0.01em' }}>{m.value}</span>
+              <span className="c2ui mt-1 text-[11.5px] uppercase tracking-[0.14em]" style={{ color: m.emphasis === 'mute' ? FAINT : INK2 }}>{m.label}</span>
             </div>
           ))}
         </div>
       </div>
-      {footnote && <div className="c2ui text-[13px] leading-relaxed mt-4 pt-3" style={{ color: INK2, borderTop: `1px solid rgba(34,32,28,0.08)` }}>{footnote}</div>}
+      {footnote && <div className="c2ui text-[12.5px] leading-relaxed mt-4 pt-3" style={{ color: INK2, borderTop: `1px solid rgba(34,32,28,0.08)` }}>{footnote}</div>}
     </div>
   );
 }
@@ -514,9 +543,11 @@ function TrophyTallyWeek() {
   const [conversion, setConversion] = useState<any[] | null>(null);
   const [todoRec, setTodoRec] = useState<any[] | null>(null);
   const [selectedShop, setSelectedShop] = useState<string | null>(null);
-  const [phase, setPhase] = useState<'pending' | 'awarded'>(() => trophyPhase());
-  useEffect(() => { const id = setInterval(() => setPhase(trophyPhase()), 60_000); return () => clearInterval(id); }, []);
-  const isAwarded = phase === 'awarded';
+  const [phase, setPhase] = useState<'pending' | 'awarded'>('pending');
+  // Champion data — used to detect when the ceremony has happened and lock
+  // the tally to the ceremony's stored standings so it matches the champion hero.
+  const [champData, setChampData] = useState<{ champion: Champion | null; nextCrownAt: string } | null>(null);
+  useEffect(() => { setPhase(trophyPhase()); const id = setInterval(() => setPhase(trophyPhase()), 60_000); return () => clearInterval(id); }, []);
   useEffect(() => {
     safe<any>('/api/metrics?range=this_week').then((d) => { if (d?.kpi?.byShop) setMetrics(d.kpi.byShop.map((s: any) => ({ shopNum: s.shopNum, shopName: s.shopName, revenue: s.revenue, gpPct: s.gpPct }))); });
     safe<any>('/api/tech-production?range=this_week').then((d) => setTechs(d?.rows || []));
@@ -525,6 +556,7 @@ function TrophyTallyWeek() {
     safe<any>('/api/extras?view=google-ratings').then((d) => setReviews(d?.shops || []));
     safe<any>('/api/extras?view=booked-rate&wtd=1').then((d) => setConversion(d?.shops || []));
     safe<any>('/api/extras?view=todo-recoveries&window=this_week').then((d) => setTodoRec(d?.shops || []));
+    safe<any>('/api/extras?view=golden-mango').then(setChampData);
   }, []);
 
   const rankings = useMemo(() => {
@@ -561,11 +593,47 @@ function TrophyTallyWeek() {
     .filter((x) => x.gold + x.silver + x.bronze > 0)
     .sort((a, b) => (b.gold * 100 + b.silver * 10 + b.bronze) - (a.gold * 100 + a.silver * 10 + a.bronze)), [trophies]);
 
-  if (summary.length === 0) return null;
+  // After the ceremony fires (champion.periodStart has passed, next crown is in
+  // the future), lock the tally to the ceremony's stored standings so it
+  // matches the champion hero. Without this, live data keeps updating after 6 PM
+  // and the tally shows a different #1 than who actually won the crown.
+  // Window: from ceremony until 96 h later (Thu 6 PM → Mon 6 PM), after which
+  // the new week's live "Pending" view takes over.
+  const isCeremonyMode = useMemo(() => {
+    if (!champData?.champion?.periodStart || !champData?.nextCrownAt) return false;
+    const now = Date.now();
+    const periodStart = new Date(champData.champion.periodStart).getTime();
+    const nextCrown = new Date(champData.nextCrownAt).getTime();
+    if (now < periodStart || now >= nextCrown) return false;
+    const hoursSince = (now - periodStart) / (1000 * 60 * 60);
+    return hoursSince < 96; // Thu 6 PM → Mon 6 PM ≈ 72 h; 96 gives a comfortable buffer
+  }, [champData]);
+
+  // Decode ceremony standings: score = gold*100 + silver*10 + bronze
+  const ceremonySummary = useMemo(() => {
+    if (!isCeremonyMode || !champData?.champion?.standings) return null;
+    return champData.champion.standings
+      .map((s) => {
+        const gold = Math.floor(s.score / 100);
+        const silver = Math.floor((s.score % 100) / 10);
+        const bronze = s.score % 10;
+        if (gold + silver + bronze === 0) return null;
+        const shop = SHOP_BY_NUM[s.shopNum as keyof typeof SHOP_BY_NUM];
+        if (!shop) return null;
+        return { shop, gold, silver, bronze, by: {} as Partial<Record<TTCategory, 1 | 2 | 3>> };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => (b.gold * 100 + b.silver * 10 + b.bronze) - (a.gold * 100 + a.silver * 10 + a.bronze));
+  }, [isCeremonyMode, champData]);
+
+  const effectiveSummary = ceremonySummary ?? summary;
+  const isAwarded = isCeremonyMode || phase === 'awarded';
+
+  if (effectiveSummary.length === 0) return null;
 
   return (
     <>
-      <section className="relative w-full overflow-hidden mb-7" style={{ borderRadius: 26, background: 'linear-gradient(140deg, rgba(255,252,244,0.92), rgba(253,246,231,0.85) 55%, rgba(252,241,220,0.85))', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', boxShadow: `inset 0 0 0 1px ${GOLD_SOFT_C}, 0 18px 48px -28px rgba(124,72,12,0.30)` }}>
+      <section className="relative w-full overflow-hidden mb-7" style={{ borderRadius: 26, background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.82))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: `1px solid rgba(255,255,255,0.80)`, boxShadow: `0 18px 48px -28px rgba(40,34,26,0.22)` }}>
         <div className="absolute inset-x-0 top-0 h-[3px]" style={{ background: `linear-gradient(90deg, transparent, ${GOLD_C}, transparent)` }} />
         <div className="relative px-6 sm:px-8 py-7">
           <div className="flex items-center gap-2.5 mb-1">
@@ -574,7 +642,7 @@ function TrophyTallyWeek() {
             </span>
             <div>
               <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.22em]" style={{ color: GOLD_C }}>{isAwarded ? 'Awarded' : 'Pending'} Trophies · This Week</div>
-              <p className="c2ui text-[13px] mt-0.5" style={{ color: INK2 }}>{isAwarded ? 'Trophies for the week are locked in. New week begins Tuesday 7:30 AM MT.' : 'Finishing 1st / 2nd / 3rd in a category earns a 🥇/🥈/🥉 — most trophies leads.'}</p>
+              <p className="c2ui text-[13px] mt-0.5" style={{ color: INK2 }}>{isCeremonyMode ? `Crown was awarded tonight — standings locked at ceremony time.` : isAwarded ? 'Trophies for the week are locked in. New week begins Tuesday 7:30 AM MT.' : 'Finishing 1st / 2nd / 3rd in a category earns a 🥇/🥈/🥉 — most trophies leads.'}</p>
             </div>
           </div>
           <p className="c2ui text-[12.5px] mt-1" style={{ color: FAINT }}>Counted this week: {TT_CATEGORIES.map((c) => c.label).join(' · ')} · <span style={{ opacity: 0.7 }}>(5★ Reviews paused — Google Business Profile API access pending)</span></p>
@@ -584,21 +652,22 @@ function TrophyTallyWeek() {
               and #3 sit beneath in a 2-up split. Click-through to the
               category-detail modal is preserved for all three. */}
           <div className="mt-5 space-y-4">
-            {summary.slice(0, 1).map((s) => {
+            {effectiveSummary.slice(0, 1).map((s) => {
               const total = s.gold + s.silver + s.bronze;
               const rankColor = '#F5C518';
               return (
                 <button key={s.shop.num} onClick={() => setSelectedShop(s.shop.num)} className="group relative w-full cursor-pointer overflow-hidden transition-transform hover:-translate-y-0.5 rounded-2xl text-left" style={isAwarded ? { background: '#FFFFFF', border: `1.5px solid ${rankColor}`, boxShadow: `0 4px 14px rgba(31,41,55,0.06), 0 0 0 4px ${rankColor}1A` } : { background: '#FBFAF7', border: `1.5px dashed ${rankColor}80`, boxShadow: '0 1px 2px rgba(31,41,55,0.04)', filter: 'saturate(0.7)' }}>
                   <div className="absolute inset-0 pointer-events-none" style={{ background: isAwarded ? `${rankColor}1F` : `${rankColor}10` }} />
-                  <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
-                    {isAwarded ? (
-                      <><span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[12.5px] font-bold text-white" style={{ background: rankColor }}>✓</span><span className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: rankColor }}>Awarded</span></>
-                    ) : (
-                      <><span className="tt-spin inline-block w-4 h-4 rounded-full" style={{ border: `2px solid ${rankColor}55`, borderTopColor: rankColor }} /><span className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>Pending</span></>
-                    )}
-                  </div>
                   <div className="relative grid grid-cols-1 md:grid-cols-[1.5fr_1fr] gap-6 p-6">
                     <div className="min-w-0">
+                      {/* Pending/Awarded badge — inline so it's always visible */}
+                      <div className="flex items-center gap-1.5 mb-2">
+                        {isAwarded ? (
+                          <><span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[12.5px] font-bold text-white" style={{ background: rankColor }}>✓</span><span className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: rankColor }}>Awarded</span></>
+                        ) : (
+                          <><span className="tt-spin inline-block w-4 h-4 rounded-full" style={{ border: `2px solid ${rankColor}55`, borderTopColor: rankColor }} /><span className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>Pending</span></>
+                        )}
+                      </div>
                       <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em] mb-2.5" style={{ color: rankColor }}>This week's leader · #1</div>
                       <div className="flex items-center gap-3 mb-2">
                         <span className="inline-block rounded-full shrink-0" style={{ width: 14, height: 14, background: s.shop.color, boxShadow: `0 0 0 4px ${s.shop.color}22` }} />
@@ -606,7 +675,7 @@ function TrophyTallyWeek() {
                       </div>
                       <div className="c2ui text-[12.5px]" style={{ color: INK2 }}>{total} {total === 1 ? 'trophy' : 'trophies'} across this week's categories</div>
                       <div className="mt-5 flex items-end flex-wrap gap-3">
-                        {s.gold > 0 && <span className="inline-flex items-center gap-2 c2disp tabular-nums px-4 py-2 rounded-xl shadow-sm" style={{ fontSize: 34, background: 'linear-gradient(180deg, #FEF3C7 0%, #FDE68A 100%)', color: INK }}><TrophyIcon rank={1} size={40} />{s.gold}</span>}
+                        {s.gold > 0 && <span className="inline-flex items-center gap-2 c2disp tabular-nums px-4 py-2 rounded-xl shadow-sm" style={{ fontSize: 34, background: 'rgba(201,162,39,0.12)', border: '1px solid rgba(201,162,39,0.22)', color: INK }}><TrophyIcon rank={1} size={40} />{s.gold}</span>}
                         {s.silver > 0 && <span className="inline-flex items-center gap-2 c2disp tabular-nums px-3.5 py-2 rounded-xl" style={{ fontSize: 26, background: '#F3F4F6', color: INK }}><TrophyIcon rank={2} size={28} />{s.silver}</span>}
                         {s.bronze > 0 && <span className="inline-flex items-center gap-2 c2disp tabular-nums px-3.5 py-2 rounded-xl" style={{ fontSize: 26, background: '#FBEAD8', color: INK }}><TrophyIcon rank={3} size={28} />{s.bronze}</span>}
                       </div>
@@ -619,9 +688,9 @@ function TrophyTallyWeek() {
                 </button>
               );
             })}
-            {summary.length > 1 && (
+            {effectiveSummary.length > 1 && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {summary.slice(1, 3).map((s, idx) => {
+                {effectiveSummary.slice(1, 3).map((s, idx) => {
                   const rank = idx + 1;
                   const total = s.gold + s.silver + s.bronze;
                   const rankColor = rank === 1 ? '#9CA3AF' : '#C2814B';
@@ -645,7 +714,7 @@ function TrophyTallyWeek() {
                         <div className="c2ui text-[12.5px] uppercase tracking-wide mt-0.5" style={{ color: INK2 }}>{total} {total === 1 ? 'trophy' : 'trophies'}</div>
                       </div>
                       <div className="relative flex items-center gap-2 flex-wrap">
-                        {s.gold > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-3 py-1.5 rounded-lg shadow-sm" style={{ fontSize: 22, background: 'linear-gradient(180deg, #FEF3C7 0%, #FDE68A 100%)', color: INK }}><TrophyIcon rank={1} size={26} />{s.gold}</span>}
+                        {s.gold > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-3 py-1.5 rounded-lg shadow-sm" style={{ fontSize: 22, background: 'rgba(201,162,39,0.12)', border: '1px solid rgba(201,162,39,0.22)', color: INK }}><TrophyIcon rank={1} size={26} />{s.gold}</span>}
                         {s.silver > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-2.5 py-1.5 rounded-lg" style={{ fontSize: 18, background: '#F3F4F6', color: INK }}><TrophyIcon rank={2} size={20} />{s.silver}</span>}
                         {s.bronze > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-2.5 py-1.5 rounded-lg" style={{ fontSize: 18, background: '#FBEAD8', color: INK }}><TrophyIcon rank={3} size={20} />{s.bronze}</span>}
                       </div>
@@ -657,11 +726,11 @@ function TrophyTallyWeek() {
           </div>
 
           {/* Honorable mentions */}
-          {summary.length > 3 && (
+          {effectiveSummary.length > 3 && (
             <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${GOLD_SOFT_C}` }}>
               <div className="c2ui text-[12.5px] uppercase tracking-wide font-semibold mb-2" style={{ color: FAINT }}>Honorable mentions</div>
               <div className="flex flex-wrap gap-2">
-                {summary.slice(3).map((s) => (
+                {effectiveSummary.slice(3).map((s) => (
                   <button key={s.shop.num} onClick={() => setSelectedShop(s.shop.num)} className="c2ui inline-flex items-center gap-2 px-3 py-1.5 rounded-full transition" style={{ background: 'rgba(255,255,255,0.7)', border: `1px solid ${LINE}` }}>
                     <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: s.shop.color }} />
                     <span className="font-medium text-[12.5px]" style={{ color: INK }}>{s.shop.name}</span>
@@ -685,7 +754,7 @@ function TrophyTallyWeek() {
       </section>
 
       {selectedShop && (() => {
-        const s = summary.find((x) => x.shop.num === selectedShop);
+        const s = effectiveSummary.find((x) => x.shop.num === selectedShop);
         if (!s) return null;
         const items = (Object.entries(s.by) as [TTCategory, 1 | 2 | 3][]).map(([cat, rank]) => ({ cat, rank })).sort((a, b) => a.rank - b.rank);
         return (
@@ -701,18 +770,29 @@ function TrophyTallyWeek() {
                 </div>
                 <button onClick={() => setSelectedShop(null)} className="c2ui text-[24px] leading-none" style={{ color: INK2 }}>×</button>
               </div>
-              <div className="space-y-2">
-                {items.map(({ cat, rank }) => {
-                  const label = TT_CATEGORIES.find((c) => c.key === cat)?.label || cat;
-                  const rankLabel = rank === 1 ? '#1 — Gold' : rank === 2 ? '#2 — Silver' : '#3 — Bronze';
-                  return (
-                    <div key={cat} className="flex items-center gap-3 p-3 rounded-2xl" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}>
-                      <TrophyIcon rank={rank} size={28} />
-                      <div className="flex-1"><div className="c2ui font-semibold text-[13px]" style={{ color: INK }}>{label}</div><div className="c2ui text-[12.5px]" style={{ color: FAINT }}>{rankLabel}</div></div>
-                    </div>
-                  );
-                })}
-              </div>
+              {isCeremonyMode ? (
+                <div className="text-center py-4">
+                  <div className="flex items-center justify-center gap-3 mb-3">
+                    {s.gold > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-3 py-1.5 rounded-xl" style={{ fontSize: 22, background: 'rgba(201,162,39,0.12)', border: '1px solid rgba(201,162,39,0.22)', color: INK }}><TrophyIcon rank={1} size={26} />{s.gold}</span>}
+                    {s.silver > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-3 py-1.5 rounded-xl" style={{ fontSize: 22, background: '#F3F4F6', color: INK }}><TrophyIcon rank={2} size={26} />{s.silver}</span>}
+                    {s.bronze > 0 && <span className="inline-flex items-center gap-1 c2disp tabular-nums px-3 py-1.5 rounded-xl" style={{ fontSize: 22, background: '#FBEAD8', color: INK }}><TrophyIcon rank={3} size={26} />{s.bronze}</span>}
+                  </div>
+                  <p className="c2ui text-[12.5px]" style={{ color: FAINT }}>Per-category breakdown not stored with ceremony results.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {items.map(({ cat, rank }) => {
+                    const label = TT_CATEGORIES.find((c) => c.key === cat)?.label || cat;
+                    const rankLabel = rank === 1 ? '#1 — Gold' : rank === 2 ? '#2 — Silver' : '#3 — Bronze';
+                    return (
+                      <div key={cat} className="flex items-center gap-3 p-3 rounded-2xl" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}>
+                        <TrophyIcon rank={rank} size={28} />
+                        <div className="flex-1"><div className="c2ui font-semibold text-[13px]" style={{ color: INK }}>{label}</div><div className="c2ui text-[12.5px]" style={{ color: FAINT }}>{rankLabel}</div></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         );
@@ -864,15 +944,15 @@ export function TrophyTallyQuarter() {
                         in concept-1, not a table-cell. */}
                     <div className="space-y-2.5 pt-3" style={{ borderTop: '1px solid rgba(34,32,28,0.10)' }}>
                       <div className="flex items-center gap-3 min-h-[24px]">
-                        <span className="inline-flex items-center gap-1 c2ui text-[12.5px] uppercase tracking-[0.14em] font-bold w-14 shrink-0" style={{ color: '#9F7E14' }}><TrophyIcon rank={1} size={14} /> Gold</span>
+                        <span className="inline-flex items-center gap-1 c2ui text-[12.5px] uppercase tracking-[0.14em] font-bold w-[80px] shrink-0" style={{ color: '#9F7E14' }}><TrophyIcon rank={1} size={14} /> Gold</span>
                         <TallyMarks count={t.gold} color="#C9A227" />
                       </div>
                       <div className="flex items-center gap-3 min-h-[24px]">
-                        <span className="inline-flex items-center gap-1 c2ui text-[12.5px] uppercase tracking-[0.14em] font-bold w-14 shrink-0" style={{ color: '#737880' }}><TrophyIcon rank={2} size={14} /> Silver</span>
+                        <span className="inline-flex items-center gap-1 c2ui text-[12.5px] uppercase tracking-[0.14em] font-bold w-[80px] shrink-0" style={{ color: '#737880' }}><TrophyIcon rank={2} size={14} /> Silver</span>
                         <TallyMarks count={t.silver} color="#9CA3AF" />
                       </div>
                       <div className="flex items-center gap-3 min-h-[24px]">
-                        <span className="inline-flex items-center gap-1 c2ui text-[12.5px] uppercase tracking-[0.14em] font-bold w-14 shrink-0" style={{ color: '#8E5D3F' }}><TrophyIcon rank={3} size={14} /> Bronze</span>
+                        <span className="inline-flex items-center gap-1 c2ui text-[12.5px] uppercase tracking-[0.14em] font-bold w-[80px] shrink-0" style={{ color: '#8E5D3F' }}><TrophyIcon rank={3} size={14} /> Bronze</span>
                         <TallyMarks count={t.bronze} color="#B97A56" />
                       </div>
                     </div>
@@ -1173,7 +1253,7 @@ function BookedRate() {
       </div>
       <div className="px-6 py-5">
         <OpsHero
-          kicker={win === 'this_week' ? 'Company conversion · this week' : 'Company conversion · rolling 7d'}
+          kicker={win === 'this_week' ? 'Company conversion · this week' : 'Company conversion · rolling 7 days'}
           heroValue={`${snap.chain.bookedRatePct.toFixed(1)}%`}
           heroLabel={`${numFmt(snap.chain.booked)} booked out of ${numFmt(snap.chain.eligible)} eligible calls`}
           heroAccent={INK}
@@ -1249,7 +1329,7 @@ function FbrLeaderboard() {
     return () => { cancelled = true; if (retry) clearTimeout(retry); };
   }, [win]);
   const winLabel = win === 'this_week' ? 'This Week' : 'Rolling 7 Days';
-  const winCopy = win === 'this_week' ? 'this week (Mon → today)' : 'the last 7 days';
+  const winCopy = win === 'this_week' ? 'this week' : 'rolling 7 days';
   const totalRevLost = (rows || []).reduce((s, r) => s + Math.max(0, (r.fbr?.eligibleROs ?? 0) - (r.fbr?.forwardBookedROs ?? 0)) * (aroByShop[r.shopNum] || 0), 0);
   const totalMissed = (rows || []).reduce((s, r) => s + Math.max(0, (r.fbr?.eligibleROs ?? 0) - (r.fbr?.forwardBookedROs ?? 0)), 0);
   const chainElig = (rows || []).reduce((s, r) => s + (r.fbr?.eligibleROs ?? 0), 0);
@@ -1540,17 +1620,19 @@ function TechProduction() {
   );
 }
 
-interface ComebackRow { shopNum: string; shopName: string; comebackJobs: number; comebackHours: number; estLaborCost: number; revenueLost: number; revenuePerHour: number; ros: number }
+interface ComebackTicketRow { roId: number; shopId: number; roNumber: number; postedDate: string; jobName: string; hours: number; estLaborCost: number; revenueLost: number; reason: 'reinspect' | 'heuristic' }
+interface ComebackRow { shopNum: string; shopName: string; comebackJobs: number; comebackHours: number; estLaborCost: number; revenueLost: number; revenuePerHour: number; ros: number; tickets?: ComebackTicketRow[] }
 function Comebacks() {
   const [rows, setRows] = useState<ComebackRow[] | null>(null);
   const [win, setWin] = useState<'rolling' | 'this_week'>('this_week');
+  const [expanded, setExpanded] = useState<string | null>(null);
   useEffect(() => {
     setRows(null);
     const range = win === 'this_week' ? 'this_week' : 'last_7_days';
     safe<any>(`/api/extras?view=comebacks&range=${range}`).then((d) => setRows(d?.shops || []));
   }, [win]);
   const windowLabel = win === 'this_week' ? 'This Week' : 'Rolling 7 Days';
-  const windowCopy = win === 'this_week' ? 'this week (Mon → today MT)' : 'the last 7 days';
+  const windowCopy = win === 'this_week' ? 'this week' : 'rolling 7 days';
   if (!rows) return <div className="rounded-[26px] mb-4" style={{ height: 260, background: 'rgba(255,255,255,0.5)', border: `1px solid ${LINE}` }} />;
   const ranked = [...rows].sort((a, b) => a.revenueLost - b.revenueLost); // fewest revenue lost = #1
   const totals = rows.reduce((a, r) => ({ jobs: a.jobs + r.comebackJobs, hours: a.hours + r.comebackHours, cost: a.cost + r.estLaborCost, lost: a.lost + r.revenueLost }), { jobs: 0, hours: 0, cost: 0, lost: 0 });
@@ -1586,16 +1668,55 @@ function Comebacks() {
           {ranked.map((r, i) => {
             const meta = SHOP_BY_NUM[r.shopNum as keyof typeof SHOP_BY_NUM];
             const fillPct = `${Math.max(4, (r.revenueLost / maxLost) * 100)}%`;
+            const isOpen = expanded === r.shopNum;
+            const tickets = r.tickets ?? [];
             return (
-              <div key={r.shopNum} className="flex items-center gap-3 py-2" style={{ borderBottom: `1px solid ${LINE}` }} title={`Revenue per tech hour for this shop ≈ ${usd(r.revenuePerHour)}`}>
-                <div className="w-5 text-right c2disp text-[13px]" style={{ color: i < 3 ? AMBER : FAINT }}>{i + 1}</div>
-                <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: meta?.color }} />
-                <div className="c2ui font-medium w-28 shrink-0 text-[13px]" style={{ color: INK }}>{r.shopName}</div>
-                <div className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(34,32,28,0.06)' }}><div className="h-full rounded-full" style={{ width: fillPct, background: meta?.color, opacity: 0.7 }} /></div>
-                <div className="c2ui text-[12.5px] tabular-nums w-12 text-right" style={{ color: INK2 }} title="Comeback jobs">{r.comebackJobs}j</div>
-                <div className="c2ui text-[12.5px] tabular-nums w-14 text-right" style={{ color: INK2 }} title="Tech hours">{r.comebackHours.toFixed(1)}hr</div>
-                <div className="c2ui text-[12.5px] tabular-nums w-20 text-right" style={{ color: INK2 }} title="Est. labor cost">{usd(r.estLaborCost)}</div>
-                <div className="c2disp tabular-nums w-24 text-right text-[14px]" style={{ color: BAD }} title="Revenue lost">{usd(r.revenueLost)}</div>
+              <div key={r.shopNum} style={{ borderBottom: `1px solid ${LINE}` }}>
+                <button
+                  className="w-full flex items-center gap-3 py-2 transition text-left"
+                  style={{ borderRadius: 8 }}
+                  onClick={() => setExpanded(isOpen ? null : r.shopNum)}
+                  title={`Revenue per tech hour ≈ ${usd(r.revenuePerHour)}. Click to see individual tickets.`}
+                  aria-expanded={isOpen}
+                >
+                  <div className="w-5 text-right c2disp text-[13px]" style={{ color: i < 3 ? AMBER : FAINT }}>{i + 1}</div>
+                  <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: meta?.color }} />
+                  <div className="c2ui font-medium w-28 shrink-0 text-[13px]" style={{ color: INK }}>{r.shopName}</div>
+                  <div className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(34,32,28,0.06)' }}><div className="h-full rounded-full" style={{ width: fillPct, background: meta?.color, opacity: 0.7 }} /></div>
+                  <div className="c2ui text-[12.5px] tabular-nums w-12 text-right" style={{ color: INK2 }}>{r.comebackJobs}j</div>
+                  <div className="c2ui text-[12.5px] tabular-nums w-14 text-right" style={{ color: INK2 }}>{r.comebackHours.toFixed(1)}hr</div>
+                  <div className="c2ui text-[12.5px] tabular-nums w-20 text-right" style={{ color: INK2 }}>{usd(r.estLaborCost)}</div>
+                  <div className="c2disp tabular-nums w-24 text-right text-[14px]" style={{ color: BAD }}>{usd(r.revenueLost)}</div>
+                  {tickets.length > 0 && (
+                    <svg className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} style={{ color: FAINT }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                  )}
+                  {tickets.length === 0 && <div className="w-4 shrink-0" />}
+                </button>
+
+                {isOpen && tickets.length > 0 && (
+                  <div className="ml-8 mb-3 rounded-2xl overflow-hidden" style={{ border: `1px solid ${LINE}` }}>
+                    <div className="grid c2ui text-[11.5px] font-semibold uppercase tracking-[0.12em] px-3 py-2" style={{ gridTemplateColumns: '100px 1fr 80px 50px 80px 80px', background: 'rgba(34,32,28,0.04)', color: FAINT }}>
+                      <span>RO #</span><span>Job</span><span className="text-right">Date</span><span className="text-right">Hrs</span><span className="text-right">Cost</span><span className="text-right">Lost</span>
+                    </div>
+                    {tickets.map((t, ti) => {
+                      const roUrl = `https://shop.tekmetric.com/admin/shop/${t.shopId}/repair-orders/${t.roId}`;
+                      const dateStr = t.postedDate ? new Date(t.postedDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+                      return (
+                        <div key={`${t.roId}-${ti}`} className="grid items-center px-3 py-2.5 c2ui text-[13px]" style={{ gridTemplateColumns: '100px 1fr 80px 50px 80px 80px', borderTop: `1px solid ${LINE}` }}>
+                          <a href={roUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold tabular-nums" style={{ color: AMBER }} onClick={e => e.stopPropagation()}>
+                            #{t.roNumber}
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                          </a>
+                          <span className="truncate pr-2" style={{ color: INK }} title={t.jobName}>{t.jobName}</span>
+                          <span className="text-right tabular-nums" style={{ color: INK2 }}>{dateStr}</span>
+                          <span className="text-right tabular-nums" style={{ color: INK2 }}>{t.hours.toFixed(1)}</span>
+                          <span className="text-right tabular-nums" style={{ color: INK2 }}>{usd(t.estLaborCost)}</span>
+                          <span className="text-right tabular-nums font-semibold" style={{ color: BAD }}>{usd(t.revenueLost)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1691,35 +1812,35 @@ function ShopPerformance({ isExec }: { isExec: boolean }) {
           background: 'linear-gradient(160deg, rgba(95,169,214,0.12), rgba(242,206,112,0.10) 55%, rgba(232,134,62,0.12))',
           boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.55), 0 1px 0 rgba(255,255,255,0.7) inset, 0 6px 18px -10px rgba(40,34,26,0.18)'
         }}>
-          <div className="grid grid-cols-1 md:grid-cols-[1.1fr_1fr] gap-x-8 gap-y-4 items-end">
+          <div className="grid grid-cols-1 md:grid-cols-[1.2fr_auto] gap-x-10 gap-y-4 items-center">
             <div>
-              <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: AMBER }}>Chain · month to date</div>
-              <div className="c2disp tabular-nums leading-none mt-2.5" style={{ color: INK, fontSize: 44, letterSpacing: '-0.025em' }}>{usd(totalRevenue)}</div>
+              <div className="c2ui text-[11.5px] font-semibold uppercase tracking-[0.18em] mb-2.5" style={{ color: AMBER }}>Chain · month to date</div>
+              <div className="c2disp tabular-nums leading-none" style={{ color: INK, fontSize: 44, letterSpacing: '-0.025em' }}>{usd(totalRevenue)}</div>
               <div className="c2ui text-[13px] mt-2" style={{ color: INK2 }}>{numFmt(totalCars)} cars serviced across {kpi.byShop.length} shops · ARO {usd(avgAro)}</div>
             </div>
-            <div className="flex flex-wrap items-start gap-x-8 gap-y-3 md:justify-end md:border-l md:pl-8" style={{ borderColor: 'rgba(34,32,28,0.08)' }}>
+            <div className="flex flex-col gap-4 md:border-l md:pl-8 pt-1" style={{ borderColor: 'rgba(34,32,28,0.08)' }}>
               <div className="flex flex-col">
-                <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 22, letterSpacing: '-0.005em' }}>{usd(totalGp)}</span>
-                <span className="c2ui mt-1 text-[12.5px] uppercase tracking-[0.16em]" style={{ color: INK2 }}>Gross profit</span>
+                <span className="c2disp tabular-nums leading-none" style={{ color: INK, fontSize: 24, letterSpacing: '-0.01em' }}>{usd(totalGp)}</span>
+                <span className="c2ui mt-1 text-[11.5px] uppercase tracking-[0.14em]" style={{ color: INK2 }}>Gross profit</span>
               </div>
               <div className="flex flex-col">
-                <span className="c2disp tabular-nums" style={{ color: avgGpPct >= 0.58 ? GOOD : INK, fontSize: 22, letterSpacing: '-0.005em' }}>{pctR(avgGpPct, 1)}</span>
-                <span className="c2ui mt-1 text-[12.5px] uppercase tracking-[0.16em]" style={{ color: INK2 }}>GP% · target 58%</span>
+                <span className="c2disp tabular-nums leading-none" style={{ color: avgGpPct >= 0.58 ? GOOD : INK, fontSize: 24, letterSpacing: '-0.01em' }}>{pctR(avgGpPct, 1)}</span>
+                <span className="c2ui mt-1 text-[11.5px] uppercase tracking-[0.14em]" style={{ color: INK2 }}>GP% · target 58%</span>
               </div>
               <div className="flex flex-col">
-                <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 22, letterSpacing: '-0.005em' }}>{pctR(avgClose, 1)}</span>
-                <span className="c2ui mt-1 text-[12.5px] uppercase tracking-[0.16em]" style={{ color: INK2 }}>Close rate</span>
+                <span className="c2disp tabular-nums leading-none" style={{ color: INK, fontSize: 24, letterSpacing: '-0.01em' }}>{pctR(avgClose, 1)}</span>
+                <span className="c2ui mt-1 text-[11.5px] uppercase tracking-[0.14em]" style={{ color: INK2 }}>Close rate</span>
               </div>
               <div className="flex flex-col">
-                <span className="c2disp tabular-nums" style={{ color: BAD, fontSize: 22, letterSpacing: '-0.005em' }}>{usd(totalDiscounts)}</span>
-                <span className="c2ui mt-1 text-[12.5px] uppercase tracking-[0.16em]" style={{ color: FAINT }}>Discounts</span>
+                <span className="c2disp tabular-nums leading-none" style={{ color: BAD, fontSize: 24, letterSpacing: '-0.01em' }}>{usd(totalDiscounts)}</span>
+                <span className="c2ui mt-1 text-[11.5px] uppercase tracking-[0.14em]" style={{ color: FAINT }}>Discounts</span>
               </div>
             </div>
           </div>
         </div>
       </div>
-      <div className="px-6 py-5 overflow-x-auto">
-        <table className="w-full c2ui text-[13px]" style={{ minWidth: 920 }}>
+      <div className="overflow-x-auto">
+        <table className="w-full c2ui text-[13px]" style={{ minWidth: 1160 }}>
           <thead><tr className="c2ui text-[12.5px] uppercase tracking-wide font-semibold" style={{ color: FAINT }}>
             {([['rank', '#'], ['shop', 'Shop'], ['revenue', 'Revenue'], ['cars', 'Cars'], ['aro', 'ARO'], ['closeRate', 'Close Rate'], ['gpDollars', 'GP$'], ['gpPct', 'GP%'], ['partsGpPct', 'Parts GP%'], ['laborGpPct', 'Labor GP%'], ['discounts', 'Discounts']] as [SortKey, string][]).map(([k, label]) => (
               <th key={k} onClick={() => toggleSort(k)} className="py-3 px-2 text-left cursor-pointer select-none">
@@ -1950,12 +2071,14 @@ function TodoRecoveriesWidget() {
   const [rows, setRows] = useState<TodoRecRow[] | null>(null);
   const [chainCount, setChainCount] = useState<number>(0);
   const [win, setWin] = useState<'rolling' | 'this_week'>('this_week');
+  const [breakdown, setBreakdown] = useState<{callbacks:number;rebooks:number;declinedJobs:number;total:number} | null>(null);
   useEffect(() => {
     setRows(null);
     const window = win === 'this_week' ? 'this_week' : 'rolling_7d';
     safe<any>(`/api/extras?view=todo-recoveries&window=${window}`).then((d) => {
       setRows(d?.shops || []);
       setChainCount(d?.chain?.count ?? 0);
+      if (d?.breakdown) setBreakdown(d.breakdown);
     });
   }, [win]);
   const winLabel = win === 'this_week' ? 'This Week' : 'Rolling 7 Days';
@@ -1978,12 +2101,14 @@ function TodoRecoveriesWidget() {
         <OpsHero
           kicker={`Chain recoveries · ${win === 'this_week' ? 'this week' : 'rolling 7d'}`}
           heroValue={numFmt(chainCount)}
-          heroLabel={chainCount === 1 ? '1 customer recovered across all shops' : `${numFmt(chainCount)} customers recovered across all shops`}
+          heroLabel={breakdown
+            ? `${numFmt(breakdown.callbacks)} salvageable callbacks · ${numFmt(breakdown.rebooks)} re-books · ${numFmt(breakdown.declinedJobs)} declined jobs`
+            : `${numFmt(chainCount)} customers recovered across all shops`}
           heroAccent={GOOD}
           micros={[
-            { label: 'Top shop', value: leaderCount > 0 ? (ranked[0]?.shopName ?? '—') : '—' },
-            { label: 'Top shop count', value: numFmt(leaderCount) },
-            { label: 'Shops contributing', value: numFmt(ranked.filter((r) => r.count > 0).length) },
+            { label: 'Callbacks', value: breakdown ? numFmt(breakdown.callbacks) : '—' },
+            { label: 'Re-Books', value: breakdown ? numFmt(breakdown.rebooks) : '—' },
+            { label: 'Declined Jobs', value: breakdown ? numFmt(breakdown.declinedJobs) : '—' },
           ]}
           footnote={<>Counts come from the timestamped recovery log written when a manager clicks a callback / rebook / declined-job as "recovered." Items un-checked are removed from this count.</>}
         />

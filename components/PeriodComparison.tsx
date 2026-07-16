@@ -5,6 +5,7 @@ import { BarChart2, ChevronDown } from 'lucide-react';
 import { usd } from '@/lib/format';
 import LineChartBlock from './charts/LineChartBlock';
 import type { ComparisonMode, RangeKey } from '@/lib/dates';
+import { SHOPS } from '@/lib/shops';
 
 // Each weekly bucket carries every metric; `totals` is the period-level
 // aggregate. Matches the /api/period-comparison v2 response.
@@ -77,6 +78,7 @@ export default function PeriodComparison() {
   const [metric, setMetric] = useState<MetricKey>('revenue');
   const [range, setRange] = useState<RangeKey>('this_month');
   const [granularity, setGranularity] = useState<Granularity>('weekly');
+  const [shop, setShop] = useState<string>('all');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [comparison, setComparison] = useState<ComparisonMode>('same_period_last_year');
@@ -87,6 +89,7 @@ export default function PeriodComparison() {
     if (range === 'custom' && (!customStart || !customEnd)) return;
     if (comparison === 'custom' && (!compStart || !compEnd)) return;
     const p: Record<string, string> = { range, compare: comparison, granularity };
+    if (shop !== 'all') p.shop = shop;
     if (range === 'custom') { p.start = customStart; p.end = customEnd; }
     if (comparison === 'custom') { p.compStart = compStart; p.compEnd = compEnd; }
     const q = new URLSearchParams(p);
@@ -97,7 +100,7 @@ export default function PeriodComparison() {
       .catch(() => setData(null));
     // metric is intentionally NOT a dependency — the API returns every metric,
     // so switching the dropdown is instant (no refetch).
-  }, [range, customStart, customEnd, comparison, compStart, compEnd, granularity]);
+  }, [range, customStart, customEnd, comparison, compStart, compEnd, granularity, shop]);
 
   const meta = METRICS.find(m => m.key === metric)!;
 
@@ -133,6 +136,15 @@ export default function PeriodComparison() {
           <h2 className="text-lg font-semibold">Period Comparison</h2>
         </div>
         <div className="flex items-center gap-2 text-sm flex-wrap">
+          {/* Shop dropdown — All (default) or a single shop */}
+          <div className="relative">
+            <select value={shop} onChange={(e) => setShop(e.target.value)}
+              className="appearance-none pl-3 pr-9 py-1.5 bg-white border border-mango-line rounded-lg text-sm font-medium cursor-pointer focus:outline-none focus:border-mango-orange">
+              <option value="all">All Shops</option>
+              {SHOPS.map(s => (<option key={s.num} value={s.num}>{s.name}</option>))}
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-mango-muted pointer-events-none" />
+          </div>
           {/* Metric dropdown — same metrics as Shop Performance */}
           <div className="relative">
             <select value={metric} onChange={(e) => setMetric(e.target.value as MetricKey)}

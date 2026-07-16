@@ -5,14 +5,17 @@
 // declined-job as "recovered."
 
 import { NextRequest, NextResponse } from 'next/server';
-import { recoveredCountsByWindow } from '@/lib/recoveredLedger';
+import { recoveredCountsByWindow, recoveredQueueBreakdown } from '@/lib/recoveredLedger';
 import { SHOPS } from '@/lib/shops';
 
 export async function handle(req: NextRequest) {
   const windowParam = (req.nextUrl.searchParams.get('window') || 'this_week') as 'this_week' | 'rolling_7d';
   const safeWindow: 'this_week' | 'rolling_7d' = windowParam === 'rolling_7d' ? 'rolling_7d' : 'this_week';
   try {
-    const { windowStartISO, windowEndISO, byShop } = await recoveredCountsByWindow(safeWindow);
+    const [{ windowStartISO, windowEndISO, byShop }, breakdown] = await Promise.all([
+      recoveredCountsByWindow(safeWindow),
+      recoveredQueueBreakdown(safeWindow),
+    ]);
     const shops = SHOPS.map((s) => ({
       shopNum: s.num,
       shopName: s.name,
@@ -25,6 +28,7 @@ export async function handle(req: NextRequest) {
       windowEndISO,
       computedAt: new Date().toISOString(),
       chain: { count: chainCount },
+      breakdown,   // { callbacks, rebooks, declinedJobs, total }
       shops,
     });
   } catch (e: any) {

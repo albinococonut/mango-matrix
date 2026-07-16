@@ -53,12 +53,20 @@ export function chainKpi(orders: RepairOrder[]): ChainKpi {
   // Per-shop rows use the PRIMARY tekmetricId only — secondary instances (e.g. Yuma-B
   // shopId 18346) are folded into chain totals but never shown as a separate row.
   const byShopGroups = new Map<string, RepairOrder[]>();
+  // Non-fleet secondaries (true overflow bays): count toward both revenue and cars.
   let secondaryOnly: RepairOrder[] = [];
+  // Fleet-only secondaries (e.g. Yuma-B / USPS contract): revenue only — cars, GP,
+  // ARO, and close rate are deliberately excluded to keep retail metrics clean.
+  let fleetOnlySecondary: RepairOrder[] = [];
   for (const o of orders) {
     const meta = SHOP_BY_TEKMETRIC_ID[o.shopId];
     if (!meta) continue;
     if (meta.tekmetricIdSecondary === o.shopId) {
-      secondaryOnly.push(o);
+      if (meta.tekmetricIdSecondaryFleetOnly) {
+        fleetOnlySecondary.push(o);
+      } else {
+        secondaryOnly.push(o);
+      }
       continue;
     }
     const arr = byShopGroups.get(meta.num) ?? [];
@@ -81,31 +89,36 @@ export function chainKpi(orders: RepairOrder[]): ChainKpi {
       byShop.push(shopKpi(meta, []));
     }
   }
-  // Chain totals: per-shop primary rows + secondary ROs (e.g. Yuma-B revenue/cars
-  // count toward the chain even though Yuma-B isn't a separate row).
+  // Chain totals: per-shop primary rows + secondary ROs.
+  // Non-fleet secondaries contribute to both revenue and cars.
   const secondaryRevenueDollars = secondaryOnly
     .filter(isCountedRO)
     .reduce((s, o) => s + c2d(o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal), 0);
   const secondaryCars = secondaryOnly.filter(isCountedRO).length;
-  // REVENUE-ONLY USPS add-back. The USPS / Post-Office fleet is excluded from
-  // every operational metric (cars, GP, ARO, close rate, leaderboards) via
-  // isCountedRO, but its REVENUE must still reconcile to Tekmetric's Net
-  // Sales. Pull that revenue from wherever it lives — the Yuma primary
-  // instance (excluded customer IDs) AND the Yuma-B secondary instance — and
-  // add it ONLY to the revenue figure (never to cars/ARO/GP/close).
+  // Fleet-only secondaries (Yuma-B): revenue must reconcile to Tekmetric's Net
+  // Sales but their cars/GP/ARO must NOT pollute retail metrics. Only check
+  // posting status here — customer-ID exclusions were for Yuma-primary legacy
+  // accounts and don't apply to the Yuma-B shop profile.
+  const fleetSecondaryRevenue = fleetOnlySecondary
+    .filter(o => COUNTED_STATUSES.has(o.repairOrderStatus?.code))
+    .reduce((s, o) => s + c2d(o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal), 0);
+  // USPS add-back for any legacy orders still on Yuma primary under the old
+  // customer IDs. These were the original USPS accounts before the contract
+  // moved to Yuma-B; typically zero now but kept for historical accuracy.
   const uspsRevenue = orders.reduce((s, o) =>
     (COUNTED_STATUSES.has(o.repairOrderStatus?.code) && EXCLUDED_CUSTOMER_IDS.has(o.customerId))
       ? s + c2d(o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal)
       : s, 0);
-  // Clean (USPS-excluded) revenue drives ARO; reported revenue adds USPS back.
+  // Clean retail revenue drives ARO; reported total adds fleet/USPS back.
   const cleanRevenue = byShop.reduce((s, k) => s + k.revenue, 0) + secondaryRevenueDollars;
-  const totalRevenue = cleanRevenue + uspsRevenue;
+  const totalRevenue = cleanRevenue + uspsRevenue + fleetSecondaryRevenue;
   const totalCars = byShop.reduce((s, k) => s + k.cars, 0) + secondaryCars;
-  // Attribute USPS revenue to the Yuma row's headline revenue only — its
-  // cars / ARO / GP% stay clean (USPS still excluded from those).
-  if (uspsRevenue > 0) {
+  // Attribute all non-retail revenue to the Yuma row's headline so the
+  // per-shop table reconciles to the chain total — cars/ARO/GP% stay clean.
+  const yumaAddon = uspsRevenue + fleetSecondaryRevenue;
+  if (yumaAddon > 0) {
     const yuma = byShop.find(k => k.shopNum === '006');
-    if (yuma) yuma.revenue += uspsRevenue;
+    if (yuma) yuma.revenue += yumaAddon;
   }
   // Close rate: only count jobs on revenue-realized ROs so we match Tekmetric's denominator
   const closeNum = orders.reduce((s, o) => isCountedRO(o) ? s + o.jobs.filter(j => j.authorized).length : s, 0);
@@ -142,6 +155,28 @@ export function isCountedRO(o: RepairOrder): boolean {
   if (!COUNTED_STATUSES.has(o.repairOrderStatus?.code)) return false;
   if (EXCLUDED_CUSTOMER_IDS.has(o.customerId)) return false;
   return true;
+}
+
+/**
+ * Returns true for jobs that are deliberately free — the shop pays the tech
+ * but never charges the customer. These must NOT count as comebacks in any
+ * context (the comebacks handler, the Golden Mango ceremony, the TV view, etc.).
+ *
+ * Shared here so the comebacks handler and computeStandings() in goldenMango.ts
+ * use identical logic. Previously `isFreeByDesign` was a private function in
+ * lib/handlers/comebacks.ts and was never applied to the Friday crown ceremony,
+ * causing shops with lots of complimentary inspections (e.g. Cottonwood) to
+ * accumulate false comebacks and lose the Comebacks medal to shops that do
+ * fewer free inspections (e.g. Yuma, which is fleet-heavy).
+ */
+export function isFreeByDesign(jobName: string, categoryName: string): boolean {
+  const n = jobName.toLowerCase();
+  const c = categoryName.toLowerCase();
+  // Digital / multi-point inspection — complimentary service, not a comeback
+  if (c === 'inspection' || /digital.inspect|multi.?point.inspect|vehicle.health|mpi\b|complimentary.*inspect|free.*inspect|inspect.*free|second.opinion/i.test(n)) return true;
+  // Free A/C check — promotional complimentary service
+  if (/free.*(a\/c|ac|air.?cond)|a\/c.*free|(free|complimentary).*(check|diagnos)/i.test(n)) return true;
+  return false;
 }
 
 /**

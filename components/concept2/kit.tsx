@@ -44,19 +44,30 @@ export const pctS = (v: number, dp = 0) => (v * 100).toFixed(dp) + '%';
 export const safe = async <T,>(url: string): Promise<T | null> => { try { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) return null; return (await r.json()) as T; } catch { return null; } };
 
 // ── frosted primitives ──────────────────────────────────────────────────────
-export function Card({ id, eyebrow, title, sub, right, children, pad = true }: { id?: string; eyebrow?: string; title?: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; pad?: boolean }) {
+export function Card({ id, eyebrow, title, sub, right, children, pad = true, colHeader = false }: { id?: string; eyebrow?: string; title?: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; pad?: boolean; colHeader?: boolean }) {
   return (
     <section id={id} className="scroll-mt-6 mb-7">
-      <div className="rounded-[26px] border" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.58))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderColor: 'rgba(255,255,255,0.75)', boxShadow: '0 1px 0 rgba(255,255,255,0.9) inset, 0 18px 48px -28px rgba(40,34,26,0.30), 0 2px 8px -4px rgba(40,34,26,0.10)' }}>
+      <div className="rounded-[26px] border" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.82))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderColor: 'rgba(237,220,206,0.85)', boxShadow: '0 1px 0 rgba(255,255,255,0.95) inset, 0 20px 54px -26px rgba(40,34,26,0.24), 0 3px 10px -3px rgba(40,34,26,0.09)' }}>
         {(eyebrow || title || right) && (
-          <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
-            <div className="min-w-0">
-              {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: FAINT }}>{eyebrow}</div>}
-              {title && <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 25, letterSpacing: '-0.01em' }}>{title}</h2>}
-              {sub && <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>{sub}</div>}
+          colHeader ? (
+            <div className="px-6 pt-5 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
+              <div>
+                {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: FAINT }}>{eyebrow}</div>}
+                {title && <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 25, letterSpacing: '-0.01em' }}>{title}</h2>}
+                {sub && <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>{sub}</div>}
+              </div>
+              {right && <div className="flex flex-wrap gap-2 mt-3">{right}</div>}
             </div>
-            {right && <div className="shrink-0">{right}</div>}
-          </div>
+          ) : (
+            <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
+              <div className="min-w-0">
+                {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: FAINT }}>{eyebrow}</div>}
+                {title && <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 25, letterSpacing: '-0.01em' }}>{title}</h2>}
+                {sub && <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>{sub}</div>}
+              </div>
+              {right && <div className="shrink-0">{right}</div>}
+            </div>
+          )
         )}
         <div className={pad ? 'px-6 py-5' : ''}>{children}</div>
       </div>
@@ -67,8 +78,8 @@ export function Dropdown({ value, onChange, opts }: { value: string; onChange: (
   return (
     <div className="relative inline-block">
       <select value={value} onChange={(e) => onChange(e.target.value)}
-        className="c2ui appearance-none rounded-full pl-3.5 pr-8 py-1.5 text-[12.5px] font-semibold cursor-pointer"
-        style={{ background: 'rgba(255,255,255,0.7)', color: INK, border: `1px solid rgba(34,32,28,0.12)` }}>
+        className="c2ui appearance-none rounded-lg pl-3.5 pr-8 py-1.5 text-[12.5px] font-semibold cursor-pointer c2-select"
+        style={{ background: '#fff', color: INK, border: `1px solid rgba(237,220,206,1)`, boxShadow: '0 1px 3px rgba(31,41,55,0.07)' }}>
         {opts.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
       </select>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={INK2} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"><path d="M6 9l6 6 6-6" /></svg>
@@ -79,7 +90,7 @@ export function Tabs({ tabs, value, onChange }: { tabs: [string, string][]; valu
   return (
     <div className="inline-flex rounded-full p-1" style={{ background: 'rgba(34,32,28,0.05)', border: `1px solid ${LINE}` }}>
       {tabs.map(([k, label]) => (
-        <button key={k} onClick={() => onChange(k)} className="c2ui rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold transition" style={value === k ? { background: '#fff', color: INK, boxShadow: '0 1px 4px rgba(40,34,26,0.12)' } : { color: INK2, background: 'transparent' }}>{label}</button>
+        <button key={k} onClick={() => onChange(k)} className="c2ui rounded-full px-3.5 py-1.5 text-[12.5px] font-semibold transition" style={value === k ? { background: '#fff', color: INK, boxShadow: '0 1px 3px rgba(0,0,0,0.14), 0 1px 2px rgba(0,0,0,0.08)' } : { color: INK2, background: 'transparent' }}>{label}</button>
       ))}
     </div>
   );
@@ -107,15 +118,16 @@ export function Pill({ children, tone = 'neutral' }: { children: React.ReactNode
 }
 
 // ── ConceptShell — frosted sidebar + cream/orb background + page header ──────
-type NavId = 'diagnostic' | 'review' | 'employee' | 'todo' | 'tv';
+type NavId = 'diagnostic' | 'review' | 'employee' | 'todo' | 'tv' | 'parts-matrix';
 const NAV: { id: NavId; label: string; href: string }[] = [
-  { id: 'diagnostic', label: 'Diagnostic', href: '/concept2/diagnostic' },
-  { id: 'review', label: 'Weekly Review', href: '/concept2/review' },
-  { id: 'employee', label: 'Employee View', href: '/concept2/employee' },
+  { id: 'diagnostic', label: 'Diagnostic', href: '/diagnostic' },
+  { id: 'review', label: 'Weekly Review', href: '/review' },
+  { id: 'parts-matrix', label: 'Parts Pricing', href: '/parts-matrix' },
+  { id: 'employee', label: 'Employee View', href: '/employee' },
 ];
 const EMP_CHILDREN: { id: NavId; label: string; href: string }[] = [
-  { id: 'todo', label: 'To Do', href: '/concept2/todo' },
-  { id: 'tv', label: 'TV', href: '/concept2/tv' },
+  { id: 'todo', label: 'To Do', href: '/todo' },
+  { id: 'tv', label: 'TV', href: '/tv' },
 ];
 
 async function doLogout() {
@@ -126,10 +138,10 @@ async function doLogout() {
 function Orbs() {
   return (
     <div className="pointer-events-none fixed inset-0 z-0" aria-hidden style={{ overflow: 'hidden' }}>
-      <div style={{ position: 'absolute', top: '-12%', right: '-8%', width: 720, height: 720, borderRadius: '50%', filter: 'blur(120px)', background: 'radial-gradient(circle, rgba(95,169,214,0.30), rgba(95,169,214,0) 70%)' }} />
-      <div style={{ position: 'absolute', top: '24%', left: '-10%', width: 680, height: 680, borderRadius: '50%', filter: 'blur(130px)', background: 'radial-gradient(circle, rgba(242,206,112,0.26), rgba(242,206,112,0) 70%)' }} />
-      <div style={{ position: 'absolute', bottom: '-14%', left: '30%', width: 760, height: 760, borderRadius: '50%', filter: 'blur(140px)', background: 'radial-gradient(circle, rgba(232,134,62,0.22), rgba(232,134,62,0) 72%)' }} />
-      <div style={{ position: 'absolute', top: '4%', left: '38%', width: 520, height: 520, borderRadius: '50%', filter: 'blur(120px)', background: 'radial-gradient(circle, rgba(139,205,197,0.20), rgba(139,205,197,0) 72%)' }} />
+      <div style={{ position: 'absolute', top: '-12%', right: '-8%', width: 720, height: 720, borderRadius: '50%', filter: 'blur(140px)', background: 'radial-gradient(circle, rgba(95,169,214,0.18), rgba(95,169,214,0) 70%)' }} />
+      <div style={{ position: 'absolute', top: '24%', left: '-10%', width: 680, height: 680, borderRadius: '50%', filter: 'blur(160px)', background: 'radial-gradient(circle, rgba(242,206,112,0.10), rgba(242,206,112,0) 70%)' }} />
+      <div style={{ position: 'absolute', bottom: '-14%', left: '30%', width: 760, height: 760, borderRadius: '50%', filter: 'blur(170px)', background: 'radial-gradient(circle, rgba(232,134,62,0.08), rgba(232,134,62,0) 72%)' }} />
+      <div style={{ position: 'absolute', top: '4%', left: '38%', width: 520, height: 520, borderRadius: '50%', filter: 'blur(130px)', background: 'radial-gradient(circle, rgba(139,205,197,0.14), rgba(139,205,197,0) 72%)' }} />
     </div>
   );
 }
@@ -137,7 +149,7 @@ function Orbs() {
 export function ConceptShell({
   active, eyebrow = 'The Mango Matrix', title, sub, sections, headerRight, email, children,
 }: {
-  active: NavId; eyebrow?: string; title: string; sub?: string;
+  active: NavId; eyebrow?: string; title?: string; sub?: string;
   sections?: { id: string; label: string }[]; headerRight?: React.ReactNode; email?: string; children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -151,10 +163,27 @@ export function ConceptShell({
   // script. Subsequent loads are instant.
   const COLLAPSE_KEY = 'c2_sidebar_collapsed_v1';
   const [collapsed, setCollapsed] = useState(false);
+  const [activeSection, setActiveSection] = useState('');
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try { if (window.localStorage.getItem(COLLAPSE_KEY) === '1') setCollapsed(true); } catch { /* private mode / quota */ }
   }, []);
+
+  // Track which section is in view so the sub-nav item highlights automatically.
+  useEffect(() => {
+    if (!sections?.length) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const hit = entries.filter((e) => e.isIntersecting);
+        if (hit.length) setActiveSection(hit[0].target.id);
+      },
+      { rootMargin: '-8% 0px -82% 0px', threshold: 0 },
+    );
+    sections.forEach((s) => { const el = document.getElementById(s.id); if (el) obs.observe(el); });
+    // Also initialise from hash on first mount
+    if (window.location.hash) setActiveSection(window.location.hash.slice(1));
+    return () => obs.disconnect();
+  }, [sections]);
   const toggleCollapsed = () => {
     setCollapsed((prev) => {
       const next = !prev;
@@ -167,9 +196,9 @@ export function ConceptShell({
   // serif label, generous spacing. The bar carries the active signal so the
   // label is left to read as plain typography.
   const NavLink = ({ href, label, on, size = 'top' }: { href: string; label: string; on: boolean; size?: 'top' | 'child' }) => (
-    <Link href={href} className="relative flex items-center pl-5 pr-3 transition" style={{ paddingTop: size === 'top' ? 9 : 7, paddingBottom: size === 'top' ? 9 : 7 }}>
-      {on && <span className="absolute left-0 rounded-r-sm" style={{ top: 6, bottom: 6, width: 3, background: AMBER }} />}
-      <span className={size === 'top' ? 'c2disp' : 'c2ui'} style={{ color: on ? '#B5631F' : (size === 'top' ? INK : INK2), fontSize: size === 'top' ? 15 : 13, letterSpacing: size === 'top' ? '-0.01em' : 0, fontWeight: size === 'top' ? 500 : 500 }}>{label}</span>
+    <Link href={href} className="relative flex items-center pl-5 pr-3 transition" style={{ paddingTop: size === 'top' ? 12 : 9, paddingBottom: size === 'top' ? 12 : 9 }}>
+      {on && <span className="absolute left-0 rounded-r-sm" style={{ top: 6, bottom: 6, width: 3, background: AMBER, boxShadow: '2px 0 8px rgba(232,134,62,0.30)' }} />}
+      <span className={on && size === 'top' ? 'c2disp' : 'c2ui'} style={{ color: on ? '#B5631F' : (size === 'top' ? INK2 : INK2), fontSize: on && size === 'top' ? 19 : size === 'top' ? 15 : 14, letterSpacing: on && size === 'top' ? '-0.01em' : 0, fontWeight: size === 'top' ? 500 : 500 }}>{label}</span>
     </Link>
   );
   // Collapsed-mode nav rail — vertical column of single-letter initials so
@@ -191,7 +220,7 @@ export function ConceptShell({
   const goldRule = <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, rgba(232,134,62,0.45), transparent)' }} />;
 
   return (
-    <div className="relative min-h-screen c2ui" style={{ color: INK, background: '#F1ECE3' }}>
+    <div className="relative min-h-screen c2ui" style={{ color: INK, background: '#FBFAF8' }}>
       <Orbs />
       <div className="relative z-10 flex">
         {/* Sidebar — frosted column with gold-ruled wordmark, left-bar active
@@ -199,7 +228,7 @@ export function ConceptShell({
             Collapsible to a ~56px rail of single-letter nav links + a
             chevron-right to expand. Matches the production ExecSidebar UX. */}
         {collapsed ? (
-          <aside className="hidden lg:flex flex-col items-center w-14 shrink-0 sticky top-0 h-screen py-7 gap-2" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.62), rgba(255,255,255,0.42))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(255,255,255,0.6)' }}>
+          <aside className="hidden lg:flex flex-col items-center w-14 shrink-0 sticky top-0 h-screen py-7 gap-2" style={{ background: 'linear-gradient(180deg, rgba(253,248,242,0.76), rgba(251,244,236,0.56))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(237,220,206,0.75)' }}>
             {/* Expand toggle */}
             <button onClick={toggleCollapsed} aria-label="Expand sidebar" className="flex items-center justify-center w-10 h-10 rounded-lg transition" style={{ color: INK2 }} title="Expand sidebar">
               {ChevronRight}
@@ -220,14 +249,15 @@ export function ConceptShell({
             </div>
           </aside>
         ) : (
-          <aside className="hidden lg:flex flex-col w-64 shrink-0 sticky top-0 h-screen py-7" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.62), rgba(255,255,255,0.42))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(255,255,255,0.6)' }}>
+          <aside className="hidden lg:flex flex-col w-64 shrink-0 sticky top-0 h-screen py-7" style={{ background: 'linear-gradient(180deg, rgba(253,248,242,0.76), rgba(251,244,236,0.56))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(237,220,206,0.75)' }}>
             {/* Wordmark + collapse toggle */}
             <div className="px-5">
               {goldRule}
               <div className="py-4 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="c2disp leading-tight" style={{ color: INK, fontSize: 21, letterSpacing: '-0.02em' }}>The Mango Matrix</div>
-                  <div className="c2ui mt-1.5 text-[13px] font-semibold uppercase tracking-[0.24em]" style={{ color: AMBER }}>Concept 2 · Preview</div>
+                <div className="min-w-0 flex items-center gap-2.5">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/logo.png" alt="Mango Automotive" className="h-8 w-auto object-contain shrink-0" />
+                  <div className="c2disp leading-tight" style={{ color: INK, fontSize: 16, letterSpacing: '-0.02em' }}>The Mango Matrix</div>
                 </div>
                 <button onClick={toggleCollapsed} aria-label="Collapse sidebar" title="Collapse sidebar" className="shrink-0 flex items-center justify-center w-7 h-7 rounded-lg transition -mt-0.5" style={{ color: FAINT }}>
                   {ChevronLeft}
@@ -244,8 +274,18 @@ export function ConceptShell({
                   <div key={c.id} className="flex flex-col">
                     <NavLink href={c.href} label={c.label} on={on} size="top" />
                     {on && sections && sections.length > 0 && (
-                      <div className="mt-0.5 mb-2 pl-7 pr-3 flex flex-col gap-0.5">
-                        {sections.map((s) => <a key={s.id} href={`#${s.id}`} className="c2ui rounded-md py-1 px-1 text-[13px] transition hover:text-mango-ink" style={{ color: FAINT, letterSpacing: '0.005em' }}>{s.label}</a>)}
+                      <div className="mt-0.5 mb-2 pl-5 pr-3 flex flex-col gap-0">
+                        {sections.map((s) => {
+                          const sOn = activeSection === s.id;
+                          return (
+                            <a key={s.id} href={`#${s.id}`} onClick={() => setActiveSection(s.id)}
+                              className="c2ui relative flex items-center rounded-md py-1.5 pl-4 pr-2 text-[14px] transition"
+                              style={{ color: sOn ? '#B5631F' : INK2, fontWeight: sOn ? 600 : 400, letterSpacing: '0.005em' }}>
+                              {sOn && <span className="absolute left-0 rounded-r-sm" style={{ top: 4, bottom: 4, width: 2, background: AMBER, boxShadow: '2px 0 6px rgba(232,134,62,0.25)' }} />}
+                              {s.label}
+                            </a>
+                          );
+                        })}
                       </div>
                     )}
                     {c.id === 'employee' && (
@@ -263,7 +303,7 @@ export function ConceptShell({
               {goldRule}
               {email && <div className="mt-4 c2ui text-[12.5px] uppercase tracking-[0.14em] font-semibold" style={{ color: FAINT }}>Signed in as</div>}
               {email && <div className="mt-1 c2ui text-[13px] truncate" style={{ color: INK }} title={email}>{email}</div>}
-              <button onClick={doLogout} className="mt-3 c2ui text-[13px] font-semibold transition" style={{ color: INK2 }}>Sign out →</button>
+              <button onClick={doLogout} className="mt-3 c2ui text-[12px] transition" style={{ color: FAINT }}>Sign out</button>
             </div>
           </aside>
         )}
@@ -275,20 +315,22 @@ export function ConceptShell({
             <nav className="flex items-center gap-1 overflow-x-auto text-[13px] font-semibold">
               {allMobile.map((c) => {
                 const on = c.id === active;
-                return <Link key={c.id} href={c.href} className="c2ui shrink-0 rounded-full px-3 py-1.5 transition" style={on ? { background: 'rgba(232,134,62,0.12)', color: '#B5631F' } : { color: INK2 }}>{c.label}</Link>;
+                return <Link key={c.id} href={c.href} className="c2ui shrink-0 rounded-full px-3 py-1.5 transition" style={on ? { background: 'rgba(232,134,62,0.14)', color: '#B5631F', boxShadow: '0 1px 4px rgba(232,134,62,0.22)' } : { color: INK2 }}>{c.label}</Link>;
               })}
             </nav>
           </div>
 
-          {/* Header */}
-          <div className="flex flex-wrap items-end justify-between gap-4 mb-7">
-            <div>
-              {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.22em] mb-1" style={{ color: AMBER }}>{eyebrow}</div>}
-              <h1 className="c2disp leading-none" style={{ color: INK, fontSize: 40, letterSpacing: '-0.02em' }}>{title}</h1>
-              {sub && <div className="c2ui text-[12.5px] mt-2" style={{ color: INK2 }}>{sub}</div>}
+          {/* Header — only rendered when title is provided */}
+          {(title || headerRight) && (
+            <div className="flex flex-wrap items-end justify-between gap-4 mb-7">
+              <div>
+                {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.22em] mb-1" style={{ color: AMBER }}>{eyebrow}</div>}
+                {title && <h1 className="c2disp c2-page-h1 leading-none" style={{ color: INK, fontSize: 40, letterSpacing: '-0.02em' }}>{title}</h1>}
+                {sub && <div className="c2ui text-[12.5px] mt-2" style={{ color: INK2 }}>{sub}</div>}
+              </div>
+              {headerRight && <div className="shrink-0">{headerRight}</div>}
             </div>
-            {headerRight && <div className="shrink-0">{headerRight}</div>}
-          </div>
+          )}
           {children}
         </main>
       </div>
@@ -297,5 +339,5 @@ export function ConceptShell({
 }
 
 export function LoadingSkeleton() {
-  return (<div className="space-y-4">{[0, 1, 2, 3].map((i) => <div key={i} className="rounded-[26px]" style={{ height: i === 0 ? 220 : 160, background: 'rgba(255,255,255,0.5)', border: `1px solid ${LINE}` }} />)}</div>);
+  return (<div className="space-y-4">{[0, 1, 2, 3].map((i) => <div key={i} className="rounded-[26px] c2-shimmer" style={{ height: i === 0 ? 220 : 160, background: 'rgba(255,255,255,0.5)', border: `1px solid rgba(237,220,206,0.7)` }} />)}</div>);
 }

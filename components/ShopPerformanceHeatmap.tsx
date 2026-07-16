@@ -13,6 +13,7 @@ import {
   HEAT, tierColor, LEGEND, Tier,
   pctTier, gpTier, closeTier, convTier, comebackTier, rebookTier, ratingTier,
 } from '@/lib/heatmap';
+import { SHOPS } from '@/lib/shops';
 
 interface Cell {
   revenue: number; cars: number; aro: number; closeRate: number;
@@ -54,16 +55,29 @@ export default function ShopPerformanceHeatmap() {
   const currentIdx = data ? data.weeks.length - 1 : -1; // last col = in-progress week
 
   function revGoal(shopNum: string, weekStartISO: string): number | undefined {
-    const weekly = goals[shopNum]?.revenueWeekly;
-    if (!weekly) return undefined;
     const ws = startOfDay(new Date(weekStartISO + 'T12:00:00'));
     const we = endOfDay(addDays(ws, 6));
-    if (isAfter(we, now)) {
-      const total = workingDaysBetween(ws, we);
-      const done = workingDaysBetween(ws, now);
-      return total ? weekly * (done / total) : undefined;
+    const prorate = (weekly: number): number | undefined => {
+      if (isAfter(we, now)) {
+        const total = workingDaysBetween(ws, we);
+        const done = workingDaysBetween(ws, now);
+        return total ? weekly * (done / total) : undefined;
+      }
+      return weekly;
+    };
+    if (shopNum === 'all') {
+      let sum = 0, hasAny = false;
+      for (const s of SHOPS) {
+        const weekly = goals[s.num]?.revenueWeekly;
+        if (!weekly) continue;
+        const v = prorate(weekly);
+        if (v != null) { sum += v; hasAny = true; }
+      }
+      return hasAny ? sum : undefined;
     }
-    return weekly;
+    const weekly = goals[shopNum]?.revenueWeekly;
+    if (!weekly) return undefined;
+    return prorate(weekly);
   }
 
   // Per-shop trailing median for metrics with no hard goal (cars/ARO/$/hrs)
@@ -80,6 +94,39 @@ export default function ShopPerformanceHeatmap() {
     }
     return m;
   }
+
+  const allShopsRow = useMemo<ShopRow | null>(() => {
+    if (!data) return null;
+    const cells: (Cell | null)[] = data.weeks.map((_, wi) => {
+      const sc = data.shops.map((s) => s.cells[wi]).filter((c): c is Cell => !!c);
+      if (!sc.length) return null;
+      const revenue = sc.reduce((a, c) => a + c.revenue, 0);
+      const cars = sc.reduce((a, c) => a + c.cars, 0);
+      const gpDollars = sc.reduce((a, c) => a + c.gpDollars, 0);
+      const carsWeightedCR = sc.reduce((a, c) => a + c.closeRate * c.cars, 0);
+      const rebookVals = sc.map((c) => c.rebook).filter((v): v is number => v != null && v >= 0);
+      const convVals = sc.map((c) => c.conversion).filter((v): v is number => v != null && v >= 0);
+      const ratingVals = sc.map((c) => c.rating).filter((v): v is number => v != null && v > 0);
+      return {
+        revenue,
+        cars,
+        aro: cars > 0 ? revenue / cars : 0,
+        closeRate: cars > 0 ? carsWeightedCR / cars : 0,
+        gpDollars,
+        gpPct: revenue > 0 ? gpDollars / revenue : 0,
+        partsGpPct: 0,
+        laborGpPct: 0,
+        discounts: sc.reduce((a, c) => a + c.discounts, 0),
+        comebacks: sc.reduce((a, c) => a + (c.comebacks ?? 0), 0),
+        comebackDollars: sc.reduce((a, c) => a + (c.comebackDollars ?? 0), 0),
+        billedHours: Math.round(sc.reduce((a, c) => a + (c.billedHours ?? 0), 0) * 10) / 10,
+        rebook: rebookVals.length ? rebookVals.reduce((a, v) => a + v, 0) / rebookVals.length : undefined,
+        conversion: convVals.length ? convVals.reduce((a, v) => a + v, 0) / convVals.length : undefined,
+        rating: ratingVals.length ? ratingVals.reduce((a, v) => a + v, 0) / ratingVals.length : undefined,
+      };
+    });
+    return { shopNum: 'all', shopName: 'All Shops', cells };
+  }, [data]);
 
   // Returns { tier, big, small } for one cell under the active metric.
   function render(row: ShopRow, c: Cell | null, wkISO: string): { tier: Tier | null; big: string; small: string } {
@@ -115,7 +162,7 @@ export default function ShopPerformanceHeatmap() {
       case 'conversion': {
         // 1 decimal to match the Employee view's Call Conversion exactly
         // (same cache, same precision — no rounding drift).
-        const v = c.conversion == null || c.conversion < 0 ? null : c.conversion;
+        const v = c.conversion == null || c.conversion <= 0 ? null : c.conversion;
         return { tier: convTier(v), big: v == null ? '—' : v.toFixed(1) + '%', small: v == null ? 'no data' : 'calls booked' };
       }
       case 'rebook': {
@@ -209,7 +256,7 @@ export default function ShopPerformanceHeatmap() {
               <tr>
                 <th className="text-left text-[10px] font-medium text-mango-faint px-2 pb-2"></th>
                 {data.weeks.map((w, i) => (
-                  <th key={i} className="px-0.5 pb-2 align-bottom">
+                  <th key={i} className="px-0.5 pb-2 align-bottom" style={{ opacity: i === currentIdx ? 0.4 : 1 }}>
                     {i === currentIdx && (
                       <div className="mb-0.5 text-[8px] font-semibold uppercase tracking-wide text-mango-info leading-tight">Partial</div>
                     )}
@@ -231,11 +278,12 @@ export default function ShopPerformanceHeatmap() {
                     const isCurrent = i === currentIdx;
                     return (
                       <td key={i}
-                        className={`text-center align-middle overflow-hidden ${isCurrent ? 'partial-week' : ''}`}
+                        className="text-center align-middle overflow-hidden"
                         style={{
                           background: bg, color: fg, borderRadius: 8,
                           height: 44, padding: '3px 2px',
                           boxShadow: isCurrent ? 'inset 0 0 0 1.5px #E08E1A' : 'inset 0 0 0 1px rgba(31,41,55,0.04)',
+                          opacity: isCurrent ? 0.4 : 1,
                         }}
                         title={c ? `${r.shopName} · week of ${data.weeks[i]} · ${big}${small ? ` (${small})` : ''}` : 'no data'}>
                         <div className="text-[12px] font-semibold leading-tight tnum">{big}</div>
@@ -245,6 +293,35 @@ export default function ShopPerformanceHeatmap() {
                   })}
                 </tr>
               ))}
+              {/* Spacer + All Shops combined row */}
+              <tr aria-hidden><td colSpan={1 + data.weeks.length} style={{ height: 6, padding: 0 }} /></tr>
+              {allShopsRow && (
+                <tr key="all">
+                  <td className="px-2 text-[12px] font-semibold text-mango-ink whitespace-nowrap truncate rounded-lg"
+                    style={{ background: 'rgba(31,41,55,0.07)' }}>
+                    All Shops
+                  </td>
+                  {allShopsRow.cells.map((c, i) => {
+                    const { tier, big, small } = render(allShopsRow, c, data.weeks[i]);
+                    const { bg, fg } = tierColor(tier);
+                    const isCurrent = i === currentIdx;
+                    return (
+                      <td key={i}
+                        className="text-center align-middle overflow-hidden"
+                        style={{
+                          background: bg, color: fg, borderRadius: 8,
+                          height: 44, padding: '3px 2px',
+                          boxShadow: isCurrent ? 'inset 0 0 0 1.5px #E08E1A' : 'inset 0 0 0 1px rgba(31,41,55,0.04)',
+                          opacity: isCurrent ? 0.4 : 1,
+                        }}
+                        title={c ? `All Shops · week of ${data.weeks[i]} · ${big}${small ? ` (${small})` : ''}` : 'no data'}>
+                        <div className="text-[12px] font-semibold leading-tight tnum">{big}</div>
+                        {small && <div className="text-[8.5px] leading-tight tnum truncate" style={{ opacity: 0.5 }}>{small}</div>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

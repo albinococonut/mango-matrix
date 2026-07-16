@@ -8,6 +8,11 @@ export interface Shop {
   name: string;
   tekmetricId: number;
   tekmetricIdSecondary?: number;
+  // When true the secondary Tekmetric ID is a fleet-only / government account
+  // (e.g. Yuma's USPS post-office contract on 18346). It must be EXCLUDED from
+  // all retail metrics, ARO, close-rate, and performance comparisons so that
+  // fleet volumes don't distort the per-car economics shown in the dashboard.
+  tekmetricIdSecondaryFleetOnly?: boolean;
   timezone: string;
   city: string;
   state: string;
@@ -30,7 +35,7 @@ export const SHOPS: Shop[] = [
   { num: '003', name: 'Downtown',    tekmetricId: 3785,  timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', district: 'Albuquerque', defaultFleetMix: 'mostly_fleet',  openedAt: '2020-01-01', bays: 9,  color: '#FF6B4A' /* coral */,    googlePlaceId: 'ChIJ_ZjznI0NIocRHpXTCeWCM5s' },
   { num: '004', name: 'Pellicano',   tekmetricId: 11565, timezone: 'America/Denver',  city: 'El Paso',      state: 'TX', district: 'El Paso',      defaultFleetMix: 'mostly_fleet',  openedAt: '2025-01-01', bays: 9,  color: '#4FB477' /* fresh green */, googlePlaceId: 'ChIJXb-A9KFE54YRi77I5uKZh3o' },
   { num: '005', name: 'Las Cruces',  tekmetricId: 8878,  timezone: 'America/Denver',  city: 'Las Cruces',   state: 'NM', district: 'Las Cruces',   defaultFleetMix: 'mostly_fleet',  openedAt: '2024-01-01', bays: 14, color: '#9B7BE0' /* violet */,       googlePlaceId: 'ChIJnylEKl093oYRmO08JnQTJz0' },
-  { num: '006', name: 'Yuma',        tekmetricId: 7492,  tekmetricIdSecondary: 18346, timezone: 'America/Phoenix', city: 'Yuma', state: 'AZ', district: 'Yuma',         defaultFleetMix: 'mostly_fleet', openedAt: '2022-01-01', bays: 14, color: '#FFC72C' /* sunny gold */,      googlePlaceId: 'ChIJWUstMEhf1oAR5KYI-F-l5pE' },
+  { num: '006', name: 'Yuma',        tekmetricId: 7492,  tekmetricIdSecondary: 18346, tekmetricIdSecondaryFleetOnly: true, timezone: 'America/Phoenix', city: 'Yuma', state: 'AZ', district: 'Yuma', defaultFleetMix: 'mostly_fleet', openedAt: '2022-01-01', bays: 14, color: '#FFC72C' /* sunny gold */, googlePlaceId: 'ChIJWUstMEhf1oAR5KYI-F-l5pE' },
   { num: '007', name: 'Montana',     tekmetricId: 11253, timezone: 'America/Denver',  city: 'El Paso',      state: 'TX', district: 'El Paso',      defaultFleetMix: 'mostly_retail', openedAt: '2024-10-01', bays: 6,  color: '#FF8FB1' /* warm pink */,    googlePlaceId: 'ChIJeaQeSHhb54YRy_dP6d5wOzQ' },
   { num: '009', name: 'The Valley',  tekmetricId: 16116, timezone: 'America/Denver',  city: 'Albuquerque',  state: 'NM', district: 'Albuquerque', defaultFleetMix: 'mostly_retail', openedAt: '2026-01-01', bays: 6,  color: '#6FB1FF' /* sky blue */,       googlePlaceId: 'ChIJUwcdeDtzIocRneLazjKards' },
 ];

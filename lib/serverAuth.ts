@@ -3,10 +3,14 @@
 // route without dragging in heavy deps.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { COOKIE_NAME, Role, verifyRoleCookie } from './auth';
+import { COOKIE_NAME, Role, verifyRoleCookie, verifySession } from './auth';
 
 export async function getRole(req: NextRequest): Promise<Role | null> {
   return verifyRoleCookie(req.cookies.get(COOKIE_NAME)?.value);
+}
+
+export async function getSession(req: NextRequest): Promise<{ role: Role; email?: string } | null> {
+  return verifySession(req.cookies.get(COOKIE_NAME)?.value);
 }
 
 /**

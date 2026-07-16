@@ -12,11 +12,12 @@ import { handle as handleMissedRebooks } from '@/lib/handlers/missedRebooks';
 import { handle as handleZapierReviews } from '@/lib/handlers/zapierReviews';
 import { handle as handleDeclinedJobs } from '@/lib/handlers/declinedJobs';
 import { handle as handleTodoRecoveries } from '@/lib/handlers/todoRecoveries';
+import { handle as handlePartsGpDiagnosis } from '@/lib/handlers/partsGpDiagnosis';
 import { cacheUpdatedAt } from '@/lib/cache';
 import { readSettledWeeks } from '@/lib/reconcile';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function GET(req: NextRequest) {
   const view = req.nextUrl.searchParams.get('view');
@@ -30,6 +31,7 @@ export async function GET(req: NextRequest) {
   if (view === 'declined-jobs') return handleDeclinedJobs();
   if (view === 'todo-recoveries') return handleTodoRecoveries(req);
   if (view === 'google-ratings') return handleGoogleRatings();
+  if (view === 'parts-gp-diagnosis') return handlePartsGpDiagnosis(req);
   if (view === 'data-status') {
     // Prefer the explicit heartbeats; fall back to always-warm keys so the
     // footer is correct immediately after a deploy (before the first cron

@@ -15,9 +15,9 @@ const TOKEN_BASE = 'https://oauth2.googleapis.com/token';
 const STATE_COOKIE = 'auth_google_state';
 const NEXT_COOKIE = 'auth_google_next';
 
-function getRedirectUri(): string {
+function getRedirectUri(req: NextRequest): string {
   if (process.env.GOOGLE_AUTH_REDIRECT_URI) return process.env.GOOGLE_AUTH_REDIRECT_URI;
-  return 'https://mango-matrix.vercel.app/api/auth/google/callback';
+  return `${new URL(req.url).origin}/api/auth/google/callback`;
 }
 
 /**
@@ -73,7 +73,7 @@ export async function GET(req: NextRequest) {
       code,
       client_id: clientId,
       client_secret: clientSecret,
-      redirect_uri: getRedirectUri(),
+      redirect_uri: getRedirectUri(req),
       grant_type: 'authorization_code',
     });
     const tokRes = await fetch(TOKEN_BASE, {

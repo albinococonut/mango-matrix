@@ -15,9 +15,10 @@
 import { resolveRange, customRange, CHAIN_TZ } from '@/lib/dates';
 import { isAR, snapshotTotals, hasSnapshot, writeSnapshot, resolveCustomerNames, currentARFromRos, AR_CURRENT_KEY, ARMode } from '@/lib/ar';
 import { rosForChain, rosForShop } from '@/lib/dataAccess';
-import { fetchAllRepairOrders, type RepairOrder } from '@/lib/tekmetric';
+import { fetchAllRepairOrders, fetchROsByCreatedDate, type RepairOrder } from '@/lib/tekmetric';
 import { getTechnicianNames } from '@/lib/technicians';
 import { fetchAllAppointments } from '@/lib/tekmetric';
+import { classifyPricing, matrixRetail } from '@/lib/partsMatrix';
 import { classifyFleet, shopFbr, shopKar, findForwardBookedAppt, isEligibleRO } from '@/lib/fbr';
 import { resolveCustomerContacts, resolveVehicles } from '@/lib/ar';
 import { c2d } from '@/lib/tekmetric';
@@ -208,6 +209,12 @@ export async function warmFbrForShop(shopNum: string): Promise<string> {
 
   // --- Week-to-date (Mon→now MT) variant for trophies ---
   const monday = startOfWeek(nowMtn, { weekStartsOn: 1 });
+  // Convert the MT-wall-clock Monday back to a real UTC instant before
+  // storing. `monday` is a date-fns-tz zoned date whose .toISOString() is
+  // NOT a correct UTC timestamp — it's the MT wall-clock value that happens
+  // to format as ISO. The stale-week check in app/api/fbr reads weekStart
+  // and compares it against fromZonedTime(thisMon, CHAIN_TZ), which IS
+  // correct UTC, so they would never match without this conversion.
   const mondayISO = fromZonedTime(monday, CHAIN_TZ).toISOString();
   const rosWtd = ros.filter((r) => r.postedDate && r.postedDate >= mondayISO);
   const fbrWtd = shopFbr(rosWtd, fleetByCust, apptsByCust);
@@ -216,7 +223,7 @@ export async function warmFbrForShop(shopNum: string): Promise<string> {
     shopName: shop.name,
     fbr: fbrWtd ?? { eligibleROs: 0, forwardBookedROs: 0, fbrPct: 0, avgMonthsToRebook: null },
     ramping: isRampingShop(shop, nowMtn),
-    weekStart: monday.toISOString(),
+    weekStart: mondayISO,
     weekEnd: nowMtn.toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -265,7 +272,7 @@ export async function backfillWeekMetricsForShop(weekStartYmd: string, shopNum: 
       conversionPct = Math.round((booked / eligible.length) * 1000) / 10;
       convDetail = `conv ${booked}/${eligible.length} (${conversionPct}%)`;
     } else {
-      conversionPct = 0; convDetail = 'conv 0 eligible';
+      conversionPct = null; convDetail = 'conv 0 eligible';
     }
   } catch (e: any) {
     convDetail = `conv FAILED: ${e?.message || e}`;
@@ -436,7 +443,8 @@ export async function warmMissedCallbacksForShop(shopNum: string): Promise<strin
       callerCity: l.caller_city,
       callerState: l.caller_state,
       callDurationSeconds: l.call_duration_seconds || 0,
-      recording: l.play_recording || l.recording,
+      recording: l.recording || undefined,
+      playRecording: l.play_recording || undefined,
       transcriptPreview: transcript.length > 1200 ? transcript.slice(0, 1200) + '…' : transcript,
       salesAgent: l.lead_analysis?.['Sales Agent'],
       sentimentDetection: l.lead_analysis?.['Sentiment Detection'],
@@ -454,7 +462,7 @@ export async function warmMissedCallbacksForShop(shopNum: string): Promise<strin
   let shopAro = 0;
   try {
     const shopMeta = SHOP_BY_NUM[num];
-    const shopIds = [shopMeta.tekmetricId, ...(shopMeta.tekmetricIdSecondary ? [shopMeta.tekmetricIdSecondary] : [])];
+    const shopIds = [shopMeta.tekmetricId, ...(shopMeta.tekmetricIdSecondary && !shopMeta.tekmetricIdSecondaryFleetOnly ? [shopMeta.tekmetricIdSecondary] : [])];
     const ros = [];
     for (const id of shopIds) {
       ros.push(...(await rosForShop(id, { startISO: w.startISO, endISO: w.endISO })));
@@ -516,7 +524,7 @@ export async function warmDeclinedJobsForShop(shopNum: string): Promise<string> 
   const endISO   = fromZonedTime(nowMtn, CHAIN_TZ).toISOString();
   const cutoffOldMs = fromZonedTime(cutoffOld, CHAIN_TZ).getTime();
 
-  const shopIds = [shop.tekmetricId, ...(shop.tekmetricIdSecondary ? [shop.tekmetricIdSecondary] : [])];
+  const shopIds = [shop.tekmetricId, ...(shop.tekmetricIdSecondary && !shop.tekmetricIdSecondaryFleetOnly ? [shop.tekmetricIdSecondary] : [])];
   const ros: any[] = [];
   for (const id of shopIds) {
     ros.push(...(await rosForShop(id, { startISO, endISO })));
@@ -656,9 +664,16 @@ const snapshotWeeklyMetrics: SyncJob = {
       }
     }
     // Conversion %: from the week-to-date strict booked-rate cache.
+    // Guard: refreshBookedRate uses Central Time (TEKMETRIC_REPORT_TZ) while
+    // this job uses Mountain Time. During the ~1h window when Central is already
+    // Monday but Mountain is still Sunday, the WTD cache's windowStart is the
+    // NEW week — if we used those zeros we'd freeze 0% as the final value for
+    // the just-closed week. Only pull conversion when the cache's week matches.
     const br = await readCache<any>('booked_rate_week_to_date_strict');
-    for (const sh of (br?.shops || [])) {
-      if (typeof sh.bookedRatePct === 'number') conversion[sh.shopNum] = sh.bookedRatePct;
+    if (br?.windowStart === weekStart) {
+      for (const sh of (br?.shops || [])) {
+        if (typeof sh.bookedRatePct === 'number') conversion[sh.shopNum] = sh.bookedRatePct;
+      }
     }
     // Google rating: current cumulative rating per shop (point-in-time).
     const gr = await readCache<GoogleRatingsPayload>(GOOGLE_RATINGS_CACHE_KEY);
@@ -667,13 +682,20 @@ const snapshotWeeklyMetrics: SyncJob = {
     }
 
     // Preserve any values already captured this week if a source is
-    // momentarily cold (don't overwrite good data with blanks).
+    // momentarily cold (don't overwrite good data with blanks). For conversion,
+    // also guard against overwriting a good non-zero value with zero — the WTD
+    // cache can momentarily return 0 during a refresh cycle.
     const prev = await readMetricSnapshot(weekStart);
+    const mergedConversion: Record<string, number> = { ...(prev?.conversion || {}) };
+    for (const [shop, pct] of Object.entries(conversion)) {
+      const prevPct = mergedConversion[shop];
+      if (pct > 0 || prevPct === undefined) mergedConversion[shop] = pct;
+    }
     const snap: WeeklyMetricSnapshot = {
       weekStart,
       capturedAt: new Date().toISOString(),
       rebook: { ...(prev?.rebook || {}), ...rebook },
-      conversion: { ...(prev?.conversion || {}), ...conversion },
+      conversion: mergedConversion,
       rating: { ...(prev?.rating || {}), ...rating },
     };
     await writeMetricSnapshot(snap);
@@ -795,7 +817,7 @@ export async function warmReturnCustomersForShop(shopNum: string): Promise<strin
   const sevenDayStartMs    = fromZonedTime(sevenDayStart, CHAIN_TZ).getTime();
   const weekStartMs        = fromZonedTime(weekStartMtn, CHAIN_TZ).getTime();
 
-  const shopIds = [shop.tekmetricId, ...(shop.tekmetricIdSecondary ? [shop.tekmetricIdSecondary] : [])];
+  const shopIds = [shop.tekmetricId, ...(shop.tekmetricIdSecondary && !shop.tekmetricIdSecondaryFleetOnly ? [shop.tekmetricIdSecondary] : [])];
   const ros: RepairOrder[] = [];
   for (const id of shopIds) {
     ros.push(...(await fetchAllRepairOrders({
@@ -945,6 +967,113 @@ const warmGoogleRatings: SyncJob = {
   },
 };
 
+// Pre-warm the parts-matrix-usage cache for the default date range (last 7
+// days, mode=all). This is the range the Parts Pricing page requests on first
+// load, so pre-warming it means the user hits Redis instead of waiting 15-30s
+// for Tekmetric to respond across all 8 shops.
+//
+// Exported so an operator can trigger a specific range via the admin route:
+// POST /api/cron/run-syncs?job=warm-parts-matrix[&start=YYYY-MM-DD&end=YYYY-MM-DD&mode=all]
+export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mode = 'all'): Promise<string> {
+  const cacheKey = `parts_matrix_usage_v2_all_${startYmd}_${endYmd}_${mode}`;
+  const startISO = `${startYmd}T00:00:00Z`;
+  const endISO   = `${endYmd}T23:59:59Z`;
+  const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
+
+  const lines: any[] = [];
+  await Promise.all(SHOPS.map(async (shop) => {
+    try {
+      let ros: any[];
+      if (mode === 'posted') {
+        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO });
+      } else if (mode === 'open') {
+        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        ros = all.filter((ro: any) => {
+          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+          return !CLOSED.has(s);
+        });
+      } else {
+        // 'all' mode: current range + 60-day open-estimate sweep (same logic as API cold path)
+        const sweepStartDate = new Date(startISO);
+        sweepStartDate.setDate(sweepStartDate.getDate() - 60);
+        const sweepEnd = new Date(startISO);
+        sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
+        const [rangeRos, sweepRos] = await Promise.all([
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
+          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
+        ]);
+        const openFromSweep = sweepRos.filter((ro: any) => {
+          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+          return !CLOSED.has(s);
+        });
+        const seenIds = new Set(rangeRos.map((ro: any) => ro.id));
+        ros = [...rangeRos, ...openFromSweep.filter((ro: any) => !seenIds.has(ro.id))];
+      }
+      for (const ro of ros) {
+        const roDate = ro.postedDate ?? ro.createdDate ?? null;
+        const roStatus = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? 'UNKNOWN');
+        for (const job of (ro.jobs ?? [])) {
+          if (!job.parts?.length) continue;
+          for (let partIdx = 0; partIdx < job.parts.length; partIdx++) {
+            const part = job.parts[partIdx];
+            const costCents   = part.cost ?? 0;
+            const retailCents = part.retail ?? 0;
+            const pricingType = classifyPricing(costCents, retailCents, job.cannedJobId ?? null, part.partType?.code);
+            const matrixCents = matrixRetail(costCents, retailCents);
+            lines.push({
+              id: `pm_${ro.id}_${job.id}_${partIdx}`,
+              roId: ro.id, roNumber: ro.repairOrderNumber,
+              shopNum: shop.num, shopName: shop.name,
+              roStatus, roDate,
+              jobId: job.id, jobName: job.name, cannedJobId: job.cannedJobId ?? null,
+              partName: part.name, partNumber: part.partNumber ?? '',
+              brand: part.brand ?? '', qty: part.quantity ?? 1,
+              costCents, retailCents, matrixCents,
+              varianceCents: retailCents - matrixCents,
+              pricingType,
+            });
+          }
+        }
+      }
+    } catch { /* skip shop on error; cron continues with remaining shops */ }
+  }));
+
+  const counts = { total: lines.length, canned: 0, matrix: 0, manual: 0, no_charge: 0 };
+  let manualRevenueLostCents = 0;
+  let manualRevenueGainedCents = 0;
+  for (const l of lines) {
+    (counts as any)[l.pricingType]++;
+    if (l.pricingType === 'manual') {
+      if (l.varianceCents < 0) manualRevenueLostCents += Math.abs(l.varianceCents);
+      else manualRevenueGainedCents += l.varianceCents;
+    }
+  }
+  const payload = { lines, summary: { ...counts, manualRevenueLostCents, manualRevenueGainedCents } };
+  await writeCache(cacheKey, payload, { ttlSeconds: 2 * 60 * 60 });
+  return `${startYmd}→${endYmd} mode=${mode}: ${lines.length} part lines`;
+}
+
+const warmPartsMatrix: SyncJob = {
+  name: 'warm-parts-matrix',
+  isEnabled: () => !!process.env.TEKMETRIC_CLIENT_ID,
+  async run() {
+    // Warm exactly the ranges the Parts Pricing page requests by default.
+    // Cache key format: parts_matrix_usage_v2_all_START_END_MODE — must match.
+    // Page default: 'this_week' (Monday of current week → today).
+    const now = new Date();
+    const fmt = (d: Date) => d.toISOString().slice(0, 10);
+    const end = fmt(now);
+    // Monday of current week (JS getDay: 0=Sun, 6=Sat)
+    const dow = now.getDay() || 7;
+    const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1 - dow);
+    const start = fmt(mon);
+    // Warm both posted (default on page, served from rosForShop cache) and all
+    const msgPosted = await warmPartsMatrixRange(start, end, 'posted');
+    const msgAll = await warmPartsMatrixRange(start, end, 'all');
+    return { message: `parts-matrix warmed: ${msgPosted} | ${msgAll}` };
+  },
+};
+
 // updateGoldenMango runs FIRST so the Friday 6 PM crowning lands within
 // seconds of the boundary instead of waiting 3-5 min behind the slow
 // refresh-booked-rate-strict (Claude classification) job. It reads cached
@@ -958,6 +1087,7 @@ export const JOBS: SyncJob[] = [
   refreshTechNames,
   warmFbr,
   warmProjectionAppts,
+  warmPartsMatrix,
   warmReturnCustomers,
   refreshBookedRate,
   warmMissedCallbacks,

@@ -11,14 +11,18 @@ export const dynamic = 'force-dynamic';
 const EMP_SECTIONS = [
   { id: 'golden', label: 'Golden Mango' },
   { id: 'trophies', label: 'Trophy Standings' },
-  { id: 'operations', label: 'Operations' },
+  { id: 'leaderboard', label: 'Leaderboard' },
+  { id: 'tech', label: 'Tech Production' },
+  { id: 'comebacks', label: 'Comebacks' },
+  { id: 'callbacks', label: 'Calls & To Do' },
+  { id: 'receivables', label: 'Accounts Receivable' },
 ];
 
 export default async function Concept2EmployeePage() {
   const session = await verifySession(cookies().get(COOKIE_NAME)?.value);
   if (!session) redirect('/login');
   return (
-    <ConceptShell active="employee" title="Employee View" sub="Recognition & operations · live data" sections={EMP_SECTIONS} email={session.email}>
+    <ConceptShell active="employee" sections={EMP_SECTIONS} email={session.email}>
       <Concept2Employee role={session.role} />
     </ConceptShell>
   );

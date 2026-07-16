@@ -142,6 +142,30 @@ export async function recoveredCountsByWindow(
 }
 
 /** Per-shop count of customers recovered in the current week. */
+/** Chain-wide totals broken down by queue type for the given window. */
+export async function recoveredQueueBreakdown(
+  window: 'this_week' | 'rolling_7d' = 'this_week',
+  now: Date = new Date(),
+): Promise<{ callbacks: number; rebooks: number; declinedJobs: number; total: number }> {
+  const thisWeekYmd = weekStartYmd(now);
+  const prevWeekYmd = weekStartYmd(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
+  let cb = 0, rb = 0, dj = 0;
+  await Promise.all(SHOPS.map(async (s) => {
+    const sets: string[][] = [(await readCache<string[]>(KEY(s.num, thisWeekYmd))) || []];
+    if (window === 'rolling_7d' && prevWeekYmd !== thisWeekYmd) {
+      sets.push((await readCache<string[]>(KEY(s.num, prevWeekYmd))) || []);
+    }
+    for (const set of sets) {
+      for (const e of set) {
+        if (e.startsWith('cb:')) cb++;
+        else if (e.startsWith('rb:')) rb++;
+        else if (e.startsWith('dj:')) dj++;
+      }
+    }
+  }));
+  return { callbacks: cb, rebooks: rb, declinedJobs: dj, total: cb + rb + dj };
+}
+
 export async function recoveredCountsThisWeek(): Promise<{ weekStart: string; byShop: Record<string, number> }> {
   const { weekStart, byShop } = await recoveredSetsThisWeek();
   const counts: Record<string, number> = {};

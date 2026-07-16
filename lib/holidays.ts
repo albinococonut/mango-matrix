@@ -29,18 +29,28 @@ function lastWeekday(y: number, monthIdx: number, dow: number): Date {
   return new Date(y, monthIdx, last.getDate() - off);
 }
 
+/** When a fixed-date holiday falls on a weekend, return the observed weekday.
+ *  Sat → preceding Fri, Sun → following Mon. */
+function observed(d: Date): Date {
+  const dow = d.getDay();
+  if (dow === 6) return new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  if (dow === 0) return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+  return d;
+}
+
 // weekdayAnchored = falls on the same weekday every year (so "last year's same
 // holiday" is an apples-to-apples short week). Fixed-date holidays drift across
-// weekdays year to year.
+// weekdays year to year; they use observed() so a July 4 on Saturday is
+// correctly treated as a Thursday-close Friday-holiday week.
 const DEFS: HolidayDef[] = [
-  { id: 'new_year',               label: "New Year's Day",          weekdayAnchored: false, date: (y) => new Date(y, 0, 1) },
-  { id: 'memorial',               label: 'Memorial Day',            weekdayAnchored: true,  date: (y) => lastWeekday(y, 4, 1) },     // last Mon May
-  { id: 'independence',           label: 'Independence Day',        weekdayAnchored: false, date: (y) => new Date(y, 6, 4) },
-  { id: 'labor',                  label: 'Labor Day',               weekdayAnchored: true,  date: (y) => nthWeekday(y, 8, 1, 1) },   // 1st Mon Sep
-  { id: 'thanksgiving',           label: 'Thanksgiving',            weekdayAnchored: true,  date: (y) => nthWeekday(y, 10, 4, 4) },  // 4th Thu Nov
+  { id: 'new_year',               label: "New Year's Day",          weekdayAnchored: false, date: (y) => observed(new Date(y, 0, 1)) },
+  { id: 'memorial',               label: 'Memorial Day',            weekdayAnchored: true,  date: (y) => lastWeekday(y, 4, 1) },          // last Mon May
+  { id: 'independence',           label: 'Independence Day',        weekdayAnchored: false, date: (y) => observed(new Date(y, 6, 4)) },
+  { id: 'labor',                  label: 'Labor Day',               weekdayAnchored: true,  date: (y) => nthWeekday(y, 8, 1, 1) },        // 1st Mon Sep
+  { id: 'thanksgiving',           label: 'Thanksgiving',            weekdayAnchored: true,  date: (y) => nthWeekday(y, 10, 4, 4) },       // 4th Thu Nov
   { id: 'day_after_thanksgiving', label: 'Day after Thanksgiving',  weekdayAnchored: true,  date: (y) => addDays(nthWeekday(y, 10, 4, 4), 1) },
-  { id: 'christmas_eve',          label: 'Christmas Eve',           weekdayAnchored: false, date: (y) => new Date(y, 11, 24) },
-  { id: 'christmas',              label: 'Christmas',               weekdayAnchored: false, date: (y) => new Date(y, 11, 25) },
+  { id: 'christmas_eve',          label: 'Christmas Eve',           weekdayAnchored: false, date: (y) => observed(new Date(y, 11, 24)) },
+  { id: 'christmas',              label: 'Christmas',               weekdayAnchored: false, date: (y) => observed(new Date(y, 11, 25)) },
 ];
 
 function ymd(d: Date): string {

@@ -9,8 +9,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runAllSyncs } from '@/lib/syncJobs';
-import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop } from '@/lib/syncJobs';
+import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop, warmPartsMatrixRange } from '@/lib/syncJobs';
 import { SHOPS } from '@/lib/shops';
+import { takeWeeklySnapshot, checkWeeklyDrift, currentSnapshotWeekStart } from '@/lib/weeklySnapshot';
 
 export const dynamic = 'force-dynamic';
 // Raised to 800s via BOTH this export AND vercel.json (without the
@@ -113,6 +114,67 @@ export async function POST(req: NextRequest) {
       shopsRequested: shops,
       results: out,
     });
+  }
+
+  // ── Weekly snapshot (take) ────────────────────────────────────────────────
+  // Called by run-weekly-audit.yml every Friday at ~7 PM MT.
+  if (targetJob === 'take-weekly-snapshot') {
+    const weekParam = url.searchParams.get('week');
+    const weekStart = weekParam || currentSnapshotWeekStart();
+    try {
+      const snap = await takeWeeklySnapshot(weekStart);
+      return NextResponse.json({
+        job: 'take-weekly-snapshot', status: 'ok', weekStart,
+        snappedAt: snap.snappedAt,
+        chainRevenue: snap.chainRevenue,
+        roCount: snap.ros.length,
+      });
+    } catch (e: any) {
+      return NextResponse.json({ job: 'take-weekly-snapshot', status: 'error', weekStart, error: e?.message || String(e) }, { status: 500 });
+    }
+  }
+
+  // ── Weekly drift check ────────────────────────────────────────────────────
+  // Called by run-weekly-audit.yml every day at noon MT.
+  if (targetJob === 'check-weekly-drift') {
+    const weekParam = url.searchParams.get('week');
+    const weekStart = weekParam || currentSnapshotWeekStart();
+    try {
+      const report = await checkWeeklyDrift(weekStart);
+      if (!report) {
+        return NextResponse.json({ job: 'check-weekly-drift', status: 'ok', weekStart, message: 'No snapshot found for this week — nothing to compare.' });
+      }
+      return NextResponse.json({
+        job: 'check-weekly-drift', status: 'ok', weekStart,
+        checkedAt: report.checkedAt,
+        chainDelta: report.chainDelta,
+        diffCount: report.diffs.length,
+        diffs: report.diffs,
+      });
+    } catch (e: any) {
+      return NextResponse.json({ job: 'check-weekly-drift', status: 'error', weekStart, error: e?.message || String(e) }, { status: 500 });
+    }
+  }
+
+  // Targeted parts-matrix warm: ?job=warm-parts-matrix[&start=YYYY-MM-DD&end=YYYY-MM-DD&mode=all]
+  // Useful for seeding a cold cache or warming a custom date range without
+  // running the full sweep. The scheduled cron also runs this automatically via JOBS.
+  if (targetJob === 'warm-parts-matrix') {
+    const now = new Date();
+    const endParam  = url.searchParams.get('end')   || now.toISOString().slice(0, 10);
+    // Default start = Monday of current week so the warmed key matches the page's
+    // default "this_week" range. Using today-6 was a persistent cache miss since
+    // the page always requests Monday-to-today, not a rolling 7-day window.
+    const dow = now.getUTCDay() || 7; // 1=Mon … 7=Sun
+    const monDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - dow));
+    const startParam = url.searchParams.get('start') || monDate.toISOString().slice(0, 10);
+    const modeParam  = url.searchParams.get('mode')  || 'all';
+    try {
+      const msg = await warmPartsMatrixRange(startParam, endParam, modeParam);
+      return NextResponse.json({ job: 'warm-parts-matrix', status: 'ok', message: msg });
+    } catch (e: any) {
+      return NextResponse.json({ job: 'warm-parts-matrix', status: 'error', error: e?.message || String(e) }, { status: 500 });
+    }
   }
 
   // Job-group filtering so the sweep can be split across multiple GH Actions

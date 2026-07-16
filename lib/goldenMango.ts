@@ -11,9 +11,9 @@
 // when the Friday-6pm boundary has rolled over.
 
 import { rosForChainCached } from '@/lib/dataAccess';
-import { chainKpi, techProduction, isCountedRO } from '@/lib/metrics';
+import { chainKpi, techProduction, isCountedRO, isFreeByDesign } from '@/lib/metrics';
 import { resolveRange, CHAIN_TZ } from '@/lib/dates';
-import { workingDaysBetween } from '@/lib/goals';
+import { workingDaysBetween, isWorkingDay } from '@/lib/goals';
 import { readCache, writeCache } from '@/lib/cache';
 import { SHOPS, SHOP_BY_TEKMETRIC_ID } from '@/lib/shops';
 import { recoveredCountsByWindow } from '@/lib/recoveredLedger';
@@ -50,37 +50,68 @@ const LATEST_KEY = 'golden_mango_latest';
 // Week (added Comebacks + Call Conversion, dropped Return Customers, switched
 // window to this_week). Any cached crown without categoryVersion === CURRENT
 // is treated as stale and re-computed by the read handler.
-export const CURRENT_CATEGORY_VERSION = 'v6';
+// Bumped v6→v7: isFreeByDesign() filter now applied to comebacks in
+// computeStandings() (was only in the comebacks handler, not the crown cron).
+export const CURRENT_CATEGORY_VERSION = 'v7';
 
 /**
- * Most recent Friday 18:00 America/Denver at or before `now`. Everything is
- * computed in Mountain wall-clock then converted back to a UTC instant so the
- * boundary is stable regardless of the server's timezone or DST.
+ * Given a Mountain-wall-clock Friday Date, return the crown moment for that
+ * week: normally Friday 18:00 MT, but shifted to Thursday 18:00 MT when
+ * Friday is a company holiday (observed Independence Day, Christmas, etc.).
+ * We compare using plain year/month/date values so the holiday list's
+ * local-time dates align with the Mountain-time Friday values from toZonedTime.
+ */
+function weekCrownDay(fridayMtn: Date): Date {
+  const plain = new Date(fridayMtn.getFullYear(), fridayMtn.getMonth(), fridayMtn.getDate());
+  const crownDay = new Date(fridayMtn);
+  if (!isWorkingDay(plain)) {
+    // Friday is a holiday — crown Thursday evening instead
+    crownDay.setDate(fridayMtn.getDate() - 1);
+  }
+  crownDay.setHours(18, 0, 0, 0);
+  return crownDay;
+}
+
+/**
+ * Most recent crown boundary at or before `now`. Normally Friday 18:00 MT,
+ * but shifts to Thursday 18:00 MT when Friday is a company holiday.
  */
 export function crownPeriodStart(now: Date = new Date()): Date {
   const mtn = toZonedTime(now, CHAIN_TZ);
-  // JS: 0=Sun … 5=Fri … 6=Sat
-  const dow = mtn.getDay();
-  // Build this calendar week's Friday 18:00 in Mountain wall-clock.
-  const friday = new Date(mtn);
-  const deltaToFri = 5 - dow; // days from today to Friday (can be negative)
-  friday.setDate(mtn.getDate() + deltaToFri);
-  friday.setHours(18, 0, 0, 0);
-  // If we haven't reached this week's Friday 6pm yet, the active crown is last week's.
-  let periodMtn = friday;
-  if (mtn.getTime() < friday.getTime()) {
-    periodMtn = new Date(friday);
-    periodMtn.setDate(friday.getDate() - 7);
+  const dow = mtn.getDay(); // 0=Sun … 5=Fri … 6=Sat
+
+  // This week's Friday in Mountain wall-clock (time zeroed; weekCrownDay sets it)
+  const thisFriday = new Date(mtn);
+  thisFriday.setDate(mtn.getDate() + (5 - dow));
+  thisFriday.setHours(0, 0, 0, 0);
+  const thisCrown = weekCrownDay(thisFriday);
+
+  let periodMtn: Date;
+  if (mtn.getTime() >= thisCrown.getTime()) {
+    periodMtn = thisCrown;
+  } else {
+    // Haven't reached this week's boundary — active crown is last week's
+    const lastFriday = new Date(thisFriday);
+    lastFriday.setDate(thisFriday.getDate() - 7);
+    periodMtn = weekCrownDay(lastFriday);
   }
-  // Convert the Mountain wall-clock instant back to a real UTC Date.
+
   return fromZonedTime(periodMtn, CHAIN_TZ);
 }
 
-/** Next Friday 18:00 MT strictly after the given period start. */
+/**
+ * Next crown boundary strictly after `periodStart`. Finds next week's Friday
+ * and applies the same holiday shift if needed.
+ */
 export function nextCrownAt(periodStart: Date): Date {
   const mtn = toZonedTime(periodStart, CHAIN_TZ);
-  mtn.setDate(mtn.getDate() + 7);
-  return fromZonedTime(mtn, CHAIN_TZ);
+  const dow = mtn.getDay(); // 4=Thu (holiday week) or 5=Fri (normal)
+  // Advance to next calendar Friday regardless of whether this period was Thu or Fri
+  const daysToNextFriday = 5 - dow + 7; // always lands on the NEXT week's Friday
+  const nextFriday = new Date(mtn);
+  nextFriday.setDate(mtn.getDate() + daysToNextFriday);
+  nextFriday.setHours(0, 0, 0, 0);
+  return fromZonedTime(weekCrownDay(nextFriday), CHAIN_TZ);
 }
 
 interface Standing { shopNum: string; shopName: string; score: number; gold: number; silver: number; bronze: number; revenue: number; gpPct: number; cars: number }
@@ -137,10 +168,11 @@ async function computeStandings(period?: Date): Promise<Standing[]> {
     windowStartMs = w.start.getTime();
     windowEndMs = w.end.getTime();
   }
-  // Cache-only read using last_7_days as the source (cron-warmed). We then
-  // filter to the period window so the standings reflect Mon-Fri of the
-  // week ending at the period boundary — not a stale or partial window.
-  const lw = resolveRange('last_7_days');
+  // Cache-only read using this_week as the source (cron-warmed). Using
+  // this_week guarantees the same cache key the Trophy Tally reads via
+  // /api/metrics?range=this_week — so ceremony standings and the Tally
+  // are always computed from identical underlying RO data.
+  const lw = resolveRange('this_week');
   const { ros: rosBroad } = await rosForChainCached({ startISO: lw.startISO, endISO: lw.endISO });
   const ros = rosBroad.filter((o: any) => {
     const pd = o.postedDate ? new Date(o.postedDate).getTime() : 0;
@@ -202,11 +234,20 @@ async function computeStandings(period?: Date): Promise<Standing[]> {
 
   // Comebacks — same heuristic as lib/handlers/comebacks.ts: an authorized
   // job with laborHours ≥ 0.25 charged ≤ $20 OR a job categorized as
-  // re-inspect counts. Ranked ASCENDING (fewer comebacks = better).
+  // re-inspect counts. Free-by-design jobs (digital inspections, free A/C
+  // checks) are explicitly excluded via isFreeByDesign() — exactly matching
+  // the handler's logic so the crown ceremony mirrors the live display.
+  //
+  // IMPORTANT: isFreeByDesign() MUST be applied here. Before this fix, the
+  // Friday cron counted complimentary inspections as comebacks, systematically
+  // penalising high-volume shops (e.g. Cottonwood) that offer lots of free
+  // digital inspections while letting fleet-heavy shops (e.g. Yuma, which does
+  // fewer free inspections for government fleet accounts) win Comebacks gold
+  // every week regardless of their actual repair-quality performance.
   const comebacksByShop = new Map<string, number>();
   for (const s of SHOPS) comebacksByShop.set(s.num, 0); // default 0 so every shop is in the rank
-  const COMEBACK_MIN_HOURS = 0.25;
-  const COMEBACK_MAX_CHARGE = 20.00;
+  const COMEBACK_MIN_HOURS = 1.3;  // strictly more than 1.3 h — matches handler
+  const COMEBACK_MAX_CHARGE = 0;   // must be $0 — matches handler
   for (const o of ros) {
     if (!isCountedRO(o)) continue;
     const meta = SHOP_BY_TEKMETRIC_ID[o.shopId];
@@ -215,8 +256,10 @@ async function computeStandings(period?: Date): Promise<Standing[]> {
       const hours = j.laborHours || 0;
       const isReinspect = /re-?inspect|reins/i.test(j.jobCategoryName || '');
       const customerCharge = (j.subtotal || 0) / 100;
-      const heuristicHit = j.authorized && hours >= COMEBACK_MIN_HOURS && customerCharge <= COMEBACK_MAX_CHARGE;
+      const heuristicHit = j.authorized && hours > COMEBACK_MIN_HOURS && customerCharge <= COMEBACK_MAX_CHARGE;
       if (!isReinspect && !heuristicHit) continue;
+      // Skip jobs that are free by design — same filter as the comebacks handler.
+      if (isFreeByDesign(j.name || '', j.jobCategoryName || '')) continue;
       comebacksByShop.set(meta.num, (comebacksByShop.get(meta.num) ?? 0) + 1);
     }
   }

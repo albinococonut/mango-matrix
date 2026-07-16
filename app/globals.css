@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Refinements — remove this line to rollback all UI polish ──────────── */
+@import '../styles/c2-refinements.css';
+
 /* ── Design tokens ─────────────────────────────────────────────────────────
    The palette is stored as RGB *channels* so Tailwind's /opacity modifiers
    keep working (mango.* / heat.* in tailwind.config resolve to
@@ -120,12 +123,7 @@
   .pill-red   { @apply pill text-mango-red;   background: rgba(192,86,62,0.10); }
   .pill-info  { @apply pill text-mango-info;  background: rgba(224,142,26,0.12); }
   .legend-dot { @apply inline-block w-2 h-2 rounded-full mr-1.5 align-middle; }
-  /* Current (in-progress) week: faint diagonal stripe overlay. */
-  .partial-week {
-    background-image: repeating-linear-gradient(
-      45deg, rgba(224,142,26,0.07) 0 6px, transparent 6px 12px
-    );
-  }
+  /* Current (in-progress) week: handled via inline opacity, no override needed. */
 }
 
 @layer utilities {

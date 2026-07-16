@@ -11,15 +11,10 @@ const ui = Inter({ subsets: ['latin'], variable: '--font-ui', display: 'swap', w
 export default function Concept2Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className={`${display.variable} ${ui.variable}`}>
-      <style>{`
-        /* font-weight: 500 (medium) matches concept-1's .cdisplay so the
-           Fraunces serif carries the same presence at every size. Without
-           this, .c2disp defaulted to weight 400 (regular) and every section
-           title / hero number read lighter than the concept-1 reference —
-           even after we bumped the sizes. */
+      <style dangerouslySetInnerHTML={{ __html: `
         .c2disp { font-family: var(--font-display), Georgia, 'Times New Roman', serif; font-weight: 500; }
         .c2ui { font-family: var(--font-ui), -apple-system, system-ui, sans-serif; }
-      `}</style>
+      ` }} />
       {children}
     </div>
   );

@@ -1,6 +1,6 @@
 'use client';
 
-// CONCEPT 2 — concept1's bespoke luxury design, driven by LIVE production data
+// CONCEPT 2 -- concept1's bespoke luxury design, driven by LIVE production data
 // AND real production functionality (timeframe selector, the per-shop revenue
 // diagnostic with drill-down, the 12-week heatmap matrix with a metric
 // selector, comparison + trend metric selectors). Reuses concept1's visual
@@ -16,6 +16,7 @@ import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfQuarter, endOf
 import { ConceptShell } from './kit';
 import ConceptAR from './ConceptAR';
 import { TrophyTallyQuarter } from './Concept2Employee';
+import LineChartBlock from '@/components/charts/LineChartBlock';
 
 // ── palette + heat spectrum (concept1) ─────────────────────────────────────
 const INK = '#22201C', INK2 = '#5C564E', FAINT = '#938C81', LINE = 'rgba(34,32,28,0.08)';
@@ -49,21 +50,46 @@ const META = SHOP_META.map((s) => ({ num: s.num, name: s.name, district: s.distr
 const safe = async <T,>(url: string): Promise<T | null> => { try { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) return null; return (await r.json()) as T; } catch { return null; } };
 
 // ── timeframe options (drive the projection period + the diagnostic) ───────
-// `last_week` reviews the most-recently-completed week's ACTUALS (for the
-// Tuesday weekly meeting) — there's no forecast for a finished week, so the
-// diagnostic runs on real numbers from the heatmap instead of the projection.
+// `last_week` (and other past periods) show ACTUALS -- no forecast for a
+// finished window. `this_week` is also treated as completed on Fri PM / Sat / Sun.
 const RANGES: { key: string; label: string; period: string }[] = [
   { key: 'this_week', label: 'This Week', period: 'this_week' },
   { key: 'last_week', label: 'Last Week', period: 'last_week' },
   { key: 'this_month', label: 'This Month', period: 'this_month' },
+  { key: 'last_month', label: 'Last Month', period: 'last_month' },
   { key: 'this_quarter', label: 'This Quarter', period: 'this_quarter' },
+  { key: 'last_quarter', label: 'Last Quarter', period: 'last_quarter' },
+  { key: 'this_year', label: 'This Year', period: 'this_year' },
+  { key: 'last_year', label: 'Last Year', period: 'last_year' },
+  { key: 'last_90_days', label: 'Last 90 Days', period: 'last_90_days' },
+  { key: 'all_time', label: 'All Time', period: 'all_time' },
+  { key: 'custom', label: 'Custom', period: 'custom' },
 ];
-const isCompletedPeriod = (range: string) => range === 'last_week';
+// Ranges that are always in the past (week ended, month ended, etc.)
+const ALWAYS_COMPLETED = new Set(['last_week', 'last_month', 'last_quarter', 'last_year', 'last_90_days', 'all_time', 'custom']);
+function isWorkWeekEnded(): boolean {
+  const now = new Date();
+  const dow = now.getDay(); // 0=Sun, 6=Sat
+  const hr = now.getHours();
+  if ((dow === 5 && hr >= 18) || dow === 6 || dow === 0) return true;
+  if (hr < 18 || dow < 1 || dow > 4) return false;
+  // Mon–Thu after 6 PM: week ended if no working days remain through Friday.
+  // Build remaining days at LOCAL midnight so isWorkingDay()'s toISOString()
+  // check produces the correct LOCAL date (not the UTC-shifted next day).
+  for (let i = 1; i <= (5 - dow); i++) {
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    if (isWorkingDay(next)) return false;
+  }
+  return true;
+}
+const isCompletedPeriod = (range: string) => ALWAYS_COMPLETED.has(range) || (range === 'this_week' && isWorkWeekEnded());
+// Whether this completed range uses the 12-week heatmap as its data source
+const isWeekHeatmap = (range: string) => range === 'this_week' || range === 'last_week';
 
 // ── period elapsed, in 15-minute increments of the business day ────────────
-// Shops run 8:00am–5:30pm. A completed working day counts 1.0; the current day
+// Shops run 8:00am-5:30pm. A completed working day counts 1.0; the current day
 // counts the fraction of business hours elapsed (snapped to 15-min steps); a
-// day the shops haven't opened yet counts 0 — so a week whose Friday hasn't
+// day the shops haven't opened yet counts 0 -- so a week whose Friday hasn't
 // started reads e.g. 3.0/4, not 4.0/4.
 const BIZ_OPEN_H = 8, BIZ_CLOSE_H = 17.5, BIZ_MIN_PER_DAY = (BIZ_CLOSE_H - BIZ_OPEN_H) * 60; // 570
 function bizDayFraction(day: Date, now: Date): number {
@@ -72,16 +98,26 @@ function bizDayFraction(day: Date, now: Date): number {
   if (mins <= 0) return 0;
   return Math.min(1, (Math.floor(mins / 15) * 15) / BIZ_MIN_PER_DAY);
 }
-function periodBounds(periodKey: string, now: Date): { start: Date; end: Date } {
+function periodBounds(periodKey: string, now: Date, customStart?: string, customEnd?: string): { start: Date; end: Date } {
   switch (periodKey) {
     case 'last_week': { const m = startOfWeek(addDays(now, -7), { weekStartsOn: 1 }); return { start: m, end: endOfWeek(m, { weekStartsOn: 1 }) }; }
     case 'this_month': return { start: startOfMonth(now), end: endOfMonth(now) };
+    case 'last_month': { const prev = addDays(startOfMonth(now), -1); return { start: startOfMonth(prev), end: prev }; }
     case 'this_quarter': return { start: startOfQuarter(now), end: endOfQuarter(now) };
-    default: return { start: startOfWeek(now, { weekStartsOn: 1 }), end: endOfWeek(now, { weekStartsOn: 1 }) };
+    case 'last_quarter': { const prev = addDays(startOfQuarter(now), -1); return { start: startOfQuarter(prev), end: prev }; }
+    case 'this_year': return { start: new Date(now.getFullYear(), 0, 1), end: new Date(now.getFullYear(), 11, 31) };
+    case 'last_year': { const y = now.getFullYear() - 1; return { start: new Date(y, 0, 1), end: new Date(y, 11, 31) }; }
+    case 'last_90_days': return { start: addDays(now, -90), end: addDays(now, -1) };
+    case 'all_time': return { start: new Date('2020-01-01T00:00:00'), end: now };
+    case 'custom': {
+      if (customStart && customEnd) return { start: new Date(customStart + 'T00:00:00'), end: new Date(customEnd + 'T23:59:59') };
+      return { start: startOfWeek(now, { weekStartsOn: 1 }), end: endOfWeek(now, { weekStartsOn: 1 }) };
+    }
+    default: { const m = startOfWeek(now, { weekStartsOn: 1 }); return { start: m, end: addDays(m, 4) }; } // Mon→Fri, not Mon→Sun
   }
 }
-function elapsedAndTotal(periodKey: string, now: Date): { elapsed: number; total: number } {
-  const { start, end } = periodBounds(periodKey, now);
+function elapsedAndTotal(periodKey: string, now: Date, customStart?: string, customEnd?: string): { elapsed: number; total: number } {
+  const { start, end } = periodBounds(periodKey, now, customStart, customEnd);
   const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   const todayKey = dayKey(now);
   let elapsed = 0, total = 0;
@@ -95,20 +131,38 @@ function elapsedAndTotal(periodKey: string, now: Date): { elapsed: number; total
   return { elapsed, total };
 }
 
+// Translate a range key to the ?range=... param string the metrics API accepts.
+function toApiRange(range: string, customStart?: string, customEnd?: string): string {
+  if (range === 'custom' && customStart && customEnd) return `custom&start=${customStart}&end=${customEnd}`;
+  if (range === 'all_time') { const today = new Date().toISOString().slice(0, 10); return `custom&start=2020-01-01&end=${today}`; }
+  return range;
+}
+
 // ── primitives (concept1) ──────────────────────────────────────────────────
-function Card({ id, eyebrow, title, sub, right, children, pad = true }: { id?: string; eyebrow?: string; title?: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; pad?: boolean }) {
+function Card({ id, eyebrow, title, sub, right, children, pad = true, colHeader = false }: { id?: string; eyebrow?: string; title?: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; pad?: boolean; colHeader?: boolean }) {
   return (
     <section id={id} className="scroll-mt-6 mb-7">
-      <div className="rounded-[26px] border" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.58))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderColor: 'rgba(255,255,255,0.75)', boxShadow: '0 1px 0 rgba(255,255,255,0.9) inset, 0 18px 48px -28px rgba(40,34,26,0.30), 0 2px 8px -4px rgba(40,34,26,0.10)' }}>
+      <div className="rounded-[26px] border" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,255,255,0.82))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderColor: 'rgba(255,255,255,0.80)', boxShadow: '0 1px 0 rgba(255,255,255,0.95) inset, 0 18px 48px -28px rgba(40,34,26,0.22), 0 2px 8px -4px rgba(40,34,26,0.08)' }}>
         {(eyebrow || title || right) && (
-          <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
-            <div className="min-w-0">
-              {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: FAINT }}>{eyebrow}</div>}
-              {title && <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 25, letterSpacing: '-0.01em' }}>{title}</h2>}
-              {sub && <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>{sub}</div>}
+          colHeader ? (
+            <div className="px-6 pt-5 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
+              <div>
+                {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: FAINT }}>{eyebrow}</div>}
+                {title && <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 25, letterSpacing: '-0.01em' }}>{title}</h2>}
+                {sub && <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>{sub}</div>}
+              </div>
+              {right && <div className="flex flex-wrap gap-2 mt-3">{right}</div>}
             </div>
-            {right && <div className="shrink-0">{right}</div>}
-          </div>
+          ) : (
+            <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4" style={{ borderBottom: `1px solid ${LINE}` }}>
+              <div className="min-w-0">
+                {eyebrow && <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: FAINT }}>{eyebrow}</div>}
+                {title && <h2 className="c2disp leading-tight mt-1" style={{ color: INK, fontSize: 25, letterSpacing: '-0.01em' }}>{title}</h2>}
+                {sub && <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>{sub}</div>}
+              </div>
+              {right && <div className="shrink-0">{right}</div>}
+            </div>
+          )
         )}
         <div className={pad ? 'px-6 py-5' : ''}>{children}</div>
       </div>
@@ -148,7 +202,7 @@ function ForecastBar({ worst, expected, best }: { worst: number; expected: numbe
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  GP$ DIAGNOSTIC TREE — root = GP$, benchmarked vs goal-meeting history
+//  GP$ DIAGNOSTIC TREE -- root = GP$, benchmarked vs goal-meeting history
 // ════════════════════════════════════════════════════════════════════════
 // The tree the owner asked for: GP$ sits at the very top. If a shop is
 // projected short on GP$, we decompose the gap EXACTLY into Revenue vs GP%; the
@@ -156,19 +210,19 @@ function ForecastBar({ worst, expected, best }: { worst: number; expected: numbe
 // the dominant branch (call conversion / re-book / close rate / margin). Every
 // metric is compared to the level the shop runs WHEN IT ACTUALLY HITS GOAL
 // (mined from the permanent archive), so the answer is "the single biggest
-// lever to move GP$ for THIS shop" — and it can differ shop to shop. It's all
+// lever to move GP$ for THIS shop" -- and it can differ shop to shop. It's all
 // period-aware: the projection inputs (revenue, cars, ARO, GP$, goal) are
 // already scaled to the selected timeframe, so changing the upper-right
 // dropdown re-examines the whole diagnostic on that basis.
 
-const pn = (v: number | null) => (v == null ? '—' : v.toFixed(0) + '%'); // 0..100 rate
+const pn = (v: number | null) => (v == null ? '--' : v.toFixed(0) + '%'); // 0..100 rate
 const pf = (v: number) => (v * 100).toFixed(0) + '%';                    // 0..1 rate
 
 interface BenchLevels { revenue: number; cars: number; aro: number; closeRate: number; gpPct: number; conversion: number | null; rebook: number | null }
 interface ShopBenchmark { shopNum: string; goalWeeks: number; sampleWeeks: number; method: 'goal-met' | 'best-weeks'; benchmark: BenchLevels; recent: BenchLevels }
 
 type LeafKey = 'cars' | 'aro' | 'gpPct';
-// A terminal branch of the tree — the specific, operational root cause the
+// A terminal branch of the tree -- the specific, operational root cause the
 // owner named. `active` = the one the data points to (the rest are the other
 // candidates we ruled out / didn't pick).
 interface GpBranch { label: string; detail: string; active: boolean }
@@ -179,7 +233,7 @@ interface GpLeaf {
   metricCur: string;    // headline metric, projected
   metricGoal: string;   // headline metric, goal-meeting level
   branches: GpBranch[]; // the candidate root causes under this leaf
-  primaryCause: string; // active branch label — used in chips / "Start here"
+  primaryCause: string; // active branch label -- used in chips / "Start here"
   primaryFix: string;   // active branch action
   note?: string;        // GP% only: why blended GP% sits above its components
 }
@@ -236,16 +290,16 @@ function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRat
   const convAvail = convGoal != null && convCur != null && convGoal > 0;
   const convBelow = convAvail && (convCur as number) < (convGoal as number) * 0.98;
   const carsBranches: GpBranch[] = [
-    { label: 'Call volume', detail: !convAvail ? 'inbound calls / leads — marketing & phone coverage' : convBelow ? 'conversion is the constraint here, not lead volume' : `conversion already at goal (${pn(convGoal)}) — the gap is inbound calls & leads: marketing & phone coverage`, active: convAvail ? !convBelow : false },
-    { label: 'Call conversion', detail: !convAvail ? 'booking rate of the calls you get (no history yet)' : convBelow ? `${pn(convCur)} → ${pn(convGoal)} — book more of the calls you already get` : `${pn(convCur)} — already at the goal-week level`, active: convBelow },
+    { label: 'Call volume', detail: !convAvail ? 'inbound calls / leads -- marketing & phone coverage' : convBelow ? 'conversion is the constraint here, not lead volume' : `conversion already at goal (${pn(convGoal)}) -- the gap is inbound calls & leads: marketing & phone coverage`, active: convAvail ? !convBelow : false },
+    { label: 'Call conversion', detail: !convAvail ? 'booking rate of the calls you get (no history yet)' : convBelow ? `${pn(convCur)} → ${pn(convGoal)} -- book more of the calls you already get` : `${pn(convCur)} -- already at the goal-week level`, active: convBelow },
   ];
   const carsPrimaryCause = !convAvail ? 'Calls & conversion' : convBelow ? 'Call conversion' : 'Call volume';
   const carsPrimaryFix = !convAvail ? 'check inbound call volume and booking rate' : convBelow ? `lift conversion ${pn(convCur)} → ${pn(convGoal)}` : 'grow inbound call & lead volume (marketing, phone coverage)';
 
   // ── ARO → Close rate (primary driver) vs Ticket size / AWRO (secondary). ──
   const aroBranches: GpBranch[] = [
-    { label: 'Close rate', detail: `${pf(closeCur)} → ${pf(closeGoal)} — presentation, financing, declined-work follow-up`, active: true },
-    { label: 'Ticket size (AWRO)', detail: 'recommend more work per car — thorough inspections', active: false },
+    { label: 'Close rate', detail: `${pf(closeCur)} → ${pf(closeGoal)} -- presentation, financing, declined-work follow-up`, active: true },
+    { label: 'Ticket size (AWRO)', detail: 'recommend more work per car -- thorough inspections', active: false },
   ];
 
   // ── GP% → Parts GP% vs Labor GP%, each with its own two candidate causes. ──
@@ -254,11 +308,11 @@ function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRat
   else if (partsGp != null) partsActive = true;
   else if (laborGp != null) laborActive = true;
   const gpBranches: GpBranch[] = [
-    { label: 'Parts GP%', detail: `${partsGp != null ? pf(partsGp) : '—'} (margin on parts sales) — big jobs at low GP%, or parts not run through the pricing matrix`, active: partsActive },
-    { label: 'Labor GP%', detail: `${laborGp != null ? pf(laborGp) : '—'} (margin on labor sales) — comebacks eating hours, or labor discounted on the ticket`, active: laborActive },
+    { label: 'Parts GP%', detail: `${partsGp != null ? pf(partsGp) : '--'} (margin on parts sales) -- big jobs at low GP%, or parts not run through the pricing matrix`, active: partsActive },
+    { label: 'Labor GP%', detail: `${laborGp != null ? pf(laborGp) : '--'} (margin on labor sales) -- comebacks eating hours, or labor discounted on the ticket`, active: laborActive },
   ];
   const gpPrimaryCause = partsActive ? 'Parts GP%' : laborActive ? 'Labor GP%' : 'Parts & labor margin';
-  const gpPrimaryFix = partsActive ? 'lift parts GP% — pricing matrix + check big low-GP jobs' : laborActive ? 'lift labor GP% — cut comebacks + stop discounting labor' : 'check parts & labor margin';
+  const gpPrimaryFix = partsActive ? 'lift parts GP% -- pricing matrix + check big low-GP jobs' : laborActive ? 'lift labor GP% -- cut comebacks + stop discounting labor' : 'check parts & labor margin';
 
   const leaves: GpLeaf[] = [
     { key: 'cars' as LeafKey, label: 'Car count', gp$: carsGp$, metricCur: Math.round(carsProj) + ' cars', metricGoal: Math.round(carsGoal) + ' cars', branches: carsBranches, primaryCause: carsPrimaryCause, primaryFix: carsPrimaryFix },
@@ -288,57 +342,80 @@ interface Live {
 
 export default function Concept2Diagnostic() {
   const [range, setRange] = useState('this_week');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const [data, setData] = useState<Live | null>(null);
   const [err, setErr] = useState(false);
   const [projTab, setProjTab] = useState<'portfolio' | 'districts' | 'shops'>('portfolio');
   const [gpTab, setGpTab] = useState<'portfolio' | 'districts' | 'shops'>('portfolio');
   const [hmMetric, setHmMetric] = useState('revenue');
   const [openShop, setOpenShop] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
   useEffect(() => {
+    // Skip fetch for custom range if dates aren't set yet
+    if (range === 'custom' && (!customStart || !customEnd)) return;
     let alive = true;
-    setData(null);
+    if (refreshTick > 0) setRefreshing(true);
+    else setData(null);
     const period = RANGES.find((r) => r.key === range)?.period || 'this_week';
     const completed = isCompletedPeriod(range);
+    const useHeatmap = isWeekHeatmap(range);
+    const metricsRange = completed ? toApiRange(range, customStart, customEnd) : 'this_week';
     (async () => {
       const [hm, proj, metrics, bench] = await Promise.all([
         safe<any>('/api/shop-performance-heatmap?weeks=12'),
-        completed ? Promise.resolve(null) : safe<any>(`/api/exec-metrics?view=projection&period=${period}`),
-        safe<any>('/api/metrics?range=this_week'),
+        completed ? Promise.resolve(null) : safe<any>(`/api/exec-metrics?view=projection&period=${period}&bust=${refreshTick}`),
+        safe<any>(`/api/metrics?range=${metricsRange}&bust=${refreshTick}`),
         safe<any>('/api/exec-metrics?view=goal-benchmarks'),
       ]);
       if (!alive) return;
-      if (!hm && !proj && !metrics) { setErr(true); return; }
+      if (!hm && !proj && !metrics) { setErr(true); setRefreshing(false); return; }
+      setLastRefreshed(new Date());
+      setRefreshing(false);
 
       const benchByShop: Record<string, ShopBenchmark> = {};
       for (const sb of bench?.shops ?? []) benchByShop[sb.shopNum] = sb;
-      const elTot = elapsedAndTotal(period, new Date());
+      const elTot = elapsedAndTotal(period, new Date(), customStart, customEnd);
 
       let chain: Live['chain'];
       const curByShop: Record<string, { closeRate?: number; conversion?: number | null; rebook?: number | null; partsGp?: number | null; laborGp?: number | null }> = {};
 
       if (completed) {
-        // LAST WEEK — actuals from the most-recently-completed heatmap column
-        // (the last column is the in-progress current week, so use length-2).
+        if (useHeatmap) {
+        // WEEK ACTUALS -- revenue/cars/GP from the metrics API (fresh, 30-min RO cache,
+        // includes chainKpi adjustments). Heatmap is still used for close rate /
+        // conversion / re-book which only live in the snapshot store.
+        // this_week (completed Fri PM/Sat/Sun) is the LAST heatmap column (length-1).
+        // last_week is the second-to-last column (length-2).
         const wks: string[] = hm?.weeks ?? [];
-        const wkIdx = wks.length - 2;
+        const wkIdx = range === 'this_week' ? wks.length - 1 : wks.length - 2;
+        const kByShopW: Record<string, any> = {};
+        for (const s of metrics?.kpi?.byShop ?? []) kByShopW[s.shopNum] = s;
         const shops: ProjShop[] = META.map((m) => {
           const row = (hm?.shops ?? []).find((s: any) => s.shopNum === m.num);
           const c = wkIdx >= 0 ? row?.cells?.[wkIdx] : null;
+          const k = kByShopW[m.num]; // fresh metrics API data
           if (c) curByShop[m.num] = {
             closeRate: c.closeRate ?? undefined,
             conversion: c.conversion != null && c.conversion >= 0 ? c.conversion : null,
             rebook: c.rebook != null && c.rebook >= 0 ? c.rebook : null,
           };
+          // Supplement with parts/labor GP% from the metrics API
+          if (k) curByShop[m.num] = { ...(curByShop[m.num] || {}), partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null };
           // Prorate the weekly goal to the week's actual working days, so a
           // holiday-shortened week (e.g. Memorial week = 4 days) isn't judged
-          // against a full 5-day target — same proration the projection uses.
+          // against a full 5-day target -- same proration the projection uses.
           const weekly = DEFAULT_GOALS[m.num]?.revenueWeekly;
           return {
             num: m.num, name: m.name, district: m.district, color: m.color,
-            expected: c?.revenue ?? 0, goal: weekly != null ? weekly * (elTot.total / 5) : null,
-            cars: c?.cars ?? 0, aro: c?.aro ?? 0, gpPct: c ? (c.gpPct ?? 0) * 100 : 0, ramping: false,
-            _gp$: c?.gpDollars ?? 0,
+            // Prefer metrics API (fresh) over heatmap permanent cache for financial numbers
+            expected: k?.revenue ?? c?.revenue ?? 0, goal: weekly != null ? weekly * (elTot.total / 5) : null,
+            cars: k?.cars ?? c?.cars ?? 0, aro: k?.aro ?? c?.aro ?? 0,
+            gpPct: k ? (k.gpPct ?? 0) * 100 : (c ? (c.gpPct ?? 0) * 100 : 0), ramping: false,
+            _gp$: k?.gpDollars ?? c?.gpDollars ?? 0,
           } as ProjShop & { _gp$: number };
         });
         const sumRev = shops.reduce((a, s) => a + s.expected, 0);
@@ -355,8 +432,38 @@ export default function Concept2Diagnostic() {
           districts: dOrder.map((name) => { const a = dAgg.get(name)!; return { name, expected: a.expected, goal: a.goal, cars: a.cars }; }),
           shops,
         };
+        } else {
+          // Non-week completed periods: use per-shop actuals from metrics API
+          // (fetched above with the selected range, not this_week).
+          const kByShop: Record<string, any> = {};
+          for (const s of metrics?.kpi?.byShop ?? []) kByShop[s.shopNum] = s;
+          for (const m of META) { const k = kByShop[m.num]; if (k) curByShop[m.num] = { partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null }; }
+          const shops2: (ProjShop & { _gp$: number })[] = META.map((m) => {
+            const k = kByShop[m.num];
+            const weekly = DEFAULT_GOALS[m.num]?.revenueWeekly;
+            return {
+              num: m.num, name: m.name, district: m.district, color: m.color,
+              expected: k?.revenue ?? 0, goal: weekly != null ? weekly * (elTot.total / 5) : null,
+              cars: k?.cars ?? 0, aro: k?.aro ?? 0, gpPct: k ? (k.gpPct ?? 0) * 100 : 0, ramping: false,
+              _gp$: k?.gpDollars ?? 0,
+            };
+          });
+          const sumRev2 = shops2.reduce((a, s) => a + s.expected, 0);
+          const sumCars2 = shops2.reduce((a, s) => a + s.cars, 0);
+          const sumGp2 = shops2.reduce((a, s) => a + s._gp$, 0);
+          const sumGoal2 = shops2.reduce((a, s) => a + (s.goal ?? 0), 0);
+          const dOrder2: string[] = []; const dAgg2 = new Map<string, { expected: number; cars: number; goal: number }>();
+          for (const s of shops2) { if (!dAgg2.has(s.district)) { dAgg2.set(s.district, { expected: 0, cars: 0, goal: 0 }); dOrder2.push(s.district); } const a = dAgg2.get(s.district)!; a.expected += s.expected; a.cars += s.cars; a.goal += (s.goal ?? 0); }
+          chain = {
+            current: sumRev2, goal: sumGoal2, projected: sumRev2, worst: sumRev2, best: sumRev2,
+            cars: sumCars2, gp$: Math.round(sumGp2), aro: sumCars2 ? sumRev2 / sumCars2 : 0, gpPct: sumRev2 ? (sumGp2 / sumRev2) * 100 : 0,
+            elapsed: elTot.elapsed, total: elTot.total, conf: null,
+            districts: dOrder2.map((name) => { const a = dAgg2.get(name)!; return { name, expected: a.expected, goal: a.goal, cars: a.cars }; }),
+            shops: shops2,
+          };
+        }
       } else {
-        // current/forward period — driven by the live projection payload
+        // current/forward period -- driven by the live projection payload
         const kByShop: Record<string, any> = {}; for (const s of metrics?.kpi?.byShop ?? []) kByShop[s.shopNum] = s;
         // current parts/labor GP% feed the GP% leaf's margin sub-causes
         for (const m of META) { const k = kByShop[m.num]; if (k) curByShop[m.num] = { partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null }; }
@@ -377,7 +484,7 @@ export default function Concept2Diagnostic() {
         };
       }
 
-      // GP$ diagnostic trees — period-aware. For last week the inputs are real
+      // GP$ diagnostic trees -- period-aware. For last week the inputs are real
       // actuals (incl. that week's own close/conversion); otherwise they're the
       // timeframe-scaled projection + the shop's recent operating rates.
       const trees = (chain.shops as ProjShop[]).map((s) => buildGpTree(s, benchByShop[s.num], curByShop[s.num])).sort((a, b) => b.gap - a.gap);
@@ -385,10 +492,10 @@ export default function Concept2Diagnostic() {
       setData({ hm, goalsReady: true, chain, trees });
     })();
     return () => { alive = false; };
-  }, [range]);
+  }, [range, refreshTick, customStart, customEnd]);
 
-  if (err) return <Shell range={range} setRange={setRange}><div className="c2ui text-center py-24" style={{ color: INK2 }}>Diagnostic data is warming up — refresh in a moment.</div></Shell>;
-  if (!data) return <Shell range={range} setRange={setRange}><LoadingSkeleton /></Shell>;
+  if (err) return <Shell range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}><div className="c2ui text-center py-24" style={{ color: INK2 }}>Diagnostic data is warming up -- refresh in a moment.</div></Shell>;
+  if (!data) return <Shell range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}><LoadingSkeleton /></Shell>;
 
   const { chain, trees, hm } = data;
   const pace = chain.goal ? chain.current / chain.goal : 0;
@@ -402,7 +509,7 @@ export default function Concept2Diagnostic() {
   const portMargin = leaks.reduce((s, t) => s + Math.max(0, t.gpPctGp$), 0);
   const portCars = leaks.reduce((s, t) => s + Math.max(0, t.carsGp$), 0);
   const portAro = leaks.reduce((s, t) => s + Math.max(0, t.aroGp$), 0);
-  // Group shops by the single biggest lever for each — answers "is it one thing
+  // Group shops by the single biggest lever for each -- answers "is it one thing
   // at a few shops, or different things at different shops?"
   const leverGroups = (['cars', 'aro', 'gpPct'] as LeafKey[])
     .map((key) => {
@@ -418,7 +525,7 @@ export default function Concept2Diagnostic() {
   // heat score for a branch by its share of the shop's GP$ gap (warm = big leak)
   const leakScore = (gp$: number, gap: number) => (gp$ <= 0 ? 0.85 : Math.max(0.05, 1 - Math.min(1, (gap > 0 ? gp$ / gap : 0) / 0.6)));
 
-  // forecast confidence — shown distinctly from the plain metrics
+  // forecast confidence -- shown distinctly from the plain metrics
   const conf = chain.conf;
   const confLabel = conf == null ? '' : conf >= 80 ? 'High' : conf >= 60 ? 'Moderate' : conf >= 40 ? 'Low' : 'Very Low';
   const confColor = conf == null ? FAINT : conf >= 80 ? '#3E8E5E' : conf >= 60 ? '#B5631F' : '#C05A2E';
@@ -438,14 +545,31 @@ export default function Concept2Diagnostic() {
   const hmWeeks: string[] = hm?.weeks ?? [];
 
   return (
-    <Shell range={range} setRange={setRange}>
+    <Shell range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}>
       {/* Revenue Projection (or last week's actuals) */}
-      <Card id="projection" eyebrow={completed ? 'Last Week' : 'Forecast'} title={completed ? 'Last Week — Actuals' : 'Revenue Projection'}
-        right={<Tabs value={projTab} onChange={(v) => setProjTab(v as any)} tabs={[['portfolio', 'Portfolio'], ['districts', 'Districts'], ['shops', 'Shop-by-Shop']]} />}>
+      <Card id="projection" eyebrow={completed ? 'Last Week' : 'Forecast'} title={completed ? 'Last Week -- Actuals' : 'Revenue Projection'}
+        right={
+          <div className="flex items-center gap-2">
+            <Tabs tabs={[['portfolio', 'Portfolio'], ['districts', 'Districts'], ['shops', 'Shop-by-Shop']]} value={projTab} onChange={(v) => setProjTab(v as any)} />
+            <button
+              onClick={() => setRefreshTick(t => t + 1)}
+              disabled={refreshing}
+              className="c2ui inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-semibold transition"
+              style={{ background: 'rgba(255,255,255,0.7)', border: `1px solid ${LINE}`, color: refreshing ? FAINT : INK2 }}
+              title="Pull latest Tekmetric data"
+            >
+              <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              {refreshing ? 'Updating…' : 'Refresh'}
+            </button>
+          </div>
+        }>
         <div className="flex flex-wrap items-center gap-x-8 gap-y-2 mb-5 c2ui text-[13px]" style={{ color: INK2 }}>
           <span>{completed ? 'Revenue' : 'Current Revenue'} <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{usd(chain.current)}</span></span>
           <span>{completed ? 'Working Days' : 'Period Elapsed'} <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{chain.elapsed.toFixed(1)} / {chain.total} days</span></span>
           <span>Goal <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{usd(chain.goal)}</span></span>
+          {lastRefreshed && <span style={{ color: FAINT }}>Updated {lastRefreshed.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Denver' })} MT</span>}
         </div>
         {projTab === 'portfolio' && (
           <div className="rounded-3xl p-6" style={{ background: 'linear-gradient(160deg, rgba(95,169,214,0.10), rgba(242,206,112,0.08) 55%, rgba(232,134,62,0.10))', border: `1px solid ${LINE}` }}>
@@ -497,12 +621,20 @@ export default function Concept2Diagnostic() {
         )}
       </Card>
 
-      {/* GP PROJECTION — mirrors Revenue Projection, but for gross-profit
+      {/* GP PROJECTION -- mirrors Revenue Projection, but for gross-profit
           dollars. This is the TOP of the diagnostic tree: the section below
           decomposes exactly this GP$ gap down to each shop's biggest lever. */}
-      <Card id="gp-projection" eyebrow={completed ? 'Last Week' : 'Forecast'} title={completed ? 'GP$ — Actuals' : 'GP Projection'}
-        sub={completed ? 'Last week’s gross-profit dollars by shop, district and portfolio.' : 'Projected gross-profit dollars — the top of the diagnostic tree below (GP$ = Revenue × GP%).'}
-        right={<Tabs value={gpTab} onChange={(v) => setGpTab(v as any)} tabs={[['portfolio', 'Portfolio'], ['districts', 'Districts'], ['shops', 'Shop-by-Shop']]} />}>
+      <Card id="gp-projection" eyebrow={completed ? 'Last Week' : 'Forecast'} title={completed ? 'GP$ -- Actuals' : 'GP Projection'}
+        sub={completed ? 'Last week\'s gross-profit dollars by shop, district and portfolio.' : 'Projected gross-profit dollars -- the top of the diagnostic tree below (GP$ = Revenue x GP%).'}
+        right={
+          <div className="flex items-center gap-2">
+            <Tabs tabs={[['portfolio', 'Portfolio'], ['districts', 'Districts'], ['shops', 'Shop-by-Shop']]} value={gpTab} onChange={(v) => setGpTab(v as any)} />
+            <button onClick={() => setRefreshTick(t => t + 1)} disabled={refreshing} className="c2ui inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-semibold transition" style={{ background: 'rgba(255,255,255,0.7)', border: `1px solid ${LINE}`, color: refreshing ? FAINT : INK2 }} title="Pull latest Tekmetric data">
+              <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+              {refreshing ? 'Updating…' : 'Refresh'}
+            </button>
+          </div>
+        }>
         <div className="flex flex-wrap items-center gap-x-8 gap-y-2 mb-5 c2ui text-[13px]" style={{ color: INK2 }}>
           <span>GP$ Goal <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{usd(gpPort.goal)}</span></span>
           <span>GP % <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{gpPortPct.toFixed(1)}%</span> <span style={{ color: FAINT }}>· target 58%</span></span>
@@ -552,9 +684,9 @@ export default function Concept2Diagnostic() {
         )}
       </Card>
 
-      {/* DIAGNOSTIC — GP$ tree: GP$ → Revenue/GP% → Cars/ARO → root cause */}
+      {/* DIAGNOSTIC -- GP$ tree: GP$ → Revenue/GP% → Cars/ARO → root cause */}
       <Card id="opportunity" eyebrow="Operational Diagnostic" title="Where GP$ is leaking"
-        sub={`The tree starts at GP$. For every shop ${completed ? 'that came up short of' : 'projected short of'} its GP$ goal ${periodLabel === 'this week' ? 'this week' : (completed ? '' : 'for ') + periodLabel}, we split the gap into Revenue vs GP%, then Car count vs ARO, and name the single operational lever — each metric measured against the level the shop runs in the weeks it actually hits goal. Change the timeframe (top right) to re-examine the whole diagnostic on that basis.`}
+        sub={`The tree starts at GP$. For every shop ${completed ? 'that came up short of' : 'projected short of'} its GP$ goal ${periodLabel === 'this week' ? 'this week' : (completed ? '' : 'for ') + periodLabel}, we split the gap into Revenue vs GP%, then Car count vs ARO, and name the single operational lever -- each metric measured against the level the shop runs in the weeks it actually hits goal. Change the timeframe (top right) to re-examine the whole diagnostic on that basis.`}
         right={<div className="text-right"><div className="c2disp tabular-nums" style={{ color: AMBER, fontSize: 30 }}>{usdK(totalGpGap)}</div><div className="c2ui text-[12.5px]" style={{ color: FAINT }}>GP$ to goal · {periodLabel}</div></div>}>
 
         {leaks.length === 0 ? (
@@ -585,12 +717,12 @@ export default function Concept2Diagnostic() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
             <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}><div className="c2ui text-[12.5px] uppercase tracking-wide font-semibold" style={{ color: FAINT }}>GP$ to goal</div><div className="c2disp tabular-nums mt-1" style={{ color: INK, fontSize: 24 }}>{usdK(totalGpGap)}</div></div>
             <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}><div className="c2ui text-[12.5px] uppercase tracking-wide font-semibold" style={{ color: FAINT }}>Shops below GP$ goal</div><div className="c2disp tabular-nums mt-1" style={{ color: INK, fontSize: 24 }}>{leaks.length} / {trees.filter((t) => t.hasGoal).length}</div></div>
-            <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}><div className="c2ui text-[12.5px] uppercase tracking-wide font-semibold" style={{ color: FAINT }}>Biggest single gap</div>{biggestShop ? <div className="c2disp mt-1 flex items-baseline gap-2" style={{ color: INK, fontSize: 22 }}><span>{biggestShop.name}</span><span className="tabular-nums" style={{ color: '#B5631F', fontSize: 16 }}>{usdK(biggestShop.gap)}</span></div> : <div className="c2disp mt-1" style={{ color: INK, fontSize: 22 }}>—</div>}</div>
+            <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}><div className="c2ui text-[12.5px] uppercase tracking-wide font-semibold" style={{ color: FAINT }}>Biggest single gap</div>{biggestShop ? <div className="c2disp mt-1 flex items-baseline gap-2" style={{ color: INK, fontSize: 22 }}><span>{biggestShop.name}</span><span className="tabular-nums" style={{ color: '#B5631F', fontSize: 16 }}>{usdK(biggestShop.gap)}</span></div> : <div className="c2disp mt-1" style={{ color: INK, fontSize: 22 }}>--</div>}</div>
           </div>
         </>)}
 
         {/* per-shop GP$ tree rows */}
-        <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.14em] mb-2" style={{ color: FAINT }}>By shop — tap to walk the GP$ tree</div>
+        <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.14em] mb-2" style={{ color: FAINT }}>By shop -- tap to walk the GP$ tree</div>
         <div className="space-y-2">
           {trees.map((t) => {
             const open = openShop === t.num;
@@ -625,7 +757,7 @@ export default function Concept2Diagnostic() {
                         <span style={{ color: '#B5631F' }}>{usdK(t.primary.gp$)}</span>
                         <span style={{ color: INK2 }}>via {t.primary.primaryCause.toLowerCase()}</span>
                       </span>
-                    ) : <span className="c2ui text-[13px]" style={{ color: INK2 }}>—</span>}
+                    ) : <span className="c2ui text-[13px]" style={{ color: INK2 }}>--</span>}
                   </span>
                   <span className="c2disp tabular-nums shrink-0 text-right" style={{ color: t.onTrack ? '#3E8E5E' : '#B5631F', fontSize: 15, width: 88 }}>{t.onTrack ? '✓' : usdK(t.gap) + ' short'}</span>
                 </button>
@@ -638,11 +770,10 @@ export default function Concept2Diagnostic() {
                       </div>
                       <span className="c2ui text-[12.5px]" style={{ color: FAINT }}>{t.method === 'goal-met' ? `benchmarked vs ${t.goalWeeks} goal-hitting week${t.goalWeeks === 1 ? '' : 's'}` : `best-weeks benchmark · rarely hits goal (${t.sampleWeeks} wks)`}</span>
                     </div>
-                    {!t.onTrack && (
-                      <div className="space-y-1.5">
+                    <div className="space-y-1.5">
                         {nodes.map((nd, i) => {
                           if (nd.kind === 'branch') {
-                            // named root cause — highlight the one the data points to
+                            // named root cause -- highlight the one the data points to
                             return (
                               <div key={i} className="flex items-stretch gap-2" style={{ paddingLeft: nd.depth * 22 }}>
                                 <span className="shrink-0 self-stretch" style={{ width: 2, borderRadius: 2, background: nd.active ? 'rgba(232,134,62,0.5)' : 'rgba(34,32,28,0.10)' }} />
@@ -674,34 +805,33 @@ export default function Concept2Diagnostic() {
                             </div>
                           );
                         })}
-                        {t.primary && <div className="c2ui text-[13px] mt-3" style={{ color: INK2 }}><span style={{ color: INK, fontWeight: 600 }}>Start here:</span> {t.primary.label} → {t.primary.primaryCause} — the biggest single GP$ lever for {t.name} {periodLabel} ({usdK(t.primary.gp$)}; {t.primary.primaryFix}).</div>}
+                        {t.primary && <div className="c2ui text-[13px] mt-3" style={{ color: INK2 }}><span style={{ color: INK, fontWeight: 600 }}>Start here:</span> {t.primary.label} → {t.primary.primaryCause} -- the biggest single GP$ lever for {t.name} {periodLabel} ({usdK(t.primary.gp$)}; {t.primary.primaryFix}).</div>}
                       </div>
-                    )}
                   </div>
                 )}
               </div>
             );
           })}
         </div>
-        <div className="c2ui text-[12.5px] mt-4 leading-relaxed" style={{ color: FAINT }}>Method: GP$ sits at the top, decomposed exactly — GP$ = Revenue × GP%, then the Revenue gap = Car count × ARO. <span style={{ color: INK2, fontWeight: 600 }}>Car count</span> → Call volume vs Call conversion (never re-books). <span style={{ color: INK2, fontWeight: 600 }}>ARO</span> → Close rate (declined-work follow-up / financing). <span style={{ color: INK2, fontWeight: 600 }}>GP%</span> → Parts GP% (big low-GP jobs / pricing matrix) vs Labor GP% (comebacks / discounted labor). Goal levels are the median of each metric across the weeks the shop actually hit its revenue goal (best weeks where goal is rare). Everything scales to the selected timeframe.</div>
+        <div className="c2ui text-[12.5px] mt-4 leading-relaxed" style={{ color: FAINT }}>Method: GP$ sits at the top, decomposed exactly -- GP$ = Revenue x GP%, then the Revenue gap = Car count x ARO. <span style={{ color: INK2, fontWeight: 600 }}>Car count</span> → Call volume vs Call conversion (never re-books). <span style={{ color: INK2, fontWeight: 600 }}>ARO</span> → Close rate (declined-work follow-up / financing). <span style={{ color: INK2, fontWeight: 600 }}>GP%</span> → Parts GP% (big low-GP jobs / pricing matrix) vs Labor GP% (comebacks / discounted labor). Goal levels are the median of each metric across the weeks the shop actually hit its revenue goal (best weeks where goal is rare). Everything scales to the selected timeframe.</div>
       </Card>
 
-      {/* Shop comparison — metric + range + granularity + comparison */}
+      {/* Shop comparison -- metric + range + granularity + comparison */}
       <ComparisonSection />
 
-      {/* Shop Performance heatmap — 12 weeks × shops, metric selector */}
+      {/* Shop Performance heatmap -- 12 weeks x shops, metric selector */}
       <HeatmapMatrix shops={hmShops} weeks={hmWeeks} metric={hmMetric} setMetric={setHmMetric} />
 
-      {/* Performance trends — real current vs prior period */}
+      {/* Performance trends -- real current vs prior period */}
       <TrendsSection />
 
-      {/* Accounts Receivable — modes + by-shop + trend */}
+      {/* Accounts Receivable -- modes + by-shop + trend */}
       <ConceptAR />
 
       {/* Return Customers */}
       <ReturnCustomers />
 
-      {/* Past Trophies Earned this Quarter — moved here from the Employee
+      {/* Past Trophies Earned this Quarter -- moved here from the Employee
           view at user request so the YTD trophy ledger lives at the END of
           the Diagnostic page. The Employee view keeps the THIS-WEEK trophy
           tally; this is the cumulative season-to-date leaderboard. */}
@@ -712,7 +842,7 @@ export default function Concept2Diagnostic() {
   );
 }
 
-// ── Shop Comparison — full hybrid (production parity) ──────────────────────
+// ── Shop Comparison -- full hybrid (production parity) ──────────────────────
 // Revenue keeps range + daily/weekly/monthly granularity + comparison-period
 // (current solid vs comparison dashed), sourced from /api/metrics dailyByShop.
 // Every other metric is weekly lines from the heatmap (8/12/26 weeks).
@@ -733,17 +863,18 @@ const CMP_RANGES = [
   { key: 'this_month', label: 'This Month' }, { key: 'last_month', label: 'Last Month' },
   { key: 'this_quarter', label: 'This Quarter' }, { key: 'this_year', label: 'This Year' },
   { key: 'last_year', label: 'Last Year' }, { key: 'last_90_days', label: 'Last 90 Days' },
+  { key: 'all_time', label: 'All Time' }, { key: 'custom', label: 'Custom' },
 ];
 const CMP_GRAN = [{ key: 'daily', label: 'Daily' }, { key: 'weekly', label: 'Weekly' }, { key: 'monthly', label: 'Monthly' }];
 const CMP_COMPARE = [{ key: 'none', label: 'No Comparison' }, { key: 'previous_period', label: 'Previous Period' }, { key: 'same_period_last_year', label: 'Same Period Last Year' }];
 // Non-revenue metrics are weekly snapshots (heatmap), so a timeframe maps to a
-// trailing number of weeks of data — keeps the SAME timeframe dropdown the rest
+// trailing number of weeks of data -- keeps the SAME timeframe dropdown the rest
 // of the dashboard uses instead of an odd "N weeks" selector.
-const rangeToWeeks = (r: string): number => (({ this_week: 6, last_week: 6, this_month: 6, last_month: 9, this_quarter: 13, this_year: 26, last_year: 26, last_90_days: 13 } as Record<string, number>)[r] ?? 12);
+const rangeToWeeks = (r: string): number => (({ this_week: 6, last_week: 6, this_month: 6, last_month: 9, this_quarter: 13, this_year: 26, last_year: 26, last_90_days: 13, all_time: 52, custom: 26 } as Record<string, number>)[r] ?? 12);
 function isWeekendStr(ymd: string): boolean { const [y, m, d] = ymd.split('-').map(Number); const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); return dow === 0 || dow === 6; }
 
 // ── localStorage snapshot cache for Shop-by-shop over time ────────────────
-// The default range is `this_quarter` which is a 90-day daily-by-shop pull —
+// The default range is `this_quarter` which is a 90-day daily-by-shop pull --
 // the heaviest fetch on the page, and it sits below the fold so by the time
 // the user scrolls to it they're staring at a "Loading…" spinner. Snapshot
 // the last successful payload per (range, compare, metric) into
@@ -774,41 +905,48 @@ function ComparisonSection() {
   const [gran, setGran] = useState('weekly');
   const [compare, setCompare] = useState('none');
   const [focus, setFocus] = useState<string | null>(null);
-  // Lazy initializers read the last seen snapshot for the DEFAULT (initial)
-  // scope so the chart renders with data immediately on first mount, before
-  // the fetch resolves. Subsequent range/compare/metric changes go through
-  // the useEffects below which also hydrate from snapshot before fetching.
-  const [cur, setCur] = useState<any | null>(() => cmpSnapRead<any>(`cur:revenue:this_quarter`));
-  const [cmp, setCmp] = useState<any | null>(() => cmpSnapRead<any>(`cmp:this_quarter:none`));
-  const [heat, setHeat] = useState<any | null>(() => cmpSnapRead<any>(`heat:revenue:this_quarter`));
+  const [cmpCustomStart, setCmpCustomStart] = useState('');
+  const [cmpCustomEnd, setCmpCustomEnd] = useState('');
+  const [cur, setCur] = useState<any | null>(null);
+  const [cmp, setCmp] = useState<any | null>(null);
+  const [heat, setHeat] = useState<any | null>(null);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [cmpFailed, setCmpFailed] = useState(false);
   const isRevenue = metric === 'revenue';
   const cfg = CMP_METRICS.find((m) => m.key === metric)!;
 
   useEffect(() => {
     if (!isRevenue) return;
+    if (range === 'custom' && (!cmpCustomStart || !cmpCustomEnd)) return;
     const scope = `cur:revenue:${range}`;
     const snap = cmpSnapRead<any>(scope);
     setCur(snap ?? null);
     let c = false;
-    safe<any>(`/api/metrics?range=${range}`).then((d) => {
+    safe<any>(`/api/metrics?range=${toApiRange(range, cmpCustomStart, cmpCustomEnd)}`).then((d) => {
       if (c) return;
       if (d?.dailyByShop) { setCur(d.dailyByShop); cmpSnapWrite(scope, d.dailyByShop); }
     });
     return () => { c = true; };
-  }, [isRevenue, range]);
+  }, [isRevenue, range, cmpCustomStart, cmpCustomEnd]);
   useEffect(() => {
-    if (!isRevenue || compare === 'none') { setCmp(null); return; }
+    if (!isRevenue || compare === 'none') { setCmp(null); setCmpLoading(false); setCmpFailed(false); return; }
+    if (range === 'custom' && (!cmpCustomStart || !cmpCustomEnd)) return;
     const scope = `cmp:${range}:${compare}`;
     const snap = cmpSnapRead<any>(scope);
     setCmp(snap ?? null);
+    setCmpFailed(false);
+    if (snap) { setCmpLoading(false); return; }
+    setCmpLoading(true);
     let c = false;
-    const q = new URLSearchParams({ range: 'custom', compare, base: range });
+    const q = new URLSearchParams({ range: 'custom', compare, base: toApiRange(range, cmpCustomStart, cmpCustomEnd) });
     safe<any>(`/api/metrics?${q}`).then((d) => {
       if (c) return;
+      setCmpLoading(false);
       if (d?.dailyByShop) { setCmp(d.dailyByShop); cmpSnapWrite(scope, d.dailyByShop); }
+      else { setCmpFailed(true); }
     });
-    return () => { c = true; };
-  }, [isRevenue, compare, range]);
+    return () => { c = true; setCmpLoading(false); };
+  }, [isRevenue, compare, range, cmpCustomStart, cmpCustomEnd]);
   useEffect(() => {
     if (isRevenue) return;
     const scope = `heat:${metric}:${range}`;
@@ -821,6 +959,9 @@ function ComparisonSection() {
     });
     return () => { c = true; };
   }, [isRevenue, range, metric]);
+  // Reset comparison when switching to a non-revenue metric — the dashed
+  // comparison line only works for revenue (dailyByShop from /api/metrics).
+  useEffect(() => { if (!isRevenue) setCompare('none'); }, [isRevenue]);
 
   function bucketize(input: { date: string; v: number }[]): { date: string; v: number }[] {
     let pts = input;
@@ -830,7 +971,10 @@ function ComparisonSection() {
     return pts;
   }
 
-  const shopsList = META.filter((m) => shopSel === 'all' || shopSel === m.num);
+  const isCombined = shopSel === 'combined';
+  const shopsList = META.filter((m) => shopSel === 'all' || isCombined || shopSel === m.num);
+  // Rate metrics are averaged when combining; all others are summed.
+  const RATE_METRICS = new Set(['gpPct', 'aro', 'closeRate', 'conversion', 'rebook']);
   let xLabels: string[] = []; let stepMode = false; let loading = false;
   let series: { num: string; name: string; color: string; cur: (number | null)[]; cmp: (number | null)[] | null }[] = [];
   if (isRevenue) {
@@ -843,13 +987,31 @@ function ComparisonSection() {
       xLabels = useStep
         ? Array.from({ length: maxLen }, (_, i) => (gran === 'daily' ? `D${i + 1}` : gran === 'weekly' ? `W${i + 1}` : `M${i + 1}`))
         : (built.find((b) => b.curB.length)?.curB || []).map((p) => p.date);
-      series = built.map(({ m, curB, cmpB }) => ({ num: m.num, name: m.name, color: m.color, cur: xLabels.map((_, i) => curB[i]?.v ?? null), cmp: cmpB ? xLabels.map((_, i) => cmpB[i]?.v ?? null) : null }));
+      const allSeries = built.map(({ m, curB, cmpB }) => ({ num: m.num, name: m.name, color: m.color, cur: xLabels.map((_, i) => curB[i]?.v ?? null), cmp: cmpB ? xLabels.map((_, i) => cmpB[i]?.v ?? null) : null }));
+      if (isCombined) {
+        const combinedCur = xLabels.map((_, i) => allSeries.reduce((a, s) => a + (s.cur[i] ?? 0), 0));
+        const combinedCmp = useStep ? xLabels.map((_, i) => allSeries.reduce((a, s) => a + (s.cmp ? (s.cmp[i] ?? 0) : 0), 0)) : null;
+        series = [{ num: 'combined', name: 'Chain Total', color: AMBER, cur: combinedCur, cmp: combinedCmp }];
+      } else {
+        series = allSeries;
+      }
     }
   } else {
     loading = !heat;
     if (heat) {
       xLabels = heat.weeks || [];
-      series = shopsList.map((m) => { const row = (heat.shops || []).find((s: any) => s.shopNum === m.num); const curr = (heat.weeks || []).map((_: any, i: number) => { const cell = row?.cells?.[i]; const raw = cell ? cell[cfg.field] : null; return raw == null ? null : (cfg.scale ? raw * cfg.scale : raw); }); return { num: m.num, name: m.name, color: m.color, cur: curr, cmp: null }; });
+      const isRate = RATE_METRICS.has(metric);
+      const allSeries = shopsList.map((m) => { const row = (heat.shops || []).find((s: any) => s.shopNum === m.num); const curr = (heat.weeks || []).map((_: any, i: number) => { const cell = row?.cells?.[i]; const raw = cell ? cell[cfg.field] : null; return raw == null ? null : (cfg.scale ? raw * cfg.scale : raw); }); return { num: m.num, name: m.name, color: m.color, cur: curr, cmp: null }; });
+      if (isCombined) {
+        const combinedCur = xLabels.map((_, i) => {
+          const vals = allSeries.map((s) => s.cur[i]).filter((v): v is number => v != null);
+          if (!vals.length) return null;
+          return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0);
+        });
+        series = [{ num: 'combined', name: 'Chain Total', color: AMBER, cur: combinedCur, cmp: null }];
+      } else {
+        series = allSeries;
+      }
     }
   }
 
@@ -869,22 +1031,33 @@ function ComparisonSection() {
   const controls = (
     <div className="flex items-center gap-2 flex-wrap justify-end">
       <Dropdown value={metric} onChange={(v) => { setMetric(v); setFocus(null); }} opts={CMP_METRICS.map((m) => ({ key: m.key, label: m.label }))} />
-      <Dropdown value={shopSel} onChange={setShopSel} opts={[{ key: 'all', label: 'All Shops' }, ...META.map((m) => ({ key: m.num, label: m.name }))]} />
+      <Dropdown value={shopSel} onChange={setShopSel} opts={[{ key: 'combined', label: 'Combined Total' }, { key: 'all', label: 'All Shops' }, ...META.map((m) => ({ key: m.num, label: m.name }))]} />
       <Dropdown value={range} onChange={setRange} opts={CMP_RANGES} />
-      {isRevenue && (<>
-        <Dropdown value={gran} onChange={setGran} opts={CMP_GRAN} />
-        <Dropdown value={compare} onChange={setCompare} opts={CMP_COMPARE} />
-      </>)}
+      {range === 'custom' && (
+        <div className="flex items-center gap-1.5">
+          <input type="text" placeholder="YYYY-MM-DD" value={cmpCustomStart} onChange={(e) => setCmpCustomStart(e.target.value)}
+            className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+          <span className="c2ui text-[13px]" style={{ color: INK2 }}>–</span>
+          <input type="text" placeholder="YYYY-MM-DD" value={cmpCustomEnd} onChange={(e) => setCmpCustomEnd(e.target.value)}
+            className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+        </div>
+      )}
+      <Dropdown value={gran} onChange={setGran} opts={CMP_GRAN} />
+      {isRevenue && <Dropdown value={compare} onChange={setCompare} opts={CMP_COMPARE} />}
     </div>
   );
 
   return (
-    <Card id="comparison" eyebrow="Shop Comparison" title="Shop-by-shop over time"
-      sub={isRevenue ? `${cfg.label} per shop · ${gran}${compare !== 'none' ? ' · solid = current, dashed = comparison' : ''}` : `Weekly ${cfg.label} per shop — click a shop to isolate it.`}
+    <Card id="comparison" eyebrow="Shop Comparison" title="Shop-by-shop over time" colHeader
+      sub={isRevenue ? `${cfg.label} per shop · ${gran}${compare !== 'none' ? ' · solid = current, dashed = comparison' : ''}` : `Weekly ${cfg.label} per shop -- click a shop to isolate it.`}
       right={controls}>
       {loading ? <div className="c2ui text-[13px] py-6" style={{ color: INK2 }}>Loading…</div> : !series.length || !n ? <div className="c2ui text-[13px] py-6" style={{ color: INK2 }}>No data for this selection.</div> : (
         <div className="w-full overflow-hidden">
-          {cmpEmpty && <div className="c2ui text-[13px] mb-2" style={{ color: '#B5631F' }}>No data in the comparison window for this selection — only the current period is shown.</div>}
+          {cmpLoading && <div className="c2ui text-[13px] mb-2" style={{ color: INK2 }}>Loading comparison…</div>}
+          {cmpFailed && !cmpLoading && <div className="c2ui text-[13px] mb-2" style={{ color: '#B5631F' }}>Comparison data unavailable for this date range — try a shorter period.</div>}
+          {cmpEmpty && !cmpLoading && <div className="c2ui text-[13px] mb-2" style={{ color: '#B5631F' }}>No data in the comparison window for this selection -- only the current period is shown.</div>}
           <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto', display: 'block' }} preserveAspectRatio="xMidYMid meet">
             {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={padT + f * (H - padT - padB)} y2={padT + f * (H - padT - padB)} stroke="rgba(34,32,28,0.06)" strokeWidth={1} />)}
             {/* comparison (dashed) drawn first so the solid current period sits on top */}
@@ -905,7 +1078,7 @@ function ComparisonSection() {
   );
 }
 
-// ── Heatmap matrix (shops × 12 weeks, metric selector, real tiers) ─────────
+// ── Heatmap matrix (shops x 12 weeks, metric selector, real tiers) ─────────
 const HM_METRICS = [
   { key: 'revenue', label: 'Revenue' }, { key: 'gpPct', label: 'GP %' }, { key: 'gpDollars', label: 'GP $' },
   { key: 'cars', label: 'Cars' }, { key: 'aro', label: 'ARO' }, { key: 'closeRate', label: 'Close Rate' },
@@ -916,20 +1089,28 @@ function rowMed(cells: any[], pick: (c: any) => number) { const xs = cells.filte
 function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; weeks: string[]; metric: string; setMetric: (v: string) => void }) {
   const now = new Date();
   function revGoal(num: string, wkISO: string): number | undefined {
-    const weekly = DEFAULT_GOALS[num]?.revenueWeekly; if (!weekly) return undefined;
     const ws = new Date(wkISO + 'T12:00:00'); const we = new Date(ws); we.setDate(we.getDate() + 6); we.setHours(23, 59, 59);
-    if (we > now) { const total = workingDaysBetween(ws, we); const done = workingDaysBetween(ws, now); return total ? weekly * (done / total) : undefined; }
-    return weekly;
+    const prorate = (weekly: number): number | undefined => {
+      if (we > now) { const total = workingDaysBetween(ws, we); const done = workingDaysBetween(ws, now); return total ? weekly * (done / total) : undefined; }
+      return weekly;
+    };
+    if (num === 'all') {
+      let sum = 0, hasAny = false;
+      for (const s of SHOP_META) { const weekly = DEFAULT_GOALS[s.num]?.revenueWeekly; if (!weekly) continue; const v = prorate(weekly); if (v != null) { sum += v; hasAny = true; } }
+      return hasAny ? sum : undefined;
+    }
+    const weekly = DEFAULT_GOALS[num]?.revenueWeekly; if (!weekly) return undefined;
+    return prorate(weekly);
   }
   function colMax(pick: (c: any) => number) { let m = 0; for (const s of shops) for (const c of (s.cells || [])) { const v = c ? pick(c) : 0; if (v > m) m = v; } return m; }
   // Conversion bunches up against the absolute 60% target (everything reads
   // warm). Shade it RELATIVE to the spread actually in view so the heatmap
-  // differentiates shops/weeks — best in view = cool, worst = warm.
+  // differentiates shops/weeks -- best in view = cool, worst = warm.
   const _conv = shops.flatMap((s: any) => (s.cells || []).map((c: any) => (c && c.conversion != null && c.conversion >= 0 ? c.conversion : null))).filter((v: any): v is number => v != null);
   const convMin = _conv.length ? Math.min(..._conv) : 0;
   const convMax = _conv.length ? Math.max(..._conv) : 1;
   function cellRender(s: any, c: any, wkISO: string): { tier: Tier | null; big: string } {
-    if (!c) return { tier: null, big: '—' };
+    if (!c) return { tier: null, big: '--' };
     switch (metric) {
       case 'revenue': { const g = revGoal(s.shopNum, wkISO); if (!g) return { tier: null, big: usdK(c.revenue) }; const r = c.revenue / g; return { tier: pctTier(r), big: Math.round(r * 100) + '%' }; }
       case 'cars': { const m = rowMed(s.cells, (x) => x.cars); const r = m ? c.cars / m : null; return { tier: pctTier(r), big: String(c.cars) }; }
@@ -937,14 +1118,44 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
       case 'gpDollars': { const m = rowMed(s.cells, (x) => x.gpDollars); const r = m ? c.gpDollars / m : null; return { tier: pctTier(r), big: usdK(c.gpDollars) }; }
       case 'gpPct': return { tier: gpTier(c.gpPct), big: (c.gpPct * 100).toFixed(0) + '%' };
       case 'closeRate': return { tier: closeTier(c.closeRate), big: (c.closeRate * 100).toFixed(0) + '%' };
-      case 'conversion': { const v = c.conversion == null || c.conversion < 0 ? null : c.conversion; if (v == null) return { tier: null, big: '—' }; const rel = convMax > convMin ? (v - convMin) / (convMax - convMin) : 0.6; const tier = (1 + Math.round((1 - rel) * 4)) as Tier; return { tier, big: v.toFixed(0) + '%' }; }
-      case 'rebook': { const v = c.rebook == null || c.rebook < 0 ? null : c.rebook; return { tier: rebookTier(v), big: v == null ? '—' : v.toFixed(0) + '%' }; }
+      case 'conversion': { const v = c.conversion == null || c.conversion <= 0 ? null : c.conversion; if (v == null) return { tier: null, big: '--' }; const rel = convMax > convMin ? (v - convMin) / (convMax - convMin) : 0.6; const tier = (1 + Math.round((1 - rel) * 4)) as Tier; return { tier, big: v.toFixed(0) + '%' }; }
+      case 'rebook': { const v = c.rebook == null || c.rebook < 0 ? null : c.rebook; return { tier: rebookTier(v), big: v == null ? '--' : v.toFixed(0) + '%' }; }
       case 'comebacks': { const v = c.comebackDollars ?? 0; return { tier: comebackTier(v, colMax((x) => x.comebackDollars ?? 0)), big: usdK(v) }; }
       case 'billedHours': { const m = rowMed(s.cells, (x) => x.billedHours ?? 0); const v = c.billedHours ?? 0; const r = m ? v / m : null; return { tier: pctTier(r), big: Math.round(v) + 'h' }; }
-      case 'rating': { const v = c.rating ?? null; return { tier: ratingTier(v), big: v == null ? '—' : v.toFixed(1) }; }
-      default: return { tier: null, big: '—' };
+      case 'rating': { const v = c.rating ?? null; return { tier: ratingTier(v), big: v == null ? '--' : v.toFixed(1) }; }
+      default: return { tier: null, big: '--' };
     }
   }
+  // Aggregate all shops into one combined row
+  const allRow = {
+    shopNum: 'all',
+    shopName: 'All Shops',
+    cells: weeks.map((_, wi) => {
+      const sc = shops.map((s) => (s.cells || [])[wi]).filter(Boolean);
+      if (!sc.length) return null;
+      const revenue = sc.reduce((a: number, c: any) => a + (c.revenue ?? 0), 0);
+      const cars = sc.reduce((a: number, c: any) => a + (c.cars ?? 0), 0);
+      const gpDollars = sc.reduce((a: number, c: any) => a + (c.gpDollars ?? 0), 0);
+      const crNumer = sc.reduce((a: number, c: any) => a + (c.closeRate ?? 0) * (c.cars ?? 0), 0);
+      const rebookVals = sc.map((c: any) => c.rebook).filter((v: any): v is number => v != null && v >= 0);
+      const convVals = sc.map((c: any) => c.conversion).filter((v: any): v is number => v != null && v >= 0);
+      const ratingVals = sc.map((c: any) => c.rating).filter((v: any): v is number => v != null && v > 0);
+      return {
+        revenue, cars,
+        aro: cars > 0 ? revenue / cars : 0,
+        closeRate: cars > 0 ? crNumer / cars : 0,
+        gpDollars, gpPct: revenue > 0 ? gpDollars / revenue : 0,
+        partsGpPct: 0, laborGpPct: 0,
+        discounts: sc.reduce((a: number, c: any) => a + (c.discounts ?? 0), 0),
+        comebacks: sc.reduce((a: number, c: any) => a + (c.comebacks ?? 0), 0),
+        comebackDollars: sc.reduce((a: number, c: any) => a + (c.comebackDollars ?? 0), 0),
+        billedHours: sc.reduce((a: number, c: any) => a + (c.billedHours ?? 0), 0),
+        rebook: rebookVals.length ? rebookVals.reduce((a: number, v: number) => a + v, 0) / rebookVals.length : undefined,
+        conversion: convVals.length ? convVals.reduce((a: number, v: number) => a + v, 0) / convVals.length : undefined,
+        rating: ratingVals.length ? ratingVals.reduce((a: number, v: number) => a + v, 0) / ratingVals.length : undefined,
+      };
+    }),
+  };
   const wkLabel = (iso: string, i: number) => (i === weeks.length - 1 ? 'now' : new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }));
   return (
     <Card id="performance" eyebrow="Shop Performance" title="Performance heatmap" sub="Every shop across the last 12 weeks. Cooler = on pace, warmer = needs attention."
@@ -964,6 +1175,20 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
                     <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 12.5 }}>{big}</span>
                   </td>); })}
               </tr>); })}
+            {/* Spacer + All Shops combined row */}
+            <tr aria-hidden><td colSpan={1 + weeks.length} style={{ height: 8, padding: 0 }} /></tr>
+            <tr key="all">
+              <td className="c2ui pr-3 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: INK }}>
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: 'rgba(34,32,28,0.30)' }} />
+                  All Shops
+                </span>
+              </td>
+              {weeks.map((w, i) => { const c = allRow.cells[i]; const { tier, big } = cellRender(allRow, c, w); return (
+                <td key={w} className="rounded-lg text-center align-middle" style={{ ...(c ? heatCell(tierScore(tier)) : { background: 'rgba(34,32,28,0.03)' }), height: 42 }}>
+                  <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 12.5 }}>{big}</span>
+                </td>); })}
+            </tr>
           </tbody>
         </table>
       </div>
@@ -971,19 +1196,26 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
   );
 }
 
-// ── Trends — real period-comparison (current vs prior), all metrics ────────
+// ── Trends -- real period-comparison (current vs prior), all metrics ────────
 const PC_METRICS: { key: string; label: string; val: (w: any) => number; fmt: (n: number) => string }[] = [
   { key: 'revenue', label: 'Revenue', val: (w) => w.revenue || 0, fmt: usdK },
   { key: 'gpDollars', label: 'GP $', val: (w) => w.gpDollars || 0, fmt: usdK },
   { key: 'gpPct', label: 'GP %', val: (w) => (w.revenue ? (w.gpDollars / w.revenue) * 100 : 0), fmt: (n) => n.toFixed(1) + '%' },
   { key: 'cars', label: 'Cars', val: (w) => w.cars || 0, fmt: (n) => String(Math.round(n)) },
   { key: 'aro', label: 'ARO', val: (w) => (w.cars ? w.revenue / w.cars : 0), fmt: usd0 },
+  { key: 'closeRate', label: 'Close Rate', val: (w) => w.closeRate || 0, fmt: (n) => n.toFixed(1) + '%' },
   { key: 'comebacks', label: 'Comebacks $', val: (w) => w.comebacks || 0, fmt: usdK },
   { key: 'hours', label: 'Hours', val: (w) => w.hours || 0, fmt: (n) => Math.round(n) + 'h' },
 ];
-const PC_RANGES = [{ key: 'this_month', label: 'This Month' }, { key: 'this_quarter', label: 'This Quarter' }, { key: 'this_year', label: 'This Year' }];
+const PC_RANGES = [
+  { key: 'this_week', label: 'This Week' }, { key: 'last_week', label: 'Last Week' },
+  { key: 'this_month', label: 'This Month' }, { key: 'last_month', label: 'Last Month' },
+  { key: 'this_quarter', label: 'This Quarter' }, { key: 'this_year', label: 'This Year' },
+  { key: 'last_year', label: 'Last Year' }, { key: 'last_90_days', label: 'Last 90 Days' },
+  { key: 'all_time', label: 'All Time' }, { key: 'custom', label: 'Custom' },
+];
 const PC_COMPARE = [{ key: 'same_period_last_year', label: 'vs Last Year' }, { key: 'previous_period', label: 'vs Previous Period' }];
-// Granularity toggle — defaults to weekly so the existing chart behavior is
+// Granularity toggle -- defaults to weekly so the existing chart behavior is
 // unchanged when the user lands on the page. Daily fans out to per-day
 // buckets; monthly rolls weeks up into months.
 const PC_GRANULARITY = [{ key: 'daily', label: 'Daily' }, { key: 'weekly', label: 'Weekly' }, { key: 'monthly', label: 'Monthly' }];
@@ -993,53 +1225,67 @@ function TrendsSection() {
   const [range, setRange] = useState('this_quarter');
   const [compare, setCompare] = useState('same_period_last_year');
   const [granularity, setGranularity] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
-  useEffect(() => { let alive = true; setData(null); safe<any>(`/api/period-comparison?range=${range}&compare=${compare}&granularity=${granularity}`).then((d) => { if (alive) setData(d && d.current && d.comparison ? d : null); }); return () => { alive = false; }; }, [range, compare, granularity]);
+  const [shop, setShop] = useState<string>('all');
+  const [pcCustomStart, setPcCustomStart] = useState('');
+  const [pcCustomEnd, setPcCustomEnd] = useState('');
+  useEffect(() => {
+    if (range === 'custom' && (!pcCustomStart || !pcCustomEnd)) return;
+    let alive = true;
+    setData(null);
+    const shopParam = shop !== 'all' ? `&shop=${shop}` : '';
+    safe<any>(`/api/period-comparison?range=${toApiRange(range, pcCustomStart, pcCustomEnd)}&compare=${compare}&granularity=${granularity}${shopParam}`)
+      .then((d) => { if (alive) setData(d && d.current && d.comparison ? d : null); });
+    return () => { alive = false; };
+  }, [range, compare, granularity, shop, pcCustomStart, pcCustomEnd]);
   const M = PC_METRICS.find((m) => m.key === metric)!;
-  const cur = (data?.current?.weeks ?? []).map(M.val) as number[];
-  const pri = (data?.comparison?.weeks ?? []).map(M.val) as number[];
-  const labels = (data?.current?.weeks ?? []).map((w: any) => w.weekStart);
+  const shopOpts = [{ key: 'all', label: 'All Shops' }, ...SHOP_META.map((s) => ({ key: s.num, label: s.name }))];
   const right = (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 flex-wrap justify-end">
+      <Dropdown value={shop} onChange={setShop} opts={shopOpts} />
       <Dropdown value={range} onChange={setRange} opts={PC_RANGES} />
+      {range === 'custom' && (
+        <div className="flex items-center gap-1.5">
+          <input type="text" placeholder="YYYY-MM-DD" value={pcCustomStart} onChange={(e) => setPcCustomStart(e.target.value)}
+            className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+          <span className="c2ui text-[13px]" style={{ color: INK2 }}>–</span>
+          <input type="text" placeholder="YYYY-MM-DD" value={pcCustomEnd} onChange={(e) => setPcCustomEnd(e.target.value)}
+            className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+            style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+        </div>
+      )}
       <Dropdown value={granularity} onChange={(v) => setGranularity(v as 'daily' | 'weekly' | 'monthly')} opts={PC_GRANULARITY} />
       <Dropdown value={compare} onChange={setCompare} opts={PC_COMPARE} />
       <Dropdown value={metric} onChange={setMetric} opts={PC_METRICS.map((m) => ({ key: m.key, label: m.label }))} />
     </div>
   );
-  if (!data) return <Card id="trends" eyebrow="Performance Trends" title="Current vs prior period" right={right}><div className="c2ui text-[13px] py-4" style={{ color: INK2 }}>Loading period comparison…</div></Card>;
-  if (!cur.length) return <Card id="trends" eyebrow="Performance Trends" title="Current vs prior period" right={right}><div className="c2ui text-[13px] py-4" style={{ color: INK2 }}>No data for this period.</div></Card>;
-  const n = Math.max(cur.length, pri.length);
-  const all = [...cur, ...pri].filter((v) => isFinite(v));
-  const min = Math.min(...all, 0), max = Math.max(...all, 1);
-  const W = 900, H = 210, padX = 10, padT = 12, padB = 8;
-  const xAt = (i: number) => padX + (n <= 1 ? 0 : (i / (n - 1)) * (W - padX * 2));
-  const yAt = (v: number) => padT + (1 - (v - min) / (max - min || 1)) * (H - padT - padB);
-  const pathFor = (vals: number[]) => vals.map((v, i) => (i ? 'L' : 'M') + xAt(i).toFixed(1) + ' ' + yAt(v).toFixed(1)).join(' ');
-  const curArea = `${pathFor(cur)} L ${xAt(cur.length - 1).toFixed(1)} ${H} L ${xAt(0).toFixed(1)} ${H} Z`;
-  const curTotal = cur.reduce((a, b) => a + b, 0), priTotal = pri.reduce((a, b) => a + b, 0);
+  const cweeks = data?.current?.weeks ?? [];
+  const pweeks = data?.comparison?.weeks ?? [];
+  const prefix = granularity === 'daily' ? 'Day' : granularity === 'monthly' ? 'Mo' : 'Wk';
+  const curSeries = cweeks.map((w: any, i: number) => ({ x: `${prefix} ${i + 1}`, y: M.val(w) }));
+  const priSeries = cweeks.map((_: any, i: number) => ({ x: `${prefix} ${i + 1}`, y: M.val(pweeks[i] ?? {}) }));
+  const curTotal = curSeries.reduce((s: number, p: any) => s + p.y, 0);
+  const priTotal = priSeries.reduce((s: number, p: any) => s + p.y, 0);
   const isRate = metric === 'gpPct' || metric === 'aro';
-  const curAgg = isRate ? (cur.length ? curTotal / cur.length : 0) : curTotal;
-  const priAgg = isRate ? (pri.length ? priTotal / pri.length : 0) : priTotal;
+  const curAgg = isRate ? (curSeries.length ? curTotal / curSeries.length : 0) : curTotal;
+  const priAgg = isRate ? (priSeries.length ? priTotal / priSeries.length : 0) : priTotal;
   const delta = priAgg ? (curAgg - priAgg) / priAgg : 0;
+
+  if (!curSeries.length) return <Card id="trends" eyebrow="Performance Trends" title="Current vs prior period" colHeader right={right}><div className="c2ui text-[13px] py-4" style={{ color: INK2 }}>No data for this period.</div></Card>;
+
   return (
-    <Card id="trends" eyebrow="Performance Trends" title="Current vs prior period" right={right}>
-      <div className="w-full overflow-hidden">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto', display: 'block' }} preserveAspectRatio="xMidYMid meet">
-          <defs><linearGradient id="c2trend" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="rgba(63,156,176,0.30)" /><stop offset="60%" stopColor="rgba(95,169,214,0.12)" /><stop offset="100%" stopColor="rgba(139,205,197,0.03)" /></linearGradient></defs>
-          {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={padT + f * (H - padT - padB)} y2={padT + f * (H - padT - padB)} stroke="rgba(34,32,28,0.06)" strokeWidth={1} />)}
-          {pri.length > 0 && <path d={pathFor(pri)} fill="none" stroke="#9AA7AE" strokeWidth="2" strokeDasharray="4 4" strokeLinecap="round" opacity={0.85} />}
-          <path d={curArea} fill="url(#c2trend)" />
-          <path d={pathFor(cur)} fill="none" stroke="#3E9CB0" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-          {cur.map((v, i) => <circle key={i} cx={xAt(i)} cy={yAt(v)} r={i === cur.length - 1 ? 4.5 : 2} fill="#fff" stroke="#3E9CB0" strokeWidth="2" />)}
-        </svg>
-        <div className="flex justify-between c2ui text-[12.5px] tabular-nums mt-1" style={{ color: FAINT }}>
-          {labels.map((l: string, i: number) => (i % Math.ceil(n / 8 || 1) === 0 || i === n - 1) ? <span key={i}>{new Date(l + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}</span> : <span key={i} />)}
-        </div>
-        <div className="c2ui mt-3 text-[13px] flex items-center gap-4" style={{ color: INK2 }}>
-          <span className="inline-flex items-center gap-1.5"><span style={{ width: 14, height: 3, background: '#3E9CB0', display: 'inline-block', borderRadius: 2 }} /> current</span>
-          <span className="inline-flex items-center gap-1.5"><span style={{ width: 14, height: 0, borderTop: '2px dashed #9AA7AE', display: 'inline-block' }} /> {compare === 'previous_period' ? 'previous period' : 'last year'}</span>
-        </div>
-      </div>
+    <Card id="trends" eyebrow="Performance Trends" title="Current vs prior period" colHeader right={right}>
+      {/* Recharts LineChartBlock -- same component as production for smooth
+          curves, proper y-axis ticks, hover tooltip, and correct x-labels. */}
+      <LineChartBlock
+        height={300}
+        xType="category"
+        formatValue={M.fmt}
+        series={[
+          { key: 'current', label: `${data.current?.label ?? 'Current'} · ${M.label}`, color: '#3E9CB0', data: curSeries },
+          { key: 'prior', label: `${data.comparison?.label ?? 'Prior'} · ${M.label}`, color: '#9AA7AE', data: priSeries, dashed: true },
+        ]}
+      />
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5">
         <div className="rounded-2xl px-4 py-3" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}>
           <div className="c2ui text-[12.5px] font-semibold uppercase tracking-wide" style={{ color: FAINT }}>{data.current?.label || 'Current Period'} · {M.label}</div>
@@ -1058,10 +1304,10 @@ function TrendsSection() {
   );
 }
 
-// ── Accounts Receivable — now the shared <ConceptAR/> (see ConceptAR.tsx),
+// ── Accounts Receivable -- now the shared <ConceptAR/> (see ConceptAR.tsx),
 // used identically here and on the Weekly Review. ────────────────────────────
 
-// ── Return Customers — full retention detail (production parity) ───────────
+// ── Return Customers -- full retention detail (production parity) ───────────
 // Status colors come from THE established cool→warm heat gradient (heatRGB):
 // low churn = cool (blue/teal), high churn = warm (coral). So "Healthy" reads
 // cool, matching every other heat surface on the page.
@@ -1079,7 +1325,7 @@ function ReturnCustomers() {
   useEffect(() => { let alive = true; safe<any>('/api/extras?view=return-customers').then((d) => { if (alive) setData(d?.shops ? { shops: d.shops, chain: d.chain || {} } : null); }); return () => { alive = false; }; }, []);
   const metaFor = (num: string) => META.find((m) => m.num === num);
   return (
-    <Card id="return-customers" eyebrow="Return Customers" title="Return Customers — This Week"
+    <Card id="return-customers" eyebrow="Return Customers" title="Return Customers -- This Week"
       sub="Ranking: this week (Mon → today MT) return % (primary), 12-month return % (tiebreaker). Unique customers, not repair orders.">
       {!data ? <div className="c2ui text-[13px] py-4" style={{ color: INK2 }}>Loading…</div> : (() => {
         const ready = data.shops.filter((s) => !s.pending);
@@ -1129,7 +1375,7 @@ function ReturnCustomers() {
 
           {/* methodology footnote (lighter than the old header block) */}
           <div className="c2ui text-[12.5px] mt-4 leading-relaxed" style={{ color: FAINT }}>
-            <span style={{ color: INK2, fontWeight: 600 }}>How these are calculated:</span> 12-month return % = unique customers with ≥2 posted ROs in the last 12 months ÷ those with ≥1. Avg visits/year = mean visits among customers with ≥2 in 12 months. Churn % = customers active 12–18 months ago who didn't return in the last 12 ÷ those previously active. Ranked by this-week (Mon→today MT) return %, then 12-month return %.
+            <span style={{ color: INK2, fontWeight: 600 }}>How these are calculated:</span> 12-month return % = unique customers with ≥2 posted ROs in the last 12 months ÷ those with ≥1. Avg visits/year = mean visits among customers with ≥2 in 12 months. Churn % = customers active 12-18 months ago who didn't return in the last 12 ÷ those previously active. Ranked by this-week (Mon→today MT) return %, then 12-month return %.
           </div>
         </>);
       })()}
@@ -1149,10 +1395,30 @@ const DIAG_SECTIONS = [
   { id: 'return-customers', label: 'Return Customers' },
   { id: 'trophies-ytd', label: 'Past Trophies' },
 ];
-function Shell({ range, setRange, children }: { range: string; setRange: (v: string) => void; children: React.ReactNode }) {
+function Shell({ range, setRange, customStart, setCustomStart, customEnd, setCustomEnd, children }: {
+  range: string; setRange: (v: string) => void;
+  customStart?: string; setCustomStart?: (v: string) => void;
+  customEnd?: string; setCustomEnd?: (v: string) => void;
+  children: React.ReactNode;
+}) {
   return (
     <ConceptShell active="diagnostic" title="Diagnostic" sub="Operational analytics · multi-state portfolio · live data" sections={DIAG_SECTIONS}
-      headerRight={<Dropdown value={range} onChange={setRange} opts={RANGES.map((r) => ({ key: r.key, label: r.label }))} />}>
+      headerRight={
+        <div className="flex items-center gap-2 flex-wrap">
+          <Dropdown value={range} onChange={setRange} opts={RANGES.map((r) => ({ key: r.key, label: r.label }))} />
+          {range === 'custom' && setCustomStart && setCustomEnd && (
+            <div className="flex items-center gap-1.5">
+              <input type="text" placeholder="YYYY-MM-DD" value={customStart ?? ''} onChange={(e) => setCustomStart(e.target.value)}
+                className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+                style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+              <span className="c2ui text-[13px]" style={{ color: INK2 }}>–</span>
+              <input type="text" placeholder="YYYY-MM-DD" value={customEnd ?? ''} onChange={(e) => setCustomEnd(e.target.value)}
+                className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+                style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+            </div>
+          )}
+        </div>
+      }>
       {children}
     </ConceptShell>
   );
