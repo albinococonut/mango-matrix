@@ -1782,7 +1782,7 @@ function ShopPerformance({ isExec }: { isExec: boolean }) {
   // all 8 shops, so the table always shows every shop. Without this filter
   // the averages would be diluted by zero rows (65% GP across 2 → 16% / 8).
   const activeShops = kpi.byShop.filter(r => r.revenue > 0 || r.cars > 0);
-  const avgClose = activeShops.length ? activeShops.reduce((s, r) => s + r.closeRate, 0) / activeShops.length : 0;
+  const avgClose = kpi.closeRate;
   const totalGp = kpi.byShop.reduce((s, r) => s + r.gpDollars, 0);
   const avgGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.gpPct, 0) / activeShops.length : 0;
   const avgPartsGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.partsGpPct, 0) / activeShops.length : 0;

@@ -757,7 +757,7 @@ export default function Concept2Review() {
           <Div />
           <StatPair label="AWRO" value={usd(lwKpi.totalCars > 0 ? lwKpi.byShop.reduce((s, r) => s + r.presentedDollars, 0) / lwKpi.totalCars : 0)} />
           <Div />
-          <StatPair label="Close" value={pct(lwKpi.byShop.length ? lwKpi.byShop.reduce((s, r) => s + r.closeRate, 0) / lwKpi.byShop.length : 0)} />
+          <StatPair label="Close" value={pct(lwKpi.closeRate)} />
           <Div />
           <StatPair label="Approved" value={usdK(lwKpi.byShop.reduce((s, r) => s + ((r as any).approvedDollars || 0), 0))} />
           <Div />

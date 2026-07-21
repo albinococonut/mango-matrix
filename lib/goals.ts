@@ -22,10 +22,10 @@ export const DEFAULT_GOALS: GoalsByShop = {
   '002': { revenueWeekly: 49_000, revenueMonthly: 210_000, revenueQuarterly: 630_000, gpPct: 0.58, noi: 0.25 },
   '003': { revenueWeekly: 44_000, revenueMonthly: 187_000, revenueQuarterly: 560_000, gpPct: 0.58, noi: 0.20 },
   '004': { revenueWeekly: 32_000, revenueMonthly: 137_000, revenueQuarterly: 410_000, gpPct: 0.58, noi: 0.25 },
-  '005': { revenueWeekly: 51_000, revenueMonthly: 217_000, revenueQuarterly: 652_000, gpPct: 0.58, noi: 0.25 },
+  '005': { revenueWeekly: 59_000, revenueMonthly: 254_000, revenueQuarterly: 762_000, gpPct: 0.58, noi: 0.25 },
   '006': { revenueWeekly: 51_000, revenueMonthly: 220_000, revenueQuarterly: 658_000, gpPct: 0.58, noi: 0.25 },
-  '007': { revenueWeekly: 21_000, revenueMonthly: 87_000,  revenueQuarterly: 260_000, gpPct: 0.58, noi: 0.25 },
-  '009': { revenueWeekly: 41_000, revenueMonthly: 176_000, revenueQuarterly: 375_000, gpPct: 0.58, noi: 0.25 },
+  '007': { revenueWeekly: 26_000, revenueMonthly: 110_000, revenueQuarterly: 328_000, gpPct: 0.58, noi: 0.25 },
+  '009': { revenueWeekly: 41_000, revenueMonthly: 176_000, revenueQuarterly: 528_000, gpPct: 0.58, noi: 0.25 },
 };
 
 export function loadGoals(): GoalsByShop {

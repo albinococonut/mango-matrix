@@ -171,7 +171,7 @@ export default function ShopPerformanceTable({ kpi, range, customStart, customEn
   // every shop. Without this filter the chain averages would be diluted by
   // those zero rows (e.g. 65% GP across 2 active shops → 16% across 8).
   const activeShops = kpi.byShop.filter(r => r.revenue > 0 || r.cars > 0);
-  const avgClose = activeShops.length ? activeShops.reduce((s, r) => s + r.closeRate, 0) / activeShops.length : 0;
+  const avgClose = kpi.closeRate;
   const totalGp = kpi.byShop.reduce((s, r) => s + r.gpDollars, 0);
   const avgGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.gpPct, 0) / activeShops.length : 0;
   const avgPartsGpPct = activeShops.length ? activeShops.reduce((s, r) => s + r.partsGpPct, 0) / activeShops.length : 0;

@@ -113,16 +113,45 @@ export function chainKpi(orders: RepairOrder[]): ChainKpi {
   const cleanRevenue = byShop.reduce((s, k) => s + k.revenue, 0) + secondaryRevenueDollars;
   const totalRevenue = cleanRevenue + uspsRevenue + fleetSecondaryRevenue;
   const totalCars = byShop.reduce((s, k) => s + k.cars, 0) + secondaryCars;
+  // Fleet-only secondary GP — compute and add to each parent shop row.
+  // Revenue from these shops lands in fleetSecondaryRevenue; GP was never
+  // computed because shopKpi() is not called for secondary rows.
+  const fleetGpByShop: Record<string, number> = {};
+  for (const o of fleetOnlySecondary) {
+    if (!COUNTED_STATUSES.has(o.repairOrderStatus?.code)) continue;
+    const meta = SHOP_BY_TEKMETRIC_ID[o.shopId];
+    if (!meta) continue;
+    let partsCostCents = 0, laborHours = 0;
+    for (const j of o.jobs) {
+      if (!j.authorized) continue;
+      for (const p of j.parts) partsCostCents += p.cost * p.quantity;
+      laborHours += j.laborHours || 0;
+    }
+    const gp = c2d(o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal)
+             - c2d(partsCostCents)
+             - (laborHours * (LABOR_RATE_BY_SHOP[meta.num] ?? 50))
+             - c2d(o.subletSales);
+    fleetGpByShop[meta.num] = (fleetGpByShop[meta.num] ?? 0) + gp;
+  }
   // Attribute all non-retail revenue to the Yuma row's headline so the
-  // per-shop table reconciles to the chain total — cars/ARO/GP% stay clean.
+  // per-shop table reconciles to the chain total.
   const yumaAddon = uspsRevenue + fleetSecondaryRevenue;
   if (yumaAddon > 0) {
     const yuma = byShop.find(k => k.shopNum === '006');
     if (yuma) yuma.revenue += yumaAddon;
   }
-  // Close rate: only count jobs on revenue-realized ROs so we match Tekmetric's denominator
-  const closeNum = orders.reduce((s, o) => isCountedRO(o) ? s + o.jobs.filter(j => j.authorized).length : s, 0);
-  const closeDen = orders.reduce((s, o) => isCountedRO(o) ? s + o.jobs.length : s, 0);
+  // Apply fleet GP to each parent shop row and recompute gpPct with updated revenue.
+  for (const s of byShop) {
+    if (fleetGpByShop[s.shopNum]) {
+      s.gpDollars += fleetGpByShop[s.shopNum];
+      s.gpPct = s.revenue ? s.gpDollars / s.revenue : 0;
+    }
+  }
+  // Close rate: exclude fleet-only secondaries (e.g. Yuma-B/USPS) — near-100%
+  // authorized fleet work inflates the retail close rate artificially.
+  const fleetIds = new Set(fleetOnlySecondary.map(o => o.id));
+  const closeNum = orders.reduce((s, o) => (!fleetIds.has(o.id) && isCountedRO(o)) ? s + o.jobs.filter(j => j.authorized).length : s, 0);
+  const closeDen = orders.reduce((s, o) => (!fleetIds.has(o.id) && isCountedRO(o)) ? s + o.jobs.length : s, 0);
   // Sort byShop by canonical shop number order (matches the order in SHOPS).
   const order = new Map<string, number>(SHOPS.map((s, i) => [s.num as string, i]));
   return {
