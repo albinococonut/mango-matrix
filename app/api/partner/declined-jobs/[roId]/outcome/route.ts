@@ -18,6 +18,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { appendCallOutcome } from '@/lib/partnerCallStore';
+import { readCache } from '@/lib/cache';
+import { DECLINED_JOBS_KEY, type DeclinedJobsShopCache } from '@/lib/handlers/declinedJobs';
+import { logDeclinedJobAttempt } from '@/lib/declinedJobStore';
+import { SHOPS } from '@/lib/shops';
 
 function isAuthed(req: NextRequest): boolean {
   const secret = process.env.PARTNER_API_SECRET;
@@ -70,5 +74,23 @@ export async function POST(
     loggedAt: now,
   });
 
-  return NextResponse.json({ ok: true, roId, outcomeCount: outcomes.length });
+  // Mirror the attempt into the internal declined-job resolution store so the
+  // to-do list shows the contact. Scan shop caches to find jobs on this RO,
+  // then log an attempt on each — your team can see it was called without
+  // having to mark it manually first.
+  const caches = await Promise.all(
+    SHOPS.map(s => readCache<DeclinedJobsShopCache>(DECLINED_JOBS_KEY(s.num)))
+  );
+  const jobIds: number[] = [];
+  for (const cache of caches) {
+    if (!cache) continue;
+    for (const job of cache.jobs) {
+      if (job.roId === roId) jobIds.push(job.jobId);
+    }
+  }
+  if (jobIds.length > 0) {
+    await Promise.all(jobIds.map(jobId => logDeclinedJobAttempt(jobId, calledBy || undefined)));
+  }
+
+  return NextResponse.json({ ok: true, roId, outcomeCount: outcomes.length, jobsUpdated: jobIds.length });
 }
