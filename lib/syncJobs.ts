@@ -535,7 +535,7 @@ export async function warmDeclinedJobsForShop(shopNum: string): Promise<string> 
   //   - Job not authorized
   //   - Subtotal at least $25 (skip noise like air freshener / wiper add-ons)
   //   - RO not excluded (USPS etc) and in counted statuses
-  type Item = { jobId: number; roId: number; customerId: number; jobName: string; jobSubtotal: number; declinedDate: string };
+  type Item = { jobId: number; roId: number; customerId: number; vehicleId: number; jobName: string; jobSubtotal: number; declinedDate: string };
   const items: Item[] = [];
   for (const o of ros) {
     if (!o.customerId) continue;
@@ -551,6 +551,7 @@ export async function warmDeclinedJobsForShop(shopNum: string): Promise<string> 
         jobId: j.id,
         roId: o.id,
         customerId: o.customerId,
+        vehicleId: o.vehicleId,
         jobName: (j.name || '').slice(0, 200) || `Job #${j.id}`,
         jobSubtotal: subtotalDollars,
         declinedDate: o.postedDate,
@@ -562,10 +563,14 @@ export async function warmDeclinedJobsForShop(shopNum: string): Promise<string> 
   items.sort((a, b) => (b.declinedDate || '').localeCompare(a.declinedDate || ''));
   const capped = items.slice(0, DECLINED_CACHE_CAP);
 
-  // Customer contact lookup is cached durably; only the top-N most-recent
-  // customers are live-fetched per warm so we don't hammer Tekmetric.
-  const custIds = Array.from(new Set(capped.map(i => i.customerId)));
-  const contacts = await resolveCustomerContacts(custIds, 80);
+  // Contact + vehicle lookups share the same cache-backed pattern; resolve in
+  // parallel so the two sets of Tekmetric fetches don't serialize.
+  const custIds    = Array.from(new Set(capped.map(i => i.customerId)));
+  const vehicleIds = Array.from(new Set(capped.map(i => i.vehicleId).filter(Boolean)));
+  const [contacts, vehicles] = await Promise.all([
+    resolveCustomerContacts(custIds, 80),
+    resolveVehicles(vehicleIds, 80),
+  ]);
 
   const jobs = capped.map(i => ({
     jobId: i.jobId,
@@ -573,6 +578,7 @@ export async function warmDeclinedJobsForShop(shopNum: string): Promise<string> 
     customerId: i.customerId,
     customerName: contacts.get(i.customerId)?.name || `Account #${i.customerId}`,
     phone: contacts.get(i.customerId)?.phone,
+    vehicle: vehicles.get(i.vehicleId),
     jobName: i.jobName,
     jobSubtotal: i.jobSubtotal,
     declinedDate: i.declinedDate,

@@ -24,6 +24,7 @@ export interface DeclinedJobRow {
   customerId: number;
   customerName: string;
   phone?: string;
+  vehicle?: string;               // e.g. "2019 Toyota Camry"
   jobName: string;
   jobSubtotal: number;            // dollars
   declinedDate: string;           // ISO — uses the RO's postedDate (= when customer left without authorizing)
