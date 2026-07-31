@@ -26,7 +26,8 @@ import { DECLINED_JOBS_KEY, type DeclinedJobsShopCache } from '@/lib/handlers/de
 import { MISSED_REBOOKS_KEY, type MissedRebookRow } from '@/lib/handlers/missedRebooks';
 import { SHOPS, SHOP_BY_NUM, ShopNum, isRampingShop } from '@/lib/shops';
 import { writeCache, readCache } from '@/lib/cache';
-import { fetchAllLeads, isEligibleCall } from '@/lib/whatconverts';
+import { fetchAllLeads as fetchAllLeadsRC, isEligibleCall } from '@/lib/ringcentral';
+import { warmSalesEffectivenessForShop, SE_WARM_IDX_KEY } from '@/lib/salesEffectiveness';
 import { classifyBatch, scoreSalvageabilityBatch } from '@/lib/classify';
 import { MISSED_CALLBACKS_KEY, type MissedCallbacksShopCache } from '@/lib/handlers/missedCallbacks';
 import { reopenStaleResolutions } from '@/lib/callbackStore';
@@ -38,10 +39,27 @@ import { addDays, addMonths, startOfWeek, endOfWeek, startOfYear } from 'date-fn
 import { chainKpi } from '@/lib/metrics';
 import { getSettledWeek, writeSettledWeek, FREEZE_AFTER_DAYS } from '@/lib/reconcile';
 import { backfillWeeklyActuals } from '@/lib/learningStore';
+import { computeAndStoreBias } from '@/lib/projBias';
+import { computeAndStoreCalibration } from '@/lib/projCalibration';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { maybeCrown } from '@/lib/goldenMango';
 import { isCountedRO, isPostOfficeName } from '@/lib/metrics';
 import { RC_SHOP_KEY, type ReturnCustomersShop } from '@/lib/handlers/returnCustomers';
+
+// Fetch from RingCentral only. WhatConverts ingestion is disabled — existing
+// cached WC data remains in Redis and on the dashboard, but no new data is pulled.
+async function fetchAllLeads(f: { shop: ShopNum; startDate: string; endDate: string }) {
+  const [wcResult, rcResult] = await Promise.allSettled([
+    Promise.resolve([] as import('@/lib/whatconverts').Lead[]),
+    process.env.RINGCENTRAL_JWT
+      ? fetchAllLeadsRC(f)
+      : Promise.resolve([] as import('@/lib/whatconverts').Lead[]),
+  ]);
+  return [
+    ...(wcResult.status === 'fulfilled' ? wcResult.value : []),
+    ...(rcResult.status === 'fulfilled' ? rcResult.value : []),
+  ];
+}
 
 export interface SyncJob {
   name: string;
@@ -330,7 +348,7 @@ const updateGoldenMango: SyncJob = {
 // reads. Gated on ANTHROPIC_API_KEY so it's a no-op if the key is absent.
 const refreshBookedRate: SyncJob = {
   name: 'refresh-booked-rate-strict',
-  isEnabled: () => !!process.env.ANTHROPIC_API_KEY && !!process.env.WHATCONVERTS_001,
+  isEnabled: () => !!process.env.ANTHROPIC_API_KEY && (!!process.env.WHATCONVERTS_001 || !!process.env.RINGCENTRAL_JWT),
   async run() {
     const w = resolveRange('last_7_days');
     const startDate = w.startISO.slice(0, 10);
@@ -409,7 +427,7 @@ const refreshBookedRate: SyncJob = {
       chain: { eligible: totalEligWtd, booked: totalBookedWtd, bookedRatePct: totalEligWtd ? Math.round((totalBookedWtd / totalEligWtd) * 1000) / 10 : 0 },
     };
     await writeCache('booked_rate_week_to_date_strict', strictWtd);
-    await writeCache('hb_whatconverts', { eligible: totalElig, booked: totalBooked });
+    await writeCache('hb_ringcentral', { eligible: totalElig, booked: totalBooked });
     return { message: `strict booked-rate: trailing7 ${totalBooked}/${totalElig} · wtd ${totalBookedWtd}/${totalEligWtd} across ${shops.length} shops` };
   },
 };
@@ -494,12 +512,25 @@ export async function warmMissedCallbacksForShop(shopNum: string): Promise<strin
 
 const warmMissedCallbacks: SyncJob = {
   name: 'warm-missed-callbacks',
-  isEnabled: () => !!process.env.ANTHROPIC_API_KEY && !!process.env.WHATCONVERTS_001,
+  isEnabled: () => !!process.env.ANTHROPIC_API_KEY && (!!process.env.WHATCONVERTS_001 || !!process.env.RINGCENTRAL_JWT),
   async run() {
     const idx = (await readCache<number>(MC_IDX_KEY)) ?? 0;
     const shop = SHOPS[idx % SHOPS.length];
     await writeCache(MC_IDX_KEY, (idx + 1) % SHOPS.length);
     return { message: await warmMissedCallbacksForShop(shop.num) };
+  },
+};
+
+// Sales Effectiveness — grade outbound "inspection results" calls per shop.
+// Round-robin one shop per cron tick (same pattern as warmMissedCallbacks).
+const warmSalesEffectiveness: SyncJob = {
+  name: 'warm-sales-effectiveness',
+  isEnabled: () => !!process.env.ANTHROPIC_API_KEY && !!process.env.RINGCENTRAL_JWT && !!process.env.OPENAI_API_KEY,
+  async run() {
+    const idx = (await readCache<number>(SE_WARM_IDX_KEY)) ?? 0;
+    const shop = SHOPS[idx % SHOPS.length];
+    await writeCache(SE_WARM_IDX_KEY, (idx + 1) % SHOPS.length);
+    return { message: await warmSalesEffectivenessForShop(shop.num) };
   },
 };
 
@@ -759,8 +790,23 @@ const reconcileWeekly: SyncJob = {
         const r = await backfillWeeklyActuals(weekStart, perShop);
         if (r.updated > 0) settled.push(`${weekStart}: actuals filled ${r.updated} log rows`);
       } catch (e) { console.warn('[reconcile] backfillWeeklyActuals failed:', (e as any)?.message); }
+
       settled.push(`${weekStart}:$${Math.round(k.totalRevenue).toLocaleString()}`);
     }
+    // After all weeks are settled + actuals backfilled, recompute per-shop
+    // bias corrections from the full rolling window. One call covers all shops.
+    try {
+      const bias = await computeAndStoreBias();
+      const corrected = bias.shops.filter((s) => s.weeksUsed >= 6 && s.correction !== 1.0);
+      if (corrected.length) {
+        const desc = corrected.map((s) => `${s.shopNum}:×${s.correction.toFixed(3)}`).join(' ');
+        settled.push(`bias updated: ${desc}`);
+      }
+    } catch (e) { console.warn('[reconcile] computeAndStoreBias failed:', (e as any)?.message); }
+    // Also recalibrate per-checkpoint band widths from coverage history.
+    try {
+      await computeAndStoreCalibration();
+    } catch (e) { console.warn('[reconcile] computeAndStoreCalibration failed:', (e as any)?.message); }
     await writeCache(`settled_run_${today}`, true);
     return { message: `settled ${settled.length} week(s): ${settled.join(', ') || 'none (all frozen)'}` };
   },
@@ -1097,6 +1143,7 @@ export const JOBS: SyncJob[] = [
   warmReturnCustomers,
   refreshBookedRate,
   warmMissedCallbacks,
+  warmSalesEffectiveness,
   warmDeclinedJobs,
   warmGoogleRatings,
   snapshotAR,
