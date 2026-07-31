@@ -221,10 +221,11 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
       headers: { Authorization: `Bearer ${token}` },
       cache: 'no-store',
     });
-    // RC CMN-301: rate limit — wait 45s and retry once
-    if (resp.status === 429) {
-      console.warn('[rc] call-log rate limited (429), waiting 45s before retry');
-      await new Promise(r => setTimeout(r, 45_000));
+    // RC CMN-301: rate limit — retry up to 3× with increasing waits (45s, 90s, 135s)
+    for (let attempt = 1; resp.status === 429 && attempt <= 3; attempt++) {
+      const waitMs = attempt * 45_000;
+      console.warn(`[rc] call-log rate limited (429), waiting ${waitMs / 1000}s (attempt ${attempt}/3)`);
+      await new Promise(r => setTimeout(r, waitMs));
       resp = await fetch(nextUrl, {
         headers: { Authorization: `Bearer ${token}` },
         cache: 'no-store',

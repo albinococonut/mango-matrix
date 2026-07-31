@@ -7,7 +7,23 @@ import { SHOPS } from '@/lib/shops';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-export const GET = requireExecutive(async (_req: NextRequest) => {
+export const GET = requireExecutive(async (req: NextRequest) => {
+  const shopParam = req.nextUrl.searchParams.get('shop');
+
+  // Single-shop mode: ?shop=NNN — warms one shop immediately, no delay.
+  // Use this to warm shops one at a time without risking a 300s timeout.
+  if (shopParam) {
+    const shop = SHOPS.find(s => s.num === shopParam);
+    if (!shop) return NextResponse.json({ error: `unknown shop ${shopParam}` }, { status: 400 });
+    try {
+      const msg = await warmSalesEffectivenessForShop(shopParam);
+      return NextResponse.json({ ok: true, shop: shopParam, message: msg });
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, shop: shopParam, error: e?.message ?? 'unknown' }, { status: 500 });
+    }
+  }
+
+  // All-shops mode (legacy): sequential with 20s gap to stay under RC rate limit.
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const results: Record<string, string> = {};
   let first = true;

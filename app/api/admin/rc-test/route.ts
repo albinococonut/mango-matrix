@@ -121,6 +121,7 @@ export const GET = requireExecutive(async (_req: NextRequest) => {
             toPhone: r.to?.phoneNumber ?? null,
             hasRecording: !!(r.recording?.contentUri),
             recordingId: r.recording?.id ?? null,
+            contentUri: r.recording?.contentUri ?? null,
           })),
         };
       } else {
@@ -163,6 +164,87 @@ export const GET = requireExecutive(async (_req: NextRequest) => {
       results.extDetails = extDetails;
     } catch (e: any) {
       results.extDetails = { error: e?.message };
+    }
+  }
+
+  // 6b. Try downloading one recording to verify audio download scope.
+  // Uses a hardcoded recent recording ID (2984647952010) as a fallback when
+  // the outbound call log is rate-limited, so this test can run independently.
+  if ((results.auth as any)?.ok) {
+    try {
+      const token = await getRCToken();
+      const fallbackRecordingId = '2984647952010';
+      const firstRecWithRecording = ((results.outboundLog as any)?.records ?? [])
+        .find((r: any) => r.hasRecording && r.recordingId);
+      const recordingId = firstRecWithRecording?.recordingId ?? fallbackRecordingId;
+      const contentUri = `${RC_BASE}/restapi/v1.0/account/~/recording/${recordingId}/content`;
+      const audioResp = await fetch(contentUri, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
+        redirect: 'follow',
+      });
+      const finalUrl = audioResp.url;
+      const bodySnippet = audioResp.ok
+        ? `(binary ok — ${audioResp.headers.get('content-type')}, ${audioResp.headers.get('content-length')} bytes)`
+        : (await audioResp.text()).slice(0, 400);
+      results.audioDownloadTest = {
+        recordingId,
+        usingFallback: !firstRecWithRecording,
+        status: audioResp.status,
+        ok: audioResp.ok,
+        finalUrl: finalUrl !== contentUri ? finalUrl.slice(0, 80) + '…' : '(no redirect)',
+        contentType: audioResp.headers.get('content-type'),
+        body: bodySnippet,
+      };
+    } catch (e: any) {
+      results.audioDownloadTest = { error: e?.message };
+    }
+  }
+
+  // 6c. Try a live Whisper transcription on the first short recording we can find
+  if ((results.auth as any)?.ok && process.env.OPENAI_API_KEY) {
+    try {
+      const token = await getRCToken();
+      // Use the shortest recording with a contentUri to minimise Whisper latency
+      const recs = ((results.outboundLog as any)?.records ?? [])
+        .filter((r: any) => r.hasRecording && r.contentUri && r.duration >= 30)
+        .sort((a: any, b: any) => a.duration - b.duration);
+      const testRec = recs[0];
+      if (testRec) {
+        const audioResp = await fetch(testRec.contentUri, {
+          headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
+        });
+        if (audioResp.ok) {
+          const audioBuffer = await audioResp.arrayBuffer();
+          const form = new FormData();
+          form.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'recording.mp3');
+          form.append('model', 'whisper-1');
+          const whisperResp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+            body: form, cache: 'no-store',
+          });
+          if (whisperResp.ok) {
+            const data = await whisperResp.json();
+            results.whisperTest = {
+              ok: true,
+              recordingId: testRec.recordingId,
+              duration: testRec.duration,
+              audioBytes: audioBuffer.byteLength,
+              transcriptLength: (data.text ?? '').length,
+              transcriptSnippet: (data.text ?? '').slice(0, 120),
+            };
+          } else {
+            const errText = await whisperResp.text();
+            results.whisperTest = { ok: false, status: whisperResp.status, error: errText.slice(0, 300) };
+          }
+        } else {
+          results.whisperTest = { ok: false, audioStatus: audioResp.status };
+        }
+      } else {
+        results.whisperTest = { skipped: 'no eligible recordings in outbound log' };
+      }
+    } catch (e: any) {
+      results.whisperTest = { error: e?.message };
     }
   }
 
