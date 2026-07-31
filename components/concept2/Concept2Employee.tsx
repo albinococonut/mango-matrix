@@ -11,6 +11,7 @@ import { SHOPS, SHOP_BY_NUM } from '@/lib/shops';
 import { loadGoals, GoalsByShop, weeklyMinuteProratedGoal } from '@/lib/goals';
 import { INK, INK2, FAINT, LINE, AMBER, GOOD, WARN, BAD, heatRGB, norm, usd, safe } from './kit';
 import { MissedCallbacksChainStrip, MissedCallbacksShopQueue } from '@/components/MissedCallbacks';
+import SalesEffectiveness from '@/components/SalesEffectiveness';
 import { MissedRebooksShopList } from '@/components/MissedRebooks';
 import ConceptAR from './ConceptAR';
 import { TrophyIcon } from '@/components/Trophy';
@@ -426,6 +427,11 @@ export default function Concept2Employee({ role }: { role?: string }) {
         </div>
         <div id="callbacks" className="scroll-mt-6">
           <BookedRate />
+        </div>
+        <div id="sales-effectiveness" className="scroll-mt-6">
+          <SalesEffectiveness />
+        </div>
+        <div id="todos" className="scroll-mt-6">
           <TodoRecoveriesWidget />
           <ShopPerformance isExec={isExec} />
         </div>
