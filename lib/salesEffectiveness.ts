@@ -411,7 +411,7 @@ export async function warmSalesEffectivenessForShop(shopNum: string): Promise<st
     avgScore,
     totalGraded: inspectionGrades.length,
     needsCoachingCount,
-    grades,
+    grades: inspectionGrades,  // non-inspection calls are cached individually but excluded from the shop summary
   };
   await writeCache(SHOP_CACHE_KEY(num), shopCache);
 

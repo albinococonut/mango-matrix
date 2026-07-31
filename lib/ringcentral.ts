@@ -401,9 +401,7 @@ export async function fetchAllLeads(f: LeadFilter): Promise<Lead[]> {
 
 export function isEligibleCall(lead: Lead): boolean {
   if (!lead.call_transcription || lead.call_transcription.length < 30) return false;
-  // 45s minimum: quick status/pickup calls ("is my car ready?") typically run
-  // under 30s. Genuine new-customer inquiries run 1-4 minutes.
-  if (lead.call_duration_seconds > 0 && lead.call_duration_seconds < 45) return false;
+  if (lead.call_duration_seconds > 0 && lead.call_duration_seconds < 15) return false;
   return true;
 }
 

@@ -26,7 +26,8 @@ import { DECLINED_JOBS_KEY, type DeclinedJobsShopCache } from '@/lib/handlers/de
 import { MISSED_REBOOKS_KEY, type MissedRebookRow } from '@/lib/handlers/missedRebooks';
 import { SHOPS, SHOP_BY_NUM, ShopNum, isRampingShop } from '@/lib/shops';
 import { writeCache, readCache } from '@/lib/cache';
-import { fetchAllLeads as fetchAllLeadsRC, isEligibleCall } from '@/lib/ringcentral';
+import { fetchAllLeads as fetchAllLeadsRC } from '@/lib/ringcentral';
+import { fetchAllLeads as fetchAllLeadsWC, isEligibleCall } from '@/lib/whatconverts';
 import { warmSalesEffectivenessForShop, SE_WARM_IDX_KEY } from '@/lib/salesEffectiveness';
 import { classifyBatch, scoreSalvageabilityBatch } from '@/lib/classify';
 import { MISSED_CALLBACKS_KEY, type MissedCallbacksShopCache } from '@/lib/handlers/missedCallbacks';
@@ -46,19 +47,14 @@ import { maybeCrown } from '@/lib/goldenMango';
 import { isCountedRO, isPostOfficeName } from '@/lib/metrics';
 import { RC_SHOP_KEY, type ReturnCustomersShop } from '@/lib/handlers/returnCustomers';
 
-// Fetch from RingCentral only. WhatConverts ingestion is disabled — existing
-// cached WC data remains in Redis and on the dashboard, but no new data is pulled.
+// Call conversions use WhatConverts. RC inbound ingestion is disabled here —
+// fetchAllLeadsRC is preserved for future use but not called from this path.
 async function fetchAllLeads(f: { shop: ShopNum; startDate: string; endDate: string }) {
-  const [wcResult, rcResult] = await Promise.allSettled([
-    Promise.resolve([] as import('@/lib/whatconverts').Lead[]),
-    process.env.RINGCENTRAL_JWT
-      ? fetchAllLeadsRC(f)
-      : Promise.resolve([] as import('@/lib/whatconverts').Lead[]),
-  ]);
-  return [
-    ...(wcResult.status === 'fulfilled' ? wcResult.value : []),
-    ...(rcResult.status === 'fulfilled' ? rcResult.value : []),
-  ];
+  try {
+    return await fetchAllLeadsWC(f);
+  } catch {
+    return [] as Awaited<ReturnType<typeof fetchAllLeadsWC>>;
+  }
 }
 
 export interface SyncJob {
