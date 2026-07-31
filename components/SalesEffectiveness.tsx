@@ -1,12 +1,7 @@
 'use client';
 
-// Sales Effectiveness — grades outbound "inspection results" calls where the
-// advisor walks the customer through the ticket and asks for authorization.
-// Shows per-shop average scores, a "Needs Guava" coaching queue of calls that
-// scored below 3/5, and a "Mark handled" action per call.
-
 import { useEffect, useState, useCallback } from 'react';
-import { ChevronDown, ChevronUp, Star, TrendingUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, Star, TrendingUp, MessageSquare, PlayCircle } from 'lucide-react';
 import { TrophyIcon } from './Trophy';
 
 interface OmittedItem { name: string; severity: string; amount: string }
@@ -28,6 +23,9 @@ interface Grade {
   weakestMoment: string;
   needsCoaching: boolean;
   handled?: boolean;
+  transcript?: string;
+  contentUri?: string;
+  note?: string;
 }
 
 interface ShopData {
@@ -81,6 +79,10 @@ function ScoreBar({ score, max = 5 }: { score: number; max?: number }) {
 function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string; onHandled: (callId: string) => void }) {
   const [open, setOpen] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [note, setNote] = useState(grade.note ?? '');
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteSaved, setNoteSaved] = useState(false);
 
   const date = new Date(grade.startTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Denver' });
   const mins = Math.floor(grade.durationSeconds / 60);
@@ -99,8 +101,23 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
     } catch { /* swallow */ } finally { setMarking(false); }
   };
 
+  const handleSaveNote = async () => {
+    setSavingNote(true);
+    try {
+      await fetch('/api/extras?view=sales-effectiveness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shopNum, callId: grade.callId, note }),
+      });
+      setNoteSaved(true);
+      setTimeout(() => setNoteSaved(false), 2000);
+    } catch { /* swallow */ } finally { setSavingNote(false); }
+  };
+
+  const noteDirty = note !== (grade.note ?? '');
+
   return (
-    <div className="border border-mango-line rounded-xl mb-2 overflow-hidden" style={{ opacity: grade.handled ? 0.5 : 1 }}>
+    <div className="border border-mango-line rounded-xl mb-2 overflow-hidden" style={{ opacity: grade.handled ? 0.55 : 1 }}>
       <button className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-mango-bg/50 transition" onClick={() => setOpen(o => !o)}>
         <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-[12px] font-bold text-white flex-shrink-0"
           style={{ background: SCORE_COLOR(grade.overallScore) }}>{grade.overallGrade}</span>
@@ -108,12 +125,18 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[12.5px] font-semibold">{date} · {dur}</span>
             {grade.roNumber && <span className="text-[11px] text-mango-muted">RO #{grade.roNumber}</span>}
+            {grade.needsCoaching && !grade.handled && (
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: '#FEF3C7', color: '#92400E' }}>
+                🥭 Needs Guava
+              </span>
+            )}
             {grade.ticketCoverage.omittedItems.length > 0 && (
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: '#FEE2E2', color: '#DC2626' }}>
                 {grade.ticketCoverage.omittedItems.length} items skipped
               </span>
             )}
             {grade.handled && <span className="text-[10px] text-mango-muted italic">handled</span>}
+            {grade.note && <span className="text-[10px] text-mango-muted">📝</span>}
           </div>
           <p className="text-[11px] text-mango-muted mt-0.5 line-clamp-1">{grade.summary}</p>
         </div>
@@ -124,6 +147,38 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
       {open && (
         <div className="px-3 pb-3 border-t border-mango-line bg-mango-bg/40 space-y-3">
           <p className="text-[12px] mt-3 text-mango-ink">{grade.summary}</p>
+
+          {/* Recording + Transcript toggle buttons */}
+          {(grade.contentUri || grade.transcript) && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {grade.contentUri && (
+                <div className="flex-1 min-w-0">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Recording</div>
+                  <audio controls className="w-full" style={{ height: 32 }}
+                    src={`/api/recording?callId=${encodeURIComponent(grade.callId)}`} />
+                </div>
+              )}
+              {grade.transcript && (
+                <button
+                  onClick={() => setShowTranscript(v => !v)}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition self-end"
+                  style={showTranscript
+                    ? { background: 'rgba(232,134,62,0.12)', border: '1px solid rgba(232,134,62,0.35)', color: '#B5631F' }
+                    : { background: 'rgba(255,255,255,0.65)', border: '1px solid var(--mango-line, #e8e3db)', color: '#5a5248' }}
+                >
+                  <MessageSquare className="w-3 h-3" /> Transcript
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Transcript */}
+          {showTranscript && grade.transcript && (
+            <div className="text-[11.5px] text-mango-ink whitespace-pre-wrap rounded-xl p-3 max-h-64 overflow-y-auto"
+              style={{ background: 'rgba(34,32,28,0.04)', border: '1px solid var(--mango-line, #e8e3db)' }}>
+              {grade.transcript}
+            </div>
+          )}
 
           {grade.ticketCoverage.omittedItems.length > 0 && (
             <div>
@@ -166,6 +221,25 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
             </div>
           )}
 
+          {/* Notes */}
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Notes</div>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              rows={2}
+              placeholder="Add notes about this call…"
+              className="w-full text-[12px] text-mango-ink rounded-lg px-2.5 py-2 resize-none outline-none focus:ring-1"
+              style={{ background: 'rgba(255,255,255,0.65)', border: '1px solid var(--mango-line, #e8e3db)', focusRingColor: '#E8863E' } as any}
+            />
+            {noteDirty && (
+              <button onClick={handleSaveNote} disabled={savingNote}
+                className="mt-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg border border-mango-line hover:bg-mango-bg transition disabled:opacity-50">
+                {savingNote ? 'Saving…' : noteSaved ? '✓ Saved' : 'Save note'}
+              </button>
+            )}
+          </div>
+
           {!grade.handled && (
             <button onClick={handleMark} disabled={marking}
               className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg border border-mango-line hover:bg-mango-bg transition disabled:opacity-50">
@@ -181,7 +255,6 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
 export default function SalesEffectiveness() {
   const [snap, setSnap] = useState<Snap | null>(null);
   const [expandedShop, setExpandedShop] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -209,7 +282,6 @@ export default function SalesEffectiveness() {
   if (!snap) return <div className="card animate-pulse h-[300px] mb-6" />;
 
   const sorted = [...snap.shops].sort((a, b) => b.avgScore - a.avgScore);
-  const leader = sorted[0]?.avgScore ?? 0;
   const warming = snap.chain.totalGraded === 0;
 
   return (
@@ -223,7 +295,7 @@ export default function SalesEffectiveness() {
           <h2 className="text-lg font-semibold">Sales Effectiveness — Rolling 7 Days</h2>
           <p className="text-[12.5px] text-mango-muted mt-0.5">
             Outbound inspection-result calls graded by AI on 9 dimensions: ticket completeness, warranty pitch, authorization ask, and more.
-            Counts toward the weekly trophy. Calls scoring below 3/5 appear in the Needs Guava coaching queue below.
+            Calls scoring below 3/5 appear in the Needs Guava coaching queue.
           </p>
         </div>
       </div>
@@ -259,8 +331,14 @@ export default function SalesEffectiveness() {
             {sorted.map((shop, i) => {
               const rank = i + 1;
               const isExpanded = expandedShop === shop.shopNum;
-              const coaching = shop.grades.filter(g => g.needsCoaching && !g.handled);
-              const visibleGrades = showAll[shop.shopNum] ? coaching : coaching.slice(0, 3);
+              const coachingCount = shop.grades.filter(g => g.needsCoaching && !g.handled).length;
+              // Sort: coaching first (unhandled), then by score desc
+              const sortedGrades = [...shop.grades].sort((a, b) => {
+                const aNeedsCoach = a.needsCoaching && !a.handled ? 1 : 0;
+                const bNeedsCoach = b.needsCoaching && !b.handled ? 1 : 0;
+                if (bNeedsCoach !== aNeedsCoach) return bNeedsCoach - aNeedsCoach;
+                return b.overallScore - a.overallScore;
+              });
 
               return (
                 <div key={shop.shopNum}>
@@ -276,10 +354,10 @@ export default function SalesEffectiveness() {
                     <span className="text-[11px] text-mango-muted w-24 text-right tabular-nums">
                       {shop.totalGraded} call{shop.totalGraded !== 1 ? 's' : ''}
                     </span>
-                    {coaching.length > 0 && (
+                    {coachingCount > 0 && (
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
                         style={{ background: '#FEF3C7', color: '#92400E' }}>
-                        {coaching.length} Needs Guava
+                        {coachingCount} Needs Guava
                       </span>
                     )}
                     {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-mango-muted flex-shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-mango-muted flex-shrink-0" />}
@@ -287,40 +365,13 @@ export default function SalesEffectiveness() {
 
                   {isExpanded && (
                     <div className="px-3 pb-2 pt-1">
-                      {coaching.length === 0 ? (
-                        <p className="text-[12px] text-mango-muted py-2">No calls needing coaching this week.</p>
+                      {sortedGrades.length === 0 ? (
+                        <p className="text-[12px] text-mango-muted py-2">No calls graded this week.</p>
                       ) : (
-                        <>
-                          <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-2 flex items-center gap-1.5">
-                            <span style={{ color: '#92400E' }}>🥭 Needs Guava</span>
-                            <span className="font-normal text-mango-faint">— calls scoring below 3/5</span>
-                          </div>
-                          {visibleGrades.map(g => (
-                            <CallCard key={g.callId} grade={g} shopNum={shop.shopNum}
-                              onHandled={(callId) => handleHandled(shop.shopNum, callId)} />
-                          ))}
-                          {coaching.length > 3 && (
-                            <button className="text-[11.5px] text-mango-muted hover:text-mango-ink mt-1 transition"
-                              onClick={() => setShowAll(p => ({ ...p, [shop.shopNum]: !p[shop.shopNum] }))}>
-                              {showAll[shop.shopNum] ? 'Show fewer' : `Show ${coaching.length - 3} more`}
-                            </button>
-                          )}
-                        </>
-                      )}
-
-                      {/* All graded calls for this shop */}
-                      {shop.grades.filter(g => !g.needsCoaching).length > 0 && (
-                        <details className="mt-3">
-                          <summary className="text-[11px] text-mango-muted cursor-pointer hover:text-mango-ink">
-                            {shop.grades.filter(g => !g.needsCoaching).length} passing calls (score ≥ 3)
-                          </summary>
-                          <div className="mt-2">
-                            {shop.grades.filter(g => !g.needsCoaching).map(g => (
-                              <CallCard key={g.callId} grade={g} shopNum={shop.shopNum}
-                                onHandled={(callId) => handleHandled(shop.shopNum, callId)} />
-                            ))}
-                          </div>
-                        </details>
+                        sortedGrades.map(g => (
+                          <CallCard key={g.callId} grade={g} shopNum={shop.shopNum}
+                            onHandled={(callId) => handleHandled(shop.shopNum, callId)} />
+                        ))
                       )}
                     </div>
                   )}

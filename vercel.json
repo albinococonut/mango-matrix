@@ -1,6 +1,8 @@
 {
   "functions": {
+    "app/api/cron/ticker/route.ts":               { "maxDuration": 120 },
     "app/api/cron/run-syncs/route.ts":            { "maxDuration": 800 },
+    "app/api/admin/warm-sales-eff/route.ts":      { "maxDuration": 800 },
     "app/api/parts-matrix-usage/route.ts":        { "maxDuration": 120 },
     "app/api/shop-performance-heatmap/route.ts":  { "maxDuration": 120 },
     "app/api/metrics/route.ts":                   { "maxDuration": 120 },

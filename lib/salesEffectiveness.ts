@@ -30,6 +30,8 @@ export interface SalesGrade {
   customerPhone: string;
   extensionNumber: string;
   roNumber: number | null;
+  transcript?: string;
+  contentUri?: string;
   // classifier fields — absent on old cached grades (treat as true for backward compat)
   isInspectionResultsCall?: boolean;
   callType?: string;
@@ -203,6 +205,7 @@ async function gradeCall(
   customerPhone: string,
   extensionNumber: string,
   roNumber: number | null,
+  contentUri?: string,
 ): Promise<SalesGrade> {
   const ticket = ticketText ?? '(ticket not available — grade based on transcript only; mark ticketCompleteness as null)';
   const userPrompt = `Grade this call.\n\nTHE TICKET:\n${ticket}\n\nTHE TRANSCRIPT:\n${transcript}`;
@@ -234,6 +237,7 @@ async function gradeCall(
   if (raw.isInspectionResultsCall === false) {
     return {
       callId, startTime, durationSeconds, customerPhone, extensionNumber, roNumber,
+      transcript, contentUri,
       isInspectionResultsCall: false,
       callType: raw.callType ?? 'Other',
       notGradedReason: raw.notGradedReason ?? '',
@@ -252,6 +256,8 @@ async function gradeCall(
     customerPhone,
     extensionNumber,
     roNumber,
+    transcript,
+    contentUri,
     isInspectionResultsCall: true,
     overallGrade: raw.overallGrade ?? 'C',
     overallScore: typeof raw.overallScore === 'number' ? raw.overallScore : 2.5,
@@ -334,6 +340,22 @@ export async function getSalesCallHandled(shopNum: string): Promise<Set<string>>
   return new Set(Object.entries(existing).filter(([, t]) => t > cutoff).map(([id]) => id));
 }
 
+export async function saveSalesCallNote(shopNum: string, callId: string, note: string): Promise<void> {
+  const key = `sales_eff_notes:${shopNum}`;
+  const existing = await readCache<Record<string, string>>(key) ?? {};
+  if (note) {
+    existing[callId] = note;
+  } else {
+    delete existing[callId];
+  }
+  await writeCache(key, existing, { ttlSeconds: 30 * 24 * 60 * 60 });
+}
+
+export async function getSalesCallNotes(shopNum: string): Promise<Map<string, string>> {
+  const existing = await readCache<Record<string, string>>(`sales_eff_notes:${shopNum}`) ?? {};
+  return new Map(Object.entries(existing));
+}
+
 // --- Main sync function ---
 
 export async function warmSalesEffectivenessForShop(shopNum: string): Promise<string> {
@@ -375,7 +397,8 @@ export async function warmSalesEffectivenessForShop(shopNum: string): Promise<st
   const results = await Promise.allSettled(
     withTranscript.map(async (call) => {
       const cached = await readCache<SalesGrade>(GRADE_CACHE_KEY(call.id));
-      if (cached) return cached;
+      // Re-grade if this is an old-format grade lacking the STEP-1 isInspectionResultsCall field
+      if (cached && cached.isInspectionResultsCall !== undefined) return cached;
 
       const { roNumber, jobs } = await matchROForCallWithROs(
         call.customerPhone, call.startTime, shop.tekmetricId, sharedROs
@@ -383,7 +406,8 @@ export async function warmSalesEffectivenessForShop(shopNum: string): Promise<st
       const ticketText = jobs.length > 0 ? formatTicket(jobs) : null;
       const grade = await gradeCall(
         call.transcript, ticketText, call.id, call.startTime,
-        call.durationSeconds, call.customerPhone, call.extensionNumber, roNumber
+        call.durationSeconds, call.customerPhone, call.extensionNumber, roNumber,
+        call.contentUri
       );
       await writeCache(GRADE_CACHE_KEY(call.id), grade, { ttlSeconds: 30 * 24 * 60 * 60 });
       newGrades++;
@@ -419,4 +443,4 @@ export async function warmSalesEffectivenessForShop(shopNum: string): Promise<st
   return `shop ${num} (${shop.name}) — ${inspectionGrades.length} graded (${newGrades} new) · avg ${avgScore}/5 · ${needsCoachingCount} need coaching${skipNote}`;
 }
 
-export { SHOP_CACHE_KEY as SE_SHOP_CACHE_KEY };
+export { SHOP_CACHE_KEY as SE_SHOP_CACHE_KEY, GRADE_CACHE_KEY as SE_GRADE_CACHE_KEY };

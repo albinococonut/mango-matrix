@@ -493,19 +493,14 @@ function OpsHero({ kicker, heroValue, heroLabel, heroAccent, micros, footnote }:
   );
 }
 
-// Section opener that introduces a chapter (Recognition / Operations) the way a
-// magazine prints a department head — eyebrow + Fraunces title + intro line.
-function SectionOpener({ kicker, title, sub, accent }: { kicker: string; title: string; sub: string; accent?: string }) {
+function SectionOpener({ kicker, title, sub: _sub, accent }: { kicker: string; title: string; sub?: string; accent?: string }) {
   const a = accent || AMBER;
   return (
-    <div className="mb-6 mt-2">
-      <div className="flex items-center gap-3 mb-2">
-        <span className="h-px flex-1" style={{ background: `linear-gradient(90deg, ${a}, transparent)` }} />
-        <span className="c2ui text-[12.5px] font-bold uppercase tracking-[0.28em]" style={{ color: a }}>{kicker}</span>
-        <span className="h-px flex-1" style={{ background: `linear-gradient(90deg, transparent, ${a})` }} />
-      </div>
-      <h2 className="c2disp leading-tight text-center" style={{ color: INK, fontSize: 30, letterSpacing: '-0.02em' }}>{title}</h2>
-      <p className="c2ui text-center text-[12.5px] mt-1.5 max-w-2xl mx-auto" style={{ color: INK2 }}>{sub}</p>
+    <div className="flex items-center gap-2.5 mb-3 mt-1">
+      <span className="c2ui text-[12.5px] font-bold uppercase tracking-[0.28em] shrink-0" style={{ color: a }}>{kicker}</span>
+      <span className="c2ui text-[12.5px]" style={{ color: INK2 }}>·</span>
+      <span className="c2ui text-[13px] font-medium shrink-0" style={{ color: INK2 }}>{title}</span>
+      <span className="h-px flex-1" style={{ background: `linear-gradient(90deg, ${a}50, transparent)` }} />
     </div>
   );
 }

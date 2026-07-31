@@ -185,6 +185,8 @@ export function TechCard({ r, rank, onClick, variant = 'default' }: {
   //   compact (landscape): efficiency stacked ABOVE hours · jobs (single
   //                       line), so the stat block is narrower and the
   //                       right column has more room for the tech name
+  const statBg = `linear-gradient(135deg, ${effColor}26 0%, ${effColor}10 60%, transparent 100%)`;
+
   const statBlock = compact ? (
     // Fully vertical stack: % → EFFICIENCY label → hours → jobs.
     //
@@ -195,7 +197,7 @@ export function TechCard({ r, rank, onClick, variant = 'default' }: {
     // dropping the horizontal margin so the stat block goes edge-to-edge
     // inside the right column, tightening internal padding to px-1.5,
     // and shrinking the % from 22→18 so it has breathing room.
-    <div className="mb-1 mx-1 px-1.5 py-1.5 rounded-lg flex flex-col" style={{ background: '#FBF7F0' }}>
+    <div className="mb-1 mx-1 px-1.5 py-1.5 rounded-lg flex flex-col" style={{ background: statBg }}>
       <span className="text-[18px] font-extrabold leading-none tnum" style={{ color: effColor }}>
         {pct(r.efficiency)}
       </span>
@@ -205,7 +207,7 @@ export function TechCard({ r, rank, onClick, variant = 'default' }: {
     </div>
   ) : (
     <div className="mx-4 my-3 px-4 py-3 mt-auto rounded-xl flex items-end justify-between"
-      style={{ background: '#FBF7F0' }}>
+      style={{ background: statBg }}>
       <div>
         <div className="text-[2rem] font-extrabold leading-none tracking-[-0.02em] tnum" style={{ color: effColor }}>
           {pct(r.efficiency)}
