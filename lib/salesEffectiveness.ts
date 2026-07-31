@@ -30,6 +30,11 @@ export interface SalesGrade {
   customerPhone: string;
   extensionNumber: string;
   roNumber: number | null;
+  // classifier fields — absent on old cached grades (treat as true for backward compat)
+  isInspectionResultsCall?: boolean;
+  callType?: string;
+  notGradedReason?: string;
+  oneObservation?: string;
   overallGrade: 'A' | 'B' | 'C' | 'D' | 'F';
   overallScore: number; // 0–5
   summary: string;
@@ -85,6 +90,47 @@ You will be given TWO inputs:
 Your job is to grade the advisor on how completely and effectively they presented the ticket, and whether they closed on authorization.
 
 You must never invent details. Quote directly from the transcript when giving reasons. Never guess about ticket items that aren't listed. You grade the advisor, not the customer.
+
+===========================================================
+STEP 1: CLASSIFY THE CALL BEFORE GRADING
+===========================================================
+
+Before scoring, identify what kind of call this is. Grade with the
+sales rubric ONLY if it's an inspection-results / sales presentation
+call — the outbound call where the advisor presents findings from a
+completed inspection and asks for authorization to do multiple repairs.
+
+Positive signals (this IS the right type):
+  * The vehicle is already at the shop and has been inspected. Advisor
+    references "the inspection," "what we found," "the tech noticed."
+  * Multiple repair items or line items are discussed by name.
+  * The advisor is asking for a yes/no authorization decision.
+  * Call is 3+ minutes long.
+
+Negative signals (this is NOT the right type):
+  * Customer called to get a quote before dropping off (pricing inquiry).
+  * Customer is describing a problem for the first time (diagnostic intake).
+  * Advisor is just saying the car is ready to pick up (pickup call).
+  * Advisor is giving a status/timing update — parts on order, delay.
+  * Advisor is checking in after service (follow-up).
+  * Fewer than 2 repair items mentioned by name.
+  * Call is under 2 minutes.
+
+If the call is NOT an inspection-results call, return ONLY this JSON:
+{
+  "isInspectionResultsCall": false,
+  "callType": "<Pricing inquiry | Diagnostic intake | Pickup | Status update | Follow-up | Booking | Other>",
+  "notGradedReason": "<one-line reason why this call doesn't fit the inspection-results rubric>",
+  "oneObservation": "<one specific thing the advisor could improve even in this call type, or N/A>"
+}
+
+If the call IS an inspection-results call, add "isInspectionResultsCall": true to the grade JSON in STEP 2 and produce the full grade.
+
+Borderline cases: if it partially fits (e.g. advisor presenting a few items but the call is really a pickup update with a small add-on recommendation), grade it but start "summary" with "Borderline case: ..." so the reviewer knows the scores are less meaningful.
+
+===========================================================
+STEP 2: GRADE (inspection-results calls only)
+===========================================================
 
 SALES PHILOSOPHY (what we teach advisors on inspection calls):
 1. Present the whole ticket. Every recommended item gets mentioned by name. The most common failure is "cherry-picking" — only mentioning cheap/easy items and burying the expensive ones.
@@ -183,6 +229,22 @@ async function gradeCall(
     return fallbackGrade(callId, startTime, durationSeconds, customerPhone, extensionNumber, roNumber);
   }
 
+  // Classifier said this isn't an inspection-results call — cache the verdict
+  // so we never re-process it, but exclude it from grade averages in the UI.
+  if (raw.isInspectionResultsCall === false) {
+    return {
+      callId, startTime, durationSeconds, customerPhone, extensionNumber, roNumber,
+      isInspectionResultsCall: false,
+      callType: raw.callType ?? 'Other',
+      notGradedReason: raw.notGradedReason ?? '',
+      oneObservation: raw.oneObservation ?? '',
+      overallGrade: 'F', overallScore: 0, summary: raw.notGradedReason ?? '',
+      ticketCoverage: { totalItems: 0, mentionedItems: 0, omittedItems: [], totalValueCents: 0, omittedValueCents: 0 },
+      dimensionScores: {}, improvements: [], strongestMoment: '', weakestMoment: '',
+      needsCoaching: false,
+    };
+  }
+
   return {
     callId,
     startTime,
@@ -190,6 +252,7 @@ async function gradeCall(
     customerPhone,
     extensionNumber,
     roNumber,
+    isInspectionResultsCall: true,
     overallGrade: raw.overallGrade ?? 'C',
     overallScore: typeof raw.overallScore === 'number' ? raw.overallScore : 2.5,
     summary: raw.summary ?? '',
@@ -226,6 +289,29 @@ async function matchROForCall(
       .filter(ro => ro.customerId === customerId && new Date(ro.createdDate).getTime() <= callMs)
       .sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
 
+    if (matched.length === 0) return { roNumber: null, jobs: [] };
+    return { roNumber: matched[0].repairOrderNumber, jobs: matched[0].jobs ?? [] };
+  } catch {
+    return { roNumber: null, jobs: [] };
+  }
+}
+
+// Like matchROForCall but uses a pre-fetched RO list to avoid one Tekmetric
+// API call per graded call during a warm (15 calls → 1 RO fetch instead of 15).
+async function matchROForCallWithROs(
+  customerPhone: string,
+  callTimeISO: string,
+  shopTekId: number,
+  ros: Awaited<ReturnType<typeof fetchROsByCreatedDate>>,
+): Promise<{ roNumber: number | null; jobs: Job[] }> {
+  if (!customerPhone) return { roNumber: null, jobs: [] };
+  try {
+    const customerId = await searchCustomersByPhone(shopTekId, customerPhone);
+    if (!customerId) return { roNumber: null, jobs: [] };
+    const callMs = new Date(callTimeISO).getTime();
+    const matched = ros
+      .filter(ro => ro.customerId === customerId && new Date(ro.createdDate).getTime() <= callMs)
+      .sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
     if (matched.length === 0) return { roNumber: null, jobs: [] };
     return { roNumber: matched[0].repairOrderNumber, jobs: matched[0].jobs ?? [] };
   } catch {
@@ -276,30 +362,45 @@ export async function warmSalesEffectivenessForShop(shopNum: string): Promise<st
     return `shop ${num} (${shop.name}) — no outbound calls with transcripts (${calls.length} calls found, ${withRecording.length} with recordings)`;
   }
 
-  const grades: SalesGrade[] = [];
+  // Pre-fetch the shop's RO list once for the window so matchROForCall
+  // doesn't hit Tekmetric once per call.
+  let sharedROs: Awaited<ReturnType<typeof fetchROsByCreatedDate>> = [];
+  try {
+    sharedROs = await fetchROsByCreatedDate(shop.tekmetricId, startDate, endDate);
+  } catch { /* grading proceeds without RO data */ }
+
+  // Grade all transcribed calls in parallel — cuts wall-clock from O(N) sequential
+  // to roughly O(1) for the Claude+Tekmetric work per call.
   let newGrades = 0;
+  const results = await Promise.allSettled(
+    withTranscript.map(async (call) => {
+      const cached = await readCache<SalesGrade>(GRADE_CACHE_KEY(call.id));
+      if (cached) return cached;
 
-  for (const call of withTranscript) {
-    const cached = await readCache<SalesGrade>(GRADE_CACHE_KEY(call.id));
-    if (cached) { grades.push(cached); continue; }
+      const { roNumber, jobs } = await matchROForCallWithROs(
+        call.customerPhone, call.startTime, shop.tekmetricId, sharedROs
+      );
+      const ticketText = jobs.length > 0 ? formatTicket(jobs) : null;
+      const grade = await gradeCall(
+        call.transcript, ticketText, call.id, call.startTime,
+        call.durationSeconds, call.customerPhone, call.extensionNumber, roNumber
+      );
+      await writeCache(GRADE_CACHE_KEY(call.id), grade, { ttlSeconds: 30 * 24 * 60 * 60 });
+      newGrades++;
+      return grade;
+    })
+  );
+  const grades: SalesGrade[] = results
+    .filter((r): r is PromiseFulfilledResult<SalesGrade> => r.status === 'fulfilled')
+    .map(r => r.value);
 
-    const { roNumber, jobs } = await matchROForCall(
-      call.customerPhone, call.startTime, shop.tekmetricId, startDate, endDate
-    );
-    const ticketText = jobs.length > 0 ? formatTicket(jobs) : null;
-    const grade = await gradeCall(
-      call.transcript, ticketText, call.id, call.startTime,
-      call.durationSeconds, call.customerPhone, call.extensionNumber, roNumber
-    );
-    await writeCache(GRADE_CACHE_KEY(call.id), grade, { ttlSeconds: 30 * 24 * 60 * 60 });
-    grades.push(grade);
-    newGrades++;
-  }
+  const inspectionGrades = grades.filter(g => g.isInspectionResultsCall !== false);
+  const skippedCount = grades.length - inspectionGrades.length;
 
-  const avgScore = grades.length
-    ? Math.round((grades.reduce((s, g) => s + g.overallScore, 0) / grades.length) * 10) / 10
+  const avgScore = inspectionGrades.length
+    ? Math.round((inspectionGrades.reduce((s, g) => s + g.overallScore, 0) / inspectionGrades.length) * 10) / 10
     : 0;
-  const needsCoachingCount = grades.filter(g => g.needsCoaching).length;
+  const needsCoachingCount = inspectionGrades.filter(g => g.needsCoaching).length;
 
   const shopCache: SalesEffectivenessShopCache = {
     shopNum: num,
@@ -308,13 +409,14 @@ export async function warmSalesEffectivenessForShop(shopNum: string): Promise<st
     windowStart: startDate,
     windowEnd: endDate,
     avgScore,
-    totalGraded: grades.length,
+    totalGraded: inspectionGrades.length,
     needsCoachingCount,
     grades,
   };
   await writeCache(SHOP_CACHE_KEY(num), shopCache);
 
-  return `shop ${num} (${shop.name}) — ${grades.length} graded (${newGrades} new) · avg ${avgScore}/5 · ${needsCoachingCount} need coaching`;
+  const skipNote = skippedCount > 0 ? ` · ${skippedCount} non-sales skipped` : '';
+  return `shop ${num} (${shop.name}) — ${inspectionGrades.length} graded (${newGrades} new) · avg ${avgScore}/5 · ${needsCoachingCount} need coaching${skipNote}`;
 }
 
 export { SHOP_CACHE_KEY as SE_SHOP_CACHE_KEY };

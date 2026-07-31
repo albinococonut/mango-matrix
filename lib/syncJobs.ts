@@ -287,8 +287,10 @@ export async function backfillWeekMetricsForShop(weekStartYmd: string, shopNum: 
     if (eligible.length) {
       const results = await classifyBatch(eligible, 8);
       const booked = [...results.values()].filter((r: any) => r.appointment_booked).length;
-      conversionPct = Math.round((booked / eligible.length) * 1000) / 10;
-      convDetail = `conv ${booked}/${eligible.length} (${conversionPct}%)`;
+      // Denominator = new customer inquiries only (excludes status/pickup/vendor calls)
+      const newInquiries = eligible.filter(l => results.get(l.lead_id)?.is_new_inquiry !== false).length;
+      conversionPct = newInquiries > 0 ? Math.round((booked / newInquiries) * 1000) / 10 : null;
+      convDetail = `conv ${booked}/${newInquiries} new-inq (${conversionPct ?? 0}%)`;
     } else {
       conversionPct = null; convDetail = 'conv 0 eligible';
     }
@@ -371,12 +373,14 @@ const refreshBookedRate: SyncJob = {
         const eligible = leads.filter(isEligibleCall);
         const results = await classifyBatch(eligible, 8);
         const booked = [...results.values()].filter((r: any) => r.appointment_booked).length;
-        totalElig += eligible.length;
+        // Denominator = new customer inquiries only (excludes status/pickup/vendor calls)
+        const newInquiries = eligible.filter(l => results.get(l.lead_id)?.is_new_inquiry !== false).length;
+        totalElig += newInquiries;
         totalBooked += booked;
         out.push({
           shopNum: num, shopName: SHOP_BY_NUM[num].name,
-          totalCalls: leads.length, eligible: eligible.length, booked,
-          bookedRatePct: eligible.length ? Math.round((booked / eligible.length) * 1000) / 10 : 0,
+          totalCalls: leads.length, eligible: newInquiries, booked,
+          bookedRatePct: newInquiries ? Math.round((booked / newInquiries) * 1000) / 10 : 0,
         });
 
         // WTD subset — same classifications, filtered to leads whose
@@ -399,12 +403,13 @@ const refreshBookedRate: SyncJob = {
           const cls = results.get(l.lead_id);
           return cls?.appointment_booked === true;
         }).length;
-        totalEligWtd += eligibleWtd.length;
+        const newInquiriesWtd = eligibleWtd.filter(l => results.get(l.lead_id)?.is_new_inquiry !== false).length;
+        totalEligWtd += newInquiriesWtd;
         totalBookedWtd += bookedWtd;
         outWtd.push({
           shopNum: num, shopName: SHOP_BY_NUM[num].name,
-          totalCalls: leadsWtd.length, eligible: eligibleWtd.length, booked: bookedWtd,
-          bookedRatePct: eligibleWtd.length ? Math.round((bookedWtd / eligibleWtd.length) * 1000) / 10 : 0,
+          totalCalls: leadsWtd.length, eligible: newInquiriesWtd, booked: bookedWtd,
+          bookedRatePct: newInquiriesWtd ? Math.round((bookedWtd / newInquiriesWtd) * 1000) / 10 : 0,
         });
       } catch (e: any) {
         out.push({ shopNum: num, shopName: SHOP_BY_NUM[num].name, totalCalls: 0, eligible: 0, booked: 0, bookedRatePct: 0, error: e?.message });
@@ -448,7 +453,13 @@ export async function warmMissedCallbacksForShop(shopNum: string): Promise<strin
   // Re-classify here (small Claude pass) so we know which are not-booked
   // without depending on refreshBookedRate's intermediate state.
   const cls = await classifyBatch(eligible, 8);
-  const notBooked = eligible.filter((l) => !cls.get(l.lead_id)?.appointment_booked);
+  // Only new customer inquiries that didn't convert go into the callback queue.
+  // Status/pickup/vendor calls (is_new_inquiry = false) are excluded — they
+  // were never booking opportunities and shouldn't surface as missed callbacks.
+  const notBooked = eligible.filter((l) => {
+    const c = cls.get(l.lead_id);
+    return c && !c.appointment_booked && c.is_new_inquiry !== false;
+  });
   const salvageScores = await scoreSalvageabilityBatch(notBooked, 6);
   const calls = notBooked.map((l) => {
     const s = salvageScores.get(l.lead_id) ?? { probability: 0, reason: '', angle: '' };

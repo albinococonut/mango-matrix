@@ -20,14 +20,14 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { ListChecks, CalendarX, Repeat, Wrench, Check, X, ExternalLink, MessageSquare, PlayCircle } from 'lucide-react';
+import { ListChecks, CalendarX, Repeat, Wrench, Check, X, ExternalLink, MessageSquare, PlayCircle, TrendingUp, ChevronDown, ChevronUp } from 'lucide-react';
 import { usd, usdK } from '@/lib/format';
 import { SHOPS, SHOP_BY_NUM } from '@/lib/shops';
 
 const SHOP_SS_KEY  = 'todoShop:v1';
 const TAB_SS_KEY   = 'todoTab:v1';
 
-type Tab = 'callbacks' | 'rebooks' | 'declined';
+type Tab = 'callbacks' | 'rebooks' | 'declined' | 'guava';
 
 // A row's resolution, normalized across the three queues:
 //   • open          — still on the call list (counts toward $ at stake)
@@ -278,6 +278,7 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
   const [callbacks, setCallbacks] = useState<CallbackRow[] | null>(null);
   const [rebooks, setRebooks] = useState<RebookRow[] | null>(null);
   const [declined, setDeclined] = useState<DeclinedJobRowT[] | null>(null);
+  const [salesEff, setSalesEff] = useState<any>(null);
   const [callbackErr, setCallbackErr] = useState<string | null>(null);
   const [rebookErr, setRebookErr] = useState<string | null>(null);
   const [declinedErr, setDeclinedErr] = useState<string | null>(null);
@@ -598,6 +599,13 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
           setDeclinedErr(prev => prev ?? e?.message ?? 'network');
         }
       })(),
+      (async () => {
+        try {
+          const r = await fetch('/api/extras?view=sales-effectiveness', noStore);
+          if (aborted()) return;
+          if (r.ok) setSalesEff(await r.json());
+        } catch { /* swallow — not critical */ }
+      })(),
     ]);
   }, []);
 
@@ -650,6 +658,10 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
   });
   const openDeclined = declinedForShop.filter(d => !isDone(d));
 
+  // Needs Guava — sales effectiveness calls scoring < 3 that haven't been handled
+  const shopSEData = (salesEff?.shops ?? []).find((s: any) => s.shopNum === shopNum);
+  const guavaGrades: any[] = (shopSEData?.grades ?? []).filter((g: any) => g.needsCoaching && !g.handled);
+
   // $ at stake — only the open rows count.
   const callbackDollars = openCallbacks.reduce((s, c) => s + c.estimatedMissedRevenue, 0);
   const rebookDollars = aro > 0 ? openRebooks.length * aro : 0;
@@ -669,6 +681,16 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
   for (const d of declinedForShop)
     if (rowKind(d) === 'recovered' && isThisWeek(checkedAt(d))) recoveredIds.add(`dj:${d.jobId}`);
   const recoveredThisWeek = recoveredIds.size;
+
+  // Customers marked not recoverable this week (not_salvageable across all queues)
+  const notRecoverableIds = new Set<string>();
+  for (const c of callbacksForShop)
+    if (rowKind(c) === 'not_recovered' && isThisWeek(checkedAt(c))) notRecoverableIds.add(`cb:${c.leadId}`);
+  for (const r of rebooksForShop)
+    if (rowKind(r) === 'not_recovered' && isThisWeek(checkedAt(r))) notRecoverableIds.add(`rb:${r.roId}`);
+  for (const d of declinedForShop)
+    if (rowKind(d) === 'not_recovered' && isThisWeek(checkedAt(d))) notRecoverableIds.add(`dj:${d.jobId}`);
+  const notRecoverableThisWeek = notRecoverableIds.size;
 
   const allLoading = callbacks === null && rebooks === null && declined === null;
 
@@ -753,16 +775,19 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
             frosted panels, eyebrow above. Two stats: $ at stake (warm) and
             recovered this week (cool). */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-          <div className="rounded-2xl p-5" style={{ background: 'rgba(232,134,62,0.10)', boxShadow: 'inset 0 0 0 1px rgba(232,134,62,0.30)' }}>
+          <div className="rounded-2xl p-5" style={{ background: 'linear-gradient(135deg, rgba(232,134,62,0.22) 0%, rgba(255,244,232,0.55) 60%, rgba(255,255,255,0) 100%)' }}>
             <div className="c2ui text-[11.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: '#8E3F22' }}>Revenue at stake · this shop</div>
             <div className="c2disp tabular-nums leading-none mt-2" style={{ color: '#221F1A', fontSize: 44, letterSpacing: '-0.03em' }}>{grandTotalDollars > 0 ? usdK(grandTotalDollars) : '—'}</div>
             <div className="c2ui text-[12.5px] mt-2" style={{ color: '#5C5852' }}>Sum of open callbacks, missed re-books, and old declined jobs.</div>
           </div>
-          <div className="rounded-2xl p-5" style={{ background: 'rgba(91,170,89,0.10)', boxShadow: 'inset 0 0 0 1px rgba(91,170,89,0.30)' }}
+          <div className="rounded-2xl p-5" style={{ background: 'linear-gradient(135deg, rgba(91,170,89,0.22) 0%, rgba(232,248,232,0.55) 60%, rgba(255,255,255,0) 100%)' }}
             title="Open items checked off as recovered this week (across all three queues for this shop)">
             <div className="c2ui text-[11.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: '#2F6E3A' }}>Customers recovered · this week</div>
             <div className="c2disp tabular-nums leading-none mt-2" style={{ color: '#221F1A', fontSize: 44, letterSpacing: '-0.03em' }}>{recoveredThisWeek}</div>
             <div className="c2ui text-[12.5px] mt-2" style={{ color: '#5C5852' }}>Counts toward this week's To-Do trophy and the Golden Mango ceremony.</div>
+            {notRecoverableThisWeek > 0 && (
+              <div className="c2ui text-[11.5px] mt-2" style={{ color: 'rgba(34,32,28,0.45)' }}>{notRecoverableThisWeek} customer{notRecoverableThisWeek !== 1 ? 's' : ''} not recoverable this week</div>
+            )}
           </div>
         </div>
       </div>
@@ -772,11 +797,17 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
 
       <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1 -mx-1 px-1">
         <TabButton active={tab === 'callbacks'} onClick={() => setTab('callbacks')} icon={<CalendarX className="w-3.5 h-3.5" />}
-          label="Salvageable Callbacks" count={openCallbacks.length} subtotal={callbackDollars} loading={callbacks === null} />
+          label="Salvageable Callbacks" count={openCallbacks.length} subtotal={callbackDollars} loading={callbacks === null}
+          color={{ bg: '#18B6C9', text: '#0E7490', shadow: '0 4px 14px -6px rgba(14,116,144,0.30)', tint: 'rgba(24,182,201,0.10)' }} />
         <TabButton active={tab === 'rebooks'} onClick={() => setTab('rebooks')} icon={<Repeat className="w-3.5 h-3.5" />}
-          label="Didn't Rebook" count={openRebooks.length} subtotal={rebookDollars} loading={rebooks === null} />
+          label="Didn't Rebook" count={openRebooks.length} subtotal={rebookDollars} loading={rebooks === null}
+          color={{ bg: '#5B9BD5', text: '#1E40AF', shadow: '0 4px 14px -6px rgba(30,64,175,0.25)', tint: 'rgba(91,155,213,0.10)' }} />
         <TabButton active={tab === 'declined'} onClick={() => setTab('declined')} icon={<Wrench className="w-3.5 h-3.5" />}
-          label="Declined Jobs" count={openDeclined.length} subtotal={declinedDollars} loading={declined === null} />
+          label="Declined Jobs" count={openDeclined.length} subtotal={declinedDollars} loading={declined === null}
+          color={{ bg: '#C9412A', text: '#7F1D1D', shadow: '0 4px 14px -6px rgba(185,28,28,0.28)', tint: 'rgba(201,65,42,0.09)' }} />
+        <TabButton active={tab === 'guava'} onClick={() => setTab('guava')} icon={<TrendingUp className="w-3.5 h-3.5" />}
+          label="Needs Guava" count={guavaGrades.length} subtotal={0} loading={salesEff === null} hideSubtotal
+          color={{ bg: '#9B7BE0', text: '#5B21B6', shadow: '0 4px 14px -6px rgba(91,33,182,0.25)', tint: 'rgba(155,123,224,0.10)' }} />
       </div>
 
       {allLoading && <div className="text-xs text-mango-muted italic py-3">Loading…</div>}
@@ -819,17 +850,28 @@ export default function Concept2TodoSection({ userEmail }: { userEmail?: string 
           )}
         </TabBody>
       )}
+
+      {tab === 'guava' && (
+        <GuavaTabBody grades={guavaGrades} shopNum={shopNum} loading={salesEff === null}
+          onHandled={(callId) => {
+            setSalesEff((prev: any) => {
+              if (!prev) return prev;
+              return { ...prev, shops: prev.shops.map((s: any) => s.shopNum !== shopNum ? s : {
+                ...s, grades: s.grades.map((g: any) => g.callId === callId ? { ...g, handled: true } : g),
+              }) };
+            });
+          }} />
+      )}
       </div>
     </div>
   );
 }
 
-// Concept2 reskin: deeper-ink fill on active, frosted off-white on inactive.
-// Same data shape, same a11y, same hover affordance — just visually unified
-// with the rest of the concept2 design language.
-function TabButton({ active, onClick, icon, label, count, subtotal, loading }: {
+function TabButton({ active, onClick, icon, label, count, subtotal, loading, color, hideSubtotal }: {
   active: boolean; onClick: () => void; icon: React.ReactNode;
   label: string; count: number; subtotal: number; loading: boolean;
+  color: { bg: string; text: string; shadow: string; tint: string };
+  hideSubtotal?: boolean;
 }) {
   return (
     <button
@@ -837,13 +879,13 @@ function TabButton({ active, onClick, icon, label, count, subtotal, loading }: {
       aria-pressed={active}
       className="c2ui shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-full text-[13px] transition"
       style={active
-        ? { background: '#E8863E', color: '#fff', boxShadow: '0 4px 14px -6px rgba(140,60,10,0.30)' }
-        : { background: 'rgba(255,255,255,0.6)', color: '#221F1A', boxShadow: 'inset 0 0 0 1px rgba(34,32,28,0.12)' }}
+        ? { background: color.bg, color: '#fff', boxShadow: color.shadow }
+        : { background: color.tint, color: color.text, boxShadow: `inset 0 0 0 1px ${color.bg}40` }}
     >
       {icon}
       <span className="font-semibold">{label}</span>
-      <span className="text-[12px] tabular-nums" style={{ color: active ? 'rgba(255,255,255,0.75)' : 'rgba(34,32,28,0.55)' }}>
-        {loading ? '…' : `${count} · ${subtotal > 0 ? usdK(subtotal) : '$0'}`}
+      <span className="text-[12px] tabular-nums" style={{ color: active ? 'rgba(255,255,255,0.78)' : `${color.text}99` }}>
+        {loading ? '…' : hideSubtotal ? `${count}` : `${count} · ${subtotal > 0 ? usdK(subtotal) : '$0'}`}
       </span>
     </button>
   );
@@ -1217,5 +1259,114 @@ function DeclinedJobRowView({ d, onSet }: { d: DeclinedJobRowT; onSet: (jobId: n
         </div>
       </div>
     </TaskRow>
+  );
+}
+
+// ── Needs Guava tab ──────────────────────────────────────────────────────────
+
+const SCORE_COLOR = (s: number) => {
+  if (s >= 4) return '#5BAA59';
+  if (s >= 3) return '#A8CE5A';
+  if (s >= 2) return '#F5E580';
+  if (s >= 1) return '#F4B65C';
+  return '#C9412A';
+};
+
+function GuavaTabBody({ grades, shopNum, loading, onHandled }: {
+  grades: any[]; shopNum: string; loading: boolean; onHandled: (callId: string) => void;
+}) {
+  if (loading) return <div className="text-xs text-mango-muted italic py-3">Loading…</div>;
+  if (grades.length === 0) return (
+    <div className="text-xs py-3" style={{ color: '#5BAA59' }}>
+      No calls needing coaching this week for this shop ✓
+    </div>
+  );
+  return (
+    <div className="space-y-2">
+      <div className="text-[11.5px] text-mango-muted mb-3">
+        Outbound inspection-result calls that scored below 3/5. Click a row to expand and mark as handled.
+      </div>
+      {grades.map((g: any) => <GuavaRow key={g.callId} grade={g} shopNum={shopNum} onHandled={onHandled} />)}
+    </div>
+  );
+}
+
+function GuavaRow({ grade, shopNum, onHandled }: { grade: any; shopNum: string; onHandled: (callId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const date = new Date(grade.startTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Denver' });
+  const mins = Math.floor(grade.durationSeconds / 60);
+  const secs = grade.durationSeconds % 60;
+  const dur = `${mins}:${String(secs).padStart(2, '0')}`;
+
+  const handleMark = async () => {
+    setMarking(true);
+    try {
+      await fetch('/api/extras?view=sales-effectiveness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shopNum, callId: grade.callId }),
+      });
+      onHandled(grade.callId);
+    } catch { /* swallow */ } finally { setMarking(false); }
+  };
+
+  return (
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'rgba(34,32,28,0.10)', background: 'rgba(255,255,255,0.7)' }}>
+      <button className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/80 transition" onClick={() => setOpen(o => !o)}>
+        <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-[12px] font-bold text-white flex-shrink-0"
+          style={{ background: SCORE_COLOR(grade.overallScore) }}>{grade.overallGrade}</span>
+        <div className="flex-1 min-w-0">
+          <div className="c2ui text-[12.5px] font-semibold">{date} · {dur}</div>
+          <div className="c2ui text-[11px] text-mango-muted mt-0.5 line-clamp-1">{grade.summary}</div>
+        </div>
+        <span className="c2ui text-[11px] font-bold tabular-nums px-2 py-0.5 rounded-full flex-shrink-0"
+          style={{ background: `${SCORE_COLOR(grade.overallScore)}22`, color: SCORE_COLOR(grade.overallScore) }}>
+          {grade.overallScore.toFixed(1)}/5
+        </span>
+        {open ? <ChevronUp className="w-3.5 h-3.5 text-mango-muted flex-shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-mango-muted flex-shrink-0" />}
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 border-t space-y-2" style={{ borderColor: 'rgba(34,32,28,0.08)', background: 'rgba(249,247,243,0.6)' }}>
+          <p className="c2ui text-[12px] mt-3">{grade.summary}</p>
+
+          {grade.ticketCoverage?.omittedItems?.length > 0 && (
+            <div>
+              <div className="c2ui text-[10.5px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Items skipped on call</div>
+              {grade.ticketCoverage.omittedItems.map((it: any, i: number) => (
+                <div key={i} className="flex items-center gap-2 c2ui text-[11.5px]">
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: it.severity === 'safety-critical' ? '#DC2626' : '#F4B65C' }} />
+                  <span className="font-medium">{it.name}</span>
+                  {it.amount && it.amount !== 'unknown' && <span className="text-mango-muted">{it.amount}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {grade.improvements?.length > 0 && (
+            <div>
+              <div className="c2ui text-[10.5px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Coaching points</div>
+              <ol className="space-y-0.5 list-decimal list-inside">
+                {grade.improvements.map((imp: string, i: number) => <li key={i} className="c2ui text-[11.5px]">{imp}</li>)}
+              </ol>
+            </div>
+          )}
+
+          {grade.weakestMoment && (
+            <p className="c2ui text-[11.5px] italic px-2.5 py-1.5 rounded-lg"
+              style={{ background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.12)' }}>
+              {grade.weakestMoment}
+            </p>
+          )}
+
+          <button onClick={handleMark} disabled={marking}
+            className="c2ui text-[11.5px] font-semibold px-3 py-1.5 rounded-lg border transition disabled:opacity-50"
+            style={{ borderColor: 'rgba(34,32,28,0.12)', background: 'rgba(255,255,255,0.8)' }}>
+            {marking ? 'Saving…' : '✓ Mark as handled'}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

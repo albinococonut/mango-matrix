@@ -206,13 +206,26 @@ interface RCCallRecord {
 }
 
 // --- Fetch the company call log from RC ---
-// Returns all inbound voice calls for the given date range, paginated.
+// Results are cached in Redis for 15 minutes so multiple per-shop warm calls
+// within the same cron window all share a single RC API fetch — avoids
+// hammering the CMN-301 rate limit (10 req/min) with redundant full-account
+// call-log pagination.
+
+const callLogCacheKey = (direction: string, startDate: string, endDate: string) =>
+  `rc_call_log:${direction}:${startDate}:${endDate}`;
 
 async function fetchRCCallLog(startDate: string, endDate: string, direction: 'Inbound' | 'Outbound' = 'Inbound'): Promise<RCCallRecord[]> {
+  const cacheKey = callLogCacheKey(direction, startDate, endDate);
+  const cached = await readCache<RCCallRecord[]>(cacheKey);
+  if (cached) {
+    console.log(`[rc] call-log cache hit (${cached.length} records, direction=${direction})`);
+    return cached;
+  }
+
   const token = await getRCToken();
   const out: RCCallRecord[] = [];
   let nextUrl: string | null = `${RC_BASE}/restapi/v1.0/account/~/call-log`
-    + `?direction=${direction}&type=Voice&view=Detailed&perPage=250`
+    + `?direction=${direction}&type=Voice&view=Detailed&perPage=1000`
     + `&dateFrom=${encodeURIComponent(startDate + 'T00:00:00.000Z')}`
     + `&dateTo=${encodeURIComponent(endDate + 'T23:59:59.999Z')}`;
 
@@ -242,6 +255,8 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
     nextUrl = data.navigation?.nextPage?.uri ?? null;
     if (out.length > 10_000) break; // safety cap
   }
+
+  await writeCache(cacheKey, out, { ttlSeconds: 15 * 60 });
   return out;
 }
 
@@ -386,7 +401,9 @@ export async function fetchAllLeads(f: LeadFilter): Promise<Lead[]> {
 
 export function isEligibleCall(lead: Lead): boolean {
   if (!lead.call_transcription || lead.call_transcription.length < 30) return false;
-  if (lead.call_duration_seconds > 0 && lead.call_duration_seconds < 15) return false;
+  // 45s minimum: quick status/pickup calls ("is my car ready?") typically run
+  // under 30s. Genuine new-customer inquiries run 1-4 minutes.
+  if (lead.call_duration_seconds > 0 && lead.call_duration_seconds < 45) return false;
   return true;
 }
 
@@ -446,7 +463,7 @@ export async function fetchOutboundCalls(f: LeadFilter): Promise<OutboundCall[]>
   const recordById = new Map<string, RCCallRecord>();
 
   for (const rec of records) {
-    if ((rec.duration ?? 0) < 30) continue;
+    if ((rec.duration ?? 0) < 90) continue;
 
     // RC account-level call log never includes extensionNumber on outbound records.
     // Use fromPhone → phone map (same map used for inbound routing) to identify shop.

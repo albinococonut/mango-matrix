@@ -9,7 +9,20 @@ const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `You classify a phone call transcript from an auto repair shop.
 
-Decide whether the call resulted in an APPOINTMENT BOOKING ("call conversion").
+STEP 1 — Is this a new customer inquiry?
+Set is_new_inquiry = TRUE when the caller is seeking service they have NOT yet started:
+  examples: wants a diagnosis, asking about pricing, wants to schedule a repair, first-time inquiry
+
+Set is_new_inquiry = FALSE when:
+  - Existing customer calling about an open or completed repair order ("when is my car ready?", "did you find the part?", "I'm picking it up")
+  - Vendor, supplier, or parts call
+  - Wrong number
+  - Employee or internal call
+  - Customer checking on a warranty claim or insurance authorization already in progress
+
+If is_new_inquiry = FALSE, set call_converted = false and stop — do not evaluate booking.
+
+STEP 2 — Did the call convert to a booking? (Only when is_new_inquiry = TRUE)
 
 call_converted = TRUE only when BOTH of these are present in the transcript:
 
@@ -33,19 +46,20 @@ BOTH halves must be present. The rep saying "I can get you in" without the custo
 agreeing to a time is just an offer the customer ducked — that is FALSE. The customer
 saying "sounds good" to a vague "swing by whenever" with no clock time is FALSE.
 
-Mark FALSE if any of these:
+Mark call_converted = FALSE if any of these:
 - Price quote given but no time was offered or agreed
 - "Bring it in whenever" / "drop off anytime today" / walk-in offers with no clock time
 - Customer said "I'll call back" / "let me check my schedule"
-- Wrong number, vendor call, status check on an existing repair
 - Time was discussed but the customer didn't explicitly agree
 - Rep offered a time but the customer asked to think about it / didn't commit
 
-Respond with ONLY the JSON object: {"call_converted": true|false, "confidence": 0-1, "reason": "one short sentence"}.`;
+Respond with ONLY the JSON object: {"is_new_inquiry": true|false, "call_converted": true|false, "confidence": 0-1, "reason": "one short sentence"}.`;
 
 export interface Classification {
   /** Legacy field name kept for compatibility with existing call sites. */
   appointment_booked: boolean;
+  /** True when the caller was a new customer inquiry (not a status/pickup call). */
+  is_new_inquiry: boolean;
   confidence: number;
   reason: string;
 }
@@ -71,18 +85,19 @@ export async function classifyTranscript(transcript: string): Promise<Classifica
   const raw = (resp.content[0] as any).text as string;
   // Tolerate minor formatting noise around the JSON
   const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return { appointment_booked: false, confidence: 0, reason: 'no json in response' };
+  if (!m) return { appointment_booked: false, is_new_inquiry: true, confidence: 0, reason: 'no json in response' };
   try {
     const obj = JSON.parse(m[0]);
-    // Accept either the new "call_converted" field or the legacy "appointment_booked"
     const booked = !!(obj.call_converted ?? obj.appointment_booked);
+    const isNewInquiry = obj.is_new_inquiry !== false; // default true for legacy responses without the field
     return {
       appointment_booked: booked,
+      is_new_inquiry: isNewInquiry,
       confidence: typeof obj.confidence === 'number' ? obj.confidence : 0.5,
       reason: String(obj.reason || ''),
     };
   } catch {
-    return { appointment_booked: false, confidence: 0, reason: 'invalid json' };
+    return { appointment_booked: false, is_new_inquiry: true, confidence: 0, reason: 'invalid json' };
   }
 }
 
@@ -176,7 +191,7 @@ export async function classifyBatch(leads: Lead[], concurrency = 8): Promise<Map
       } catch (e: any) {
         errors++;
         lastError = e?.message || 'unknown';
-        results.set(lead.lead_id, { appointment_booked: false, confidence: 0, reason: `error: ${lastError}` });
+        results.set(lead.lead_id, { appointment_booked: false, is_new_inquiry: true, confidence: 0, reason: `error: ${lastError}` });
       }
     }
   });
