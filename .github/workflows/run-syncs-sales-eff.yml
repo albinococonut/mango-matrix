@@ -1,0 +1,37 @@
+name: Run Mango Dashboard Syncs (Sales Effectiveness)
+
+# Warms the Sales Effectiveness grading cache — one shop per run, auto-picks
+# the stalest shop. Running every 30 min means all 8 shops refresh every ~4h.
+# RC rate limit (CMN-301) is avoided because only ONE shop's call-log and
+# audio downloads are fetched per run, with no competing jobs on this schedule.
+
+on:
+  schedule:
+    # 12 and 42 past each hour — offset from the other sync workflows so there
+    # is no overlap and no Anthropic / RingCentral capacity competition.
+    - cron: "12,42 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-syncs-sales-eff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Warm stalest Sales Effectiveness shop
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?job=warm-sales-effectiveness" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 750)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Sales effectiveness sync returned HTTP $HTTP_CODE"
+            exit 1
+          fi

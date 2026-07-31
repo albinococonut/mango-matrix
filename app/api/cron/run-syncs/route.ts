@@ -12,6 +12,8 @@ import { runAllSyncs } from '@/lib/syncJobs';
 import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop, warmPartsMatrixRange } from '@/lib/syncJobs';
 import { SHOPS } from '@/lib/shops';
 import { takeWeeklySnapshot, checkWeeklyDrift, currentSnapshotWeekStart } from '@/lib/weeklySnapshot';
+import { warmSalesEffectivenessForShop, SE_SHOP_CACHE_KEY } from '@/lib/salesEffectiveness';
+import { readCache } from '@/lib/cache';
 
 export const dynamic = 'force-dynamic';
 // Raised to 800s via BOTH this export AND vercel.json (without the
@@ -76,6 +78,34 @@ export async function POST(req: NextRequest) {
       }
     }
     return NextResponse.json({ startedAt, finishedAt: new Date().toISOString(), mode: 'backfill-week-metrics', week, results: out });
+  }
+
+  // warm-sales-effectiveness: auto-picks the stalest shop (or ?shop=NNN for a specific one).
+  // One shop per cron tick — keeps RC rate limits safe. The GH Actions schedule calls
+  // this every 30 min; all 8 shops cycle through in ~4 hours.
+  if (targetJob === 'warm-sales-effectiveness') {
+    const shopParam = url.searchParams.get('shop') || '';
+    let shopNum: string;
+    if (shopParam && shopParam !== 'auto') {
+      shopNum = shopParam;
+    } else {
+      // Pick the shop with the oldest SE cache (or no cache)
+      const ages = await Promise.all(
+        SHOPS.map(async s => {
+          const c = await readCache<{ computedAt?: string }>(SE_SHOP_CACHE_KEY(s.num));
+          const ts = c?.computedAt ? new Date(c.computedAt).getTime() : 0;
+          return { num: s.num, ts };
+        })
+      );
+      shopNum = ages.sort((a, b) => a.ts - b.ts)[0].num;
+    }
+    const t0 = Date.now();
+    try {
+      const msg = await warmSalesEffectivenessForShop(shopNum);
+      return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'ok', shop: shopNum, durationMs: Date.now() - t0, message: msg });
+    } catch (e: any) {
+      return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'error', shop: shopNum, durationMs: Date.now() - t0, error: e?.message || String(e) }, { status: 500 });
+    }
   }
 
   if (
