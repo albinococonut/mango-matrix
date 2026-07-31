@@ -26,7 +26,10 @@ export async function handle(req: NextRequest) {
       if (!cache) return { shopNum: shop.num, shopName: shop.name, cached: false, computedAt: null, avgScore: 0, totalGraded: 0, needsCoachingCount: 0, grades: [] };
 
       const handled = await getSalesCallHandled(shop.num);
-      const gradesWithHandled = cache.grades.map(g => ({ ...g, handled: handled.has(g.callId) }));
+      // Filter out non-inspection calls (pricing inquiries, pickups, etc.) at read time
+      // so stale cache entries never reach the dashboard while awaiting next warm.
+      const inspectionOnly = cache.grades.filter((g: any) => g.isInspectionResultsCall !== false);
+      const gradesWithHandled = inspectionOnly.map(g => ({ ...g, handled: handled.has(g.callId) }));
       return { ...cache, grades: gradesWithHandled, cached: true };
     })
   );
