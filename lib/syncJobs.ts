@@ -1040,7 +1040,10 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
 
   const lines: any[] = [];
-  await Promise.all(SHOPS.map(async (shop) => {
+  // Sequential (not Promise.all) to prevent 16 concurrent Tekmetric requests
+  // from triggering 429 rate-limit storms and exponential backoff cascades that
+  // push the total wall-clock time past Vercel's 800s function limit.
+  for (const shop of SHOPS) {
     try {
       let ros: any[];
       if (mode === 'posted') {
@@ -1095,7 +1098,7 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
         }
       }
     } catch { /* skip shop on error; cron continues with remaining shops */ }
-  }));
+  }
 
   const counts = { total: lines.length, canned: 0, matrix: 0, manual: 0, no_charge: 0 };
   let manualRevenueLostCents = 0;

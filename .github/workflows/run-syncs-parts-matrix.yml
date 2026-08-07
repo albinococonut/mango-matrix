@@ -18,7 +18,7 @@ on:
 jobs:
   warm-parts-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 14
     steps:
       - name: Trigger parts-matrix warm
         env:

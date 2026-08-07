@@ -15,7 +15,7 @@ on:
 jobs:
   run-syncs-sales-eff:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 14
     steps:
       - name: Warm stalest Sales Effectiveness shop
         env:
