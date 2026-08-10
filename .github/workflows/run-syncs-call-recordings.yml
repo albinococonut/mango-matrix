@@ -1,0 +1,33 @@
+name: Warm Call Recordings (5-min)
+
+# Runs every 5 minutes to keep call recording data near-real-time.
+# Warms all 8 shops per tick — the RC call log is fetched once and shared
+# via a 5-minute Redis cache, so this is only 2 live RC API calls per run.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  warm-call-recordings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Warm all shops
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/cr.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?job=warm-call-recordings&shop=all" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 200)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/cr.out
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::Call recordings warm returned HTTP $HTTP_CODE"
+            exit 1
+          fi

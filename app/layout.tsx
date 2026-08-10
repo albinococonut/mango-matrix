@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   title: 'The Mango Matrix',
   description: 'Mango Automotive multi-shop performance dashboard',
   icons: {
-    icon: '/favicon.png',
+    icon: '/favicon.svg',
     apple: '/apple-touch-icon.png',
   },
 };

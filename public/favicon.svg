@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Navy badge background -->
+  <circle cx="32" cy="32" r="32" fill="#1B2A5E"/>
+  <!-- Amber ring -->
+  <circle cx="32" cy="32" r="29" fill="none" stroke="#FBB232" stroke-width="3"/>
+  <!-- Mango fruit body — sits in center, leaf above -->
+  <ellipse cx="32" cy="36" rx="13" ry="15" fill="#FBB232" stroke="#1B2A5E" stroke-width="1.8"/>
+  <!-- Mango shading -->
+  <ellipse cx="27" cy="36" rx="6" ry="12" fill="#E8963A" opacity="0.45"/>
+  <!-- Highlight -->
+  <ellipse cx="35.5" cy="30" rx="3.5" ry="6" fill="white" opacity="0.22" transform="rotate(-20 35.5 30)"/>
+  <!-- Stem -->
+  <line x1="32" y1="21" x2="32" y2="24" stroke="#2D6A14" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Left leaf -->
+  <path d="M32 22 C31 16, 23 14, 25 20 C27 16, 31 18, 32 22 Z" fill="#2D6A14"/>
+  <!-- Right leaf -->
+  <path d="M32 22 C33 16, 41 14, 39 20 C37 16, 33 18, 32 22 Z" fill="#3A8A1A"/>
+</svg>

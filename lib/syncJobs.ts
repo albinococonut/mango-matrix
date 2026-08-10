@@ -29,6 +29,8 @@ import { writeCache, readCache } from '@/lib/cache';
 import { fetchAllLeads as fetchAllLeadsRC } from '@/lib/ringcentral';
 import { fetchAllLeads as fetchAllLeadsWC, isEligibleCall } from '@/lib/whatconverts';
 import { warmSalesEffectivenessForShop, SE_WARM_IDX_KEY } from '@/lib/salesEffectiveness';
+import { CR_SHOP_CACHE_KEY, CR_URIS_KEY, CR_WARM_IDX_KEY, type CallRecordingsShopCache } from '@/lib/handlers/callRecordings';
+import { fetchCallRecordingsForShop } from '@/lib/ringcentral';
 import { classifyBatch, scoreSalvageabilityBatch } from '@/lib/classify';
 import { MISSED_CALLBACKS_KEY, type MissedCallbacksShopCache } from '@/lib/handlers/missedCallbacks';
 import { reopenStaleResolutions } from '@/lib/callbackStore';
@@ -538,6 +540,61 @@ const warmSalesEffectiveness: SyncJob = {
     const shop = SHOPS[idx % SHOPS.length];
     await writeCache(SE_WARM_IDX_KEY, (idx + 1) % SHOPS.length);
     return { message: await warmSalesEffectivenessForShop(shop.num) };
+  },
+};
+
+// Call Recordings — RingCentral inbound + outbound calls for the trailing 7
+// days. Round-robin one shop per cron tick. Client-safe entries (no contentUri)
+// go to CR_SHOP_CACHE_KEY; a separate callId→URI map goes to CR_URIS_KEY for
+// the recording proxy.
+export async function warmCallRecordingsForShop(shopNum: string): Promise<string> {
+  const shop = SHOPS.find(s => s.num === shopNum);
+  if (!shop) throw new Error(`unknown shop ${shopNum}`);
+
+  const now = new Date();
+  const endDate = now.toISOString().slice(0, 10);
+  const start = new Date(now); start.setDate(start.getDate() - 7);
+  const startDate = start.toISOString().slice(0, 10);
+
+  const fullEntries = await fetchCallRecordingsForShop(shopNum as any, startDate, endDate);
+
+  // Store URI lookup separately — never exposed to the client
+  const uris: Record<string, string> = {};
+  for (const e of fullEntries) {
+    if (e.contentUri) uris[e.callId] = e.contentUri;
+  }
+  await writeCache(CR_URIS_KEY(shopNum), uris, { ttlSeconds: 8 * 24 * 60 * 60 });
+
+  // Strip contentUri from the client-facing cache
+  const entries: CallRecordingsShopCache['entries'] = fullEntries.map(({ contentUri: _uri, ...rest }) => rest);
+  const payload: CallRecordingsShopCache = {
+    shopNum: shop.num,
+    shopName: shop.name,
+    computedAt: now.toISOString(),
+    windowStart: startDate,
+    windowEnd: endDate,
+    entries,
+  };
+  await writeCache(CR_SHOP_CACHE_KEY(shopNum), payload, { ttlSeconds: 8 * 24 * 60 * 60 });
+
+  const inbound = entries.filter(e => e.direction === 'Inbound').length;
+  const outbound = entries.filter(e => e.direction === 'Outbound').length;
+  const withRec = entries.filter(e => e.hasRecording).length;
+  return `shop ${shop.num} (${shop.name}) — ${inbound} inbound · ${outbound} outbound · ${withRec} with recording`;
+}
+
+const warmCallRecordings: SyncJob = {
+  name: 'warm-call-recordings',
+  isEnabled: () => !!process.env.RINGCENTRAL_JWT,
+  async run() {
+    // Warm all shops every tick — the RC call log (inbound + outbound) is fetched
+    // once and shared via a 5-minute Redis cache, so this costs only 2 RC API
+    // calls regardless of how many shops we process.
+    const results: string[] = [];
+    for (const shop of SHOPS) {
+      results.push(await warmCallRecordingsForShop(shop.num));
+    }
+    return { message: results.join(' | ') };
   },
 };
 
@@ -1154,6 +1211,7 @@ export const JOBS: SyncJob[] = [
   refreshBookedRate,
   warmMissedCallbacks,
   warmSalesEffectiveness,
+  warmCallRecordings,
   warmDeclinedJobs,
   warmGoogleRatings,
   snapshotAR,

@@ -12,7 +12,9 @@ const EMP_SECTIONS = [
   { id: 'leaderboard', label: 'Leaderboard' },
   { id: 'tech', label: 'Tech Production' },
   { id: 'comebacks', label: 'Comebacks' },
-  { id: 'callbacks', label: 'Calls & To Do' },
+  { id: 'call-conversion', label: 'Call Conversion' },
+  { id: 'sales-effectiveness', label: 'Sales Effectiveness' },
+  { id: 'todos', label: 'To-Dos' },
   { id: 'receivables', label: 'Accounts Receivable' },
 ];
 

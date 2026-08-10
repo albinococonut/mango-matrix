@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runAllSyncs } from '@/lib/syncJobs';
-import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop, warmPartsMatrixRange } from '@/lib/syncJobs';
+import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop, warmPartsMatrixRange, warmCallRecordingsForShop } from '@/lib/syncJobs';
 import { SHOPS } from '@/lib/shops';
 import { takeWeeklySnapshot, checkWeeklyDrift, currentSnapshotWeekStart } from '@/lib/weeklySnapshot';
 import { warmSalesEffectivenessForShop, SE_SHOP_CACHE_KEY } from '@/lib/salesEffectiveness';
@@ -106,6 +106,23 @@ export async function POST(req: NextRequest) {
     } catch (e: any) {
       return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'error', shop: shopNum, durationMs: Date.now() - t0, error: e?.message || String(e) }, { status: 500 });
     }
+  }
+
+  if (targetJob === 'warm-call-recordings') {
+    const shopParam = url.searchParams.get('shop') || '';
+    const shops = shopParam === 'all' || !shopParam ? SHOPS.map(s => s.num) : [shopParam];
+    const startedAt = new Date().toISOString();
+    const out: Array<{ shop: string; status: 'ok' | 'error'; durationMs: number; message?: string; error?: string }> = [];
+    for (const num of shops) {
+      const t0 = Date.now();
+      try {
+        const msg = await warmCallRecordingsForShop(num);
+        out.push({ shop: num, status: 'ok', durationMs: Date.now() - t0, message: msg });
+      } catch (e: any) {
+        out.push({ shop: num, status: 'error', durationMs: Date.now() - t0, error: e?.message || String(e) });
+      }
+    }
+    return NextResponse.json({ startedAt, finishedAt: new Date().toISOString(), mode: 'targeted', job: targetJob, results: out });
   }
 
   if (

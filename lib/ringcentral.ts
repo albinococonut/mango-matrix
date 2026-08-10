@@ -75,18 +75,25 @@ function matchSiteToShop(siteName: string): ShopNum | null {
     if (shop.city && lower.includes(shop.city.toLowerCase())) {
       return shop.num;
     }
+    // Word-level: any significant word (4+ chars) from the shop name appears in
+    // the site name. Catches cases like "Heights Mia" → "The Heights" (shop 002).
+    const shopWords = shopLower.split(/\s+/).filter(w => w.length >= 4);
+    if (shopWords.length > 0 && shopWords.some(w => lower.includes(w))) {
+      return shop.num;
+    }
   }
   return null;
 }
 
-// Mango's RC extension numbering convention: NNNxx where N is the shop digit.
-// 111xx → shop 001, 222xx → shop 002, ..., 777xx → shop 007, 999xx → shop 009.
+// Mango's RC extension numbering convention: the first TWO digits identify the shop.
+// 11xxx → shop 001, 22xxx → shop 002, …, 77xxx → shop 007, 99xxx → shop 009.
+// (Originally assumed 3 identical leading digits, but some lines use patterns like
+// 44005 or 66007 where only the first two digits are the same.)
 function shopFromExtensionNumber(extNum: string | null | undefined): ShopNum | null {
-  if (!extNum || extNum.length < 3) return null;
-  const prefix = extNum.slice(0, 3);
-  // All three leading digits must be the same (111, 222, …, 999)
-  if (prefix[0] !== prefix[1] || prefix[1] !== prefix[2]) return null;
-  const digit = parseInt(prefix[0], 10);
+  if (!extNum || extNum.length < 2) return null;
+  const d1 = extNum[0], d2 = extNum[1];
+  if (d1 !== d2) return null;
+  const digit = parseInt(d1, 10);
   if (isNaN(digit) || digit === 0 || digit === 8) return null;
   const shopNum = digit === 9 ? '009' : `00${digit}` as ShopNum;
   return SHOP_BY_NUM[shopNum] ? shopNum : null;
@@ -152,14 +159,41 @@ async function fetchAndCachePhoneMap(): Promise<Map<string, ShopNum>> {
     return new Map();
   }
 
-  const data = await resp.json() as { records?: Array<{ phoneNumber?: string; site?: { name?: string }; extension?: { extensionNumber?: string; name?: string } }> };
+  type RCPhoneRec = { phoneNumber?: string; label?: string; site?: { name?: string }; extension?: { extensionNumber?: string; name?: string; id?: number } };
+  const data = await resp.json() as { records?: RCPhoneRec[] };
+  const records = data.records ?? [];
+
+  // For records that can't be matched via extension number or label, fetch the
+  // RC extension detail which often has a descriptive name (e.g. "Heights Mia").
+  const needsDetail = records.filter(rec => {
+    const siteName = (rec.site?.name ?? rec.extension?.name ?? rec.label ?? '').trim();
+    return !matchSiteToShop(siteName) && !shopFromExtensionNumber(rec.extension?.extensionNumber ?? null) && rec.extension?.id;
+  });
+  const extDetailMap = new Map<number, string>();
+  await Promise.all(needsDetail.map(async rec => {
+    const extId = rec.extension?.id;
+    if (!extId) return;
+    try {
+      const r = await fetch(`${RC_BASE}/restapi/v1.0/account/~/extension/${extId}`, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
+      });
+      if (!r.ok) return;
+      const d = await r.json() as { name?: string; site?: { name?: string } };
+      const name = d.site?.name ?? d.name ?? '';
+      if (name) extDetailMap.set(extId, name);
+    } catch { /* best-effort */ }
+  }));
+
   const map = new Map<string, ShopNum>();
   const toCache: Record<string, string> = {};
   const unmatched: string[] = [];
 
-  for (const rec of data.records ?? []) {
-    const siteName = (rec.site?.name ?? rec.extension?.name ?? '').trim();
+  for (const rec of records) {
+    const extId = rec.extension?.id;
+    const extDetailName = extId ? (extDetailMap.get(extId) ?? '') : '';
+    const siteName = (rec.site?.name ?? rec.extension?.name ?? rec.label ?? extDetailName).trim();
     const shopNum = matchSiteToShop(siteName)
+      ?? matchSiteToShop(extDetailName)
       ?? shopFromExtensionNumber(rec.extension?.extensionNumber ?? null);
     const ten = normalizePhone(rec.phoneNumber ?? '');
     if (!ten) continue;
@@ -180,6 +214,74 @@ async function fetchAndCachePhoneMap(): Promise<Map<string, ShopNum>> {
     await writeCache(RC_PHONE_MAP_KEY, toCache, { ttlSeconds: 24 * 60 * 60 });
   }
   return map;
+}
+
+// --- Phone map cache bust (call after fixing shopFromExtensionNumber) ---
+export async function bustPhoneMapCache(): Promise<void> {
+  // Writing an empty object invalidates the cache: buildPhoneShopMap skips
+  // empty cached maps and falls through to a fresh live fetch.
+  await writeCache(RC_PHONE_MAP_KEY, {}, { ttlSeconds: 1 });
+}
+
+// --- Diagnostic: expose raw RC phone number list for debugging shop matching ---
+export async function debugPhoneMap(): Promise<{ records: Array<{ phone: string; site: string; extension: string; extensionName: string; extensionType: string; usageType: string; matchedShop: string | null; raw?: unknown }> }> {
+  let token: string;
+  try { token = await getRCToken(); } catch (e: any) {
+    return { records: [{ phone: '', site: 'TOKEN ERROR: ' + e?.message, extension: '', extensionName: '', extensionType: '', usageType: '', matchedShop: null }] };
+  }
+  const resp = await fetch(`${RC_BASE}/restapi/v1.0/account/~/phone-number?perPage=1000`, {
+    headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
+  });
+  if (!resp.ok) {
+    return { records: [{ phone: '', site: `HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`, extension: '', extensionName: '', extensionType: '', usageType: '', matchedShop: null }] };
+  }
+  const data = await resp.json() as { records?: Array<Record<string, unknown>> };
+
+  // For unmatched numbers that have an extension ID, fetch the extension detail
+  // to get the name/type which may reveal which shop they belong to.
+  const unmatched = (data.records ?? []).filter(rec => {
+    const ext = rec.extension as { extensionNumber?: string; name?: string; id?: number; uri?: string } | undefined;
+    const extNum = ext?.extensionNumber ?? '';
+    const siteName = ((rec.site as { name?: string } | undefined)?.name ?? (rec.label as string | undefined) ?? '').trim();
+    const shop = matchSiteToShop(siteName) ?? shopFromExtensionNumber(extNum);
+    return !shop && ext?.id;
+  });
+  const extDetailMap = new Map<number, { name: string; type: string; site?: string }>();
+  await Promise.all(unmatched.map(async rec => {
+    const ext = rec.extension as { id?: number; uri?: string } | undefined;
+    if (!ext?.id) return;
+    try {
+      const r = await fetch(`${RC_BASE}/restapi/v1.0/account/~/extension/${ext.id}`, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
+      });
+      if (!r.ok) return;
+      const d = await r.json() as { name?: string; type?: string; site?: { name?: string } };
+      extDetailMap.set(ext.id, { name: d.name ?? '', type: d.type ?? '', site: d.site?.name });
+    } catch { /* best-effort */ }
+  }));
+
+  return {
+    records: (data.records ?? []).map(rec => {
+      const site = rec.site as { name?: string } | undefined;
+      const ext = rec.extension as { extensionNumber?: string; name?: string; id?: number } | undefined;
+      const label = rec.label as string | undefined;
+      const extDetail = ext?.id ? extDetailMap.get(ext.id) : undefined;
+      const siteName = (site?.name ?? ext?.name ?? extDetail?.site ?? label ?? '').trim();
+      const extNum = ext?.extensionNumber ?? '';
+      const shop = matchSiteToShop(siteName) ?? matchSiteToShop(extDetail?.name ?? '') ?? shopFromExtensionNumber(extNum);
+      const result: { phone: string; site: string; extension: string; extensionName: string; extensionType: string; usageType: string; matchedShop: string | null; raw?: unknown } = {
+        phone: String(rec.phoneNumber ?? ''),
+        site: siteName || extDetail?.site || '',
+        extension: extNum,
+        extensionName: extDetail?.name ?? ext?.name ?? '',
+        extensionType: extDetail?.type ?? '',
+        usageType: String(rec.usageType ?? ''),
+        matchedShop: shop,
+      };
+      if (!shop) result.raw = rec;
+      return result;
+    }),
+  };
 }
 
 // --- Stable numeric lead_id from RC string call ID ---
@@ -256,7 +358,7 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
     if (out.length > 10_000) break; // safety cap
   }
 
-  await writeCache(cacheKey, out, { ttlSeconds: 15 * 60 });
+  await writeCache(cacheKey, out, { ttlSeconds: 5 * 60 });
   return out;
 }
 
@@ -483,6 +585,90 @@ export async function fetchOutboundCalls(f: LeadFilter): Promise<OutboundCall[]>
   }
 
   await fillOutboundTranscripts(out, recordById);
+  return out;
+}
+
+// --- Call Recordings: unified inbound+outbound snapshot for a shop ---
+// Used by the Call Recordings section in the employee view. Returns all
+// calls (inbound + outbound) for a shop in the given date range, in
+// reverse-chronological order. Transcripts are served from cache only
+// (no new Whisper invocations) to keep the sync job fast.
+
+export interface CallRecordingEntry {
+  callId: string;
+  direction: 'Inbound' | 'Outbound';
+  startTime: string;
+  durationSeconds: number;
+  customerPhone: string;
+  customerName: string;
+  extensionNumber?: string;  // outbound only
+  hasRecording: boolean;
+  transcript: string;
+}
+
+export interface CallRecordingEntryWithUri extends CallRecordingEntry {
+  contentUri?: string;  // stored server-side only; not sent to client
+}
+
+export async function fetchCallRecordingsForShop(
+  shopNum: ShopNum,
+  startDate: string,
+  endDate: string,
+): Promise<CallRecordingEntryWithUri[]> {
+  const [inboundRecords, outboundRecords, phoneMap] = await Promise.all([
+    fetchRCCallLog(startDate, endDate, 'Inbound'),
+    fetchRCCallLog(startDate, endDate, 'Outbound'),
+    buildPhoneShopMap(),
+  ]);
+
+  const out: CallRecordingEntryWithUri[] = [];
+
+  // Inbound — match by to.phoneNumber → shop
+  for (const rec of inboundRecords) {
+    const toPhone = normalizePhone(rec.to?.phoneNumber ?? '') ?? '';
+    if (phoneMap.get(toPhone) !== shopNum) continue;
+    if ((rec.duration ?? 0) < 5) continue;
+    const transcript = rec.recording?.contentUri
+      ? ((await readCache<string>(transcriptKey(rec.id))) ?? '')
+      : '';
+    out.push({
+      callId: rec.id,
+      direction: 'Inbound',
+      startTime: rec.startTime ?? '',
+      durationSeconds: rec.duration ?? 0,
+      customerPhone: normalizePhone(rec.from?.phoneNumber ?? '') ?? rec.from?.phoneNumber ?? '',
+      customerName: rec.from?.name ?? '',
+      hasRecording: !!rec.recording?.contentUri,
+      contentUri: rec.recording?.contentUri,
+      transcript,
+    });
+  }
+
+  // Outbound — match by from.phoneNumber → shop or by extension NNNxx convention
+  for (const rec of outboundRecords) {
+    const fromPhone = normalizePhone(rec.from?.phoneNumber ?? '') ?? '';
+    const shopFromPhone = phoneMap.get(fromPhone);
+    const shopFromExt = shopFromExtensionNumber(rec.from?.extensionNumber);
+    if (shopFromPhone !== shopNum && shopFromExt !== shopNum) continue;
+    if ((rec.duration ?? 0) < 10) continue;
+    const transcript = rec.recording?.contentUri
+      ? ((await readCache<string>(transcriptKey(rec.id))) ?? '')
+      : '';
+    out.push({
+      callId: rec.id,
+      direction: 'Outbound',
+      startTime: rec.startTime ?? '',
+      durationSeconds: rec.duration ?? 0,
+      customerPhone: normalizePhone(rec.to?.phoneNumber ?? '') ?? rec.to?.phoneNumber ?? '',
+      customerName: rec.to?.name ?? rec.to?.phoneNumber ?? '',
+      extensionNumber: rec.from?.extensionNumber ?? rec.from?.phoneNumber ?? '',
+      hasRecording: !!rec.recording?.contentUri,
+      contentUri: rec.recording?.contentUri,
+      transcript,
+    });
+  }
+
+  out.sort((a, b) => b.startTime.localeCompare(a.startTime));
   return out;
 }
 

@@ -11,6 +11,7 @@ import { COOKIE_NAME, verifySession } from '@/lib/auth';
 import { readCache } from '@/lib/cache';
 import { MISSED_CALLBACKS_KEY, type MissedCallbacksShopCache } from '@/lib/handlers/missedCallbacks';
 import { SE_GRADE_CACHE_KEY, type SalesGrade } from '@/lib/salesEffectiveness';
+import { CR_URIS_KEY } from '@/lib/handlers/callRecordings';
 import { getRCToken } from '@/lib/ringcentral';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,28 @@ export async function GET(req: NextRequest) {
       return new NextResponse('RingCentral not configured', { status: 503 });
     }
     const up = await fetch(grade.contentUri, { headers: { Authorization: `Bearer ${rcToken}` }, cache: 'no-store' }).catch(() => null);
+    if (!up?.ok) return new NextResponse('Upstream fetch failed', { status: 502 });
+    const h = new Headers();
+    h.set('Content-Type', up.headers.get('Content-Type') || 'audio/mpeg');
+    h.set('Cache-Control', 'private, max-age=3600');
+    const cl = up.headers.get('Content-Length');
+    if (cl) h.set('Content-Length', cl);
+    return new NextResponse(up.body, { status: 200, headers: h });
+  }
+
+  // Call Recordings mode: ?rcId=<callId>&shop=<shopNum>
+  const rcId = req.nextUrl.searchParams.get('rcId');
+  const rcShop = req.nextUrl.searchParams.get('shop');
+  if (rcId && rcShop) {
+    const uris = await readCache<Record<string, string>>(CR_URIS_KEY(rcShop));
+    const uri = uris?.[rcId];
+    if (!uri) return new NextResponse('No recording for this call', { status: 404 });
+
+    let rcToken: string;
+    try { rcToken = await getRCToken(); } catch {
+      return new NextResponse('RingCentral not configured', { status: 503 });
+    }
+    const up = await fetch(uri, { headers: { Authorization: `Bearer ${rcToken}` }, cache: 'no-store' }).catch(() => null);
     if (!up?.ok) return new NextResponse('Upstream fetch failed', { status: 502 });
     const h = new Headers();
     h.set('Content-Type', up.headers.get('Content-Type') || 'audio/mpeg');

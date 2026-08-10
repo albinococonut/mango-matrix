@@ -18,6 +18,10 @@ export async function middleware(req: NextRequest) {
     // unauthenticated users get bounced back to /login in a loop the
     // moment they click Sign in with Google.
     pathname.startsWith('/api/auth/google') ||
+    // Public: the intranet ticker fetches its text cross-origin with no
+    // session. The route enforces its own auth per-branch (PUT/override
+    // require the executive cookie, POST/context require the cron secret).
+    pathname.startsWith('/api/ticker') ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/login') ||
     // The original standalone concept page uses representative data only (no

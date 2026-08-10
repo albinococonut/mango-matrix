@@ -74,7 +74,7 @@ export function Card({ id, eyebrow, title, sub, right, children, pad = true, col
     </section>
   );
 }
-export function Dropdown({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: { key: string; label: string }[] }) {
+export function Dropdown({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: readonly { key: string; label: string }[] }) {
   return (
     <div className="relative inline-block">
       <select value={value} onChange={(e) => onChange(e.target.value)}
@@ -117,17 +117,27 @@ export function Pill({ children, tone = 'neutral' }: { children: React.ReactNode
   return <span className="c2ui inline-flex items-center rounded-full px-2.5 py-0.5 text-[12.5px] font-semibold" style={{ color: s.c, background: s.bg }}>{children}</span>;
 }
 
+// ── Shared dropdown options (import these anywhere to keep dropdowns in sync) ─
+export const COMPARISON_OPTS = [
+  { key: 'none',                  label: 'No Comparison' },
+  { key: 'previous_period',       label: 'Previous Period' },
+  { key: 'same_period_last_year', label: 'Same Period Last Year' },
+] as const;
+
 // ── ConceptShell — frosted sidebar + cream/orb background + page header ──────
-type NavId = 'diagnostic' | 'review' | 'employee' | 'todo' | 'tv' | 'parts-matrix';
+type NavId = 'diagnostic' | 'diagnostic-charts' | 'review' | 'employee' | 'todo' | 'call-recordings' | 'tv' | 'parts-matrix' | 'ticker' | 'gbp' | 'intranet';
 const NAV: { id: NavId; label: string; href: string }[] = [
-  { id: 'diagnostic', label: 'Diagnostic', href: '/diagnostic' },
-  { id: 'review', label: 'Weekly Review', href: '/review' },
+  { id: 'diagnostic-charts', label: 'Charts',      href: '/diagnostic?tab=charts' },
+  { id: 'diagnostic',        label: 'Diagnostics', href: '/diagnostic?tab=diagnostics' },
+  { id: 'review',       label: 'Weekly Review', href: '/review' },
   { id: 'parts-matrix', label: 'Parts Pricing', href: '/parts-matrix' },
-  { id: 'employee', label: 'Employee View', href: '/employee' },
+  { id: 'ticker',       label: 'Daily Ticker',  href: '/admin/ticker' },
+  { id: 'employee',     label: 'Matrix',        href: '/employee' },
+  { id: 'intranet',     label: 'Intranet',      href: 'https://intranet.mangoautomotive.com' },
 ];
 const EMP_CHILDREN: { id: NavId; label: string; href: string }[] = [
-  { id: 'todo', label: 'To Do', href: '/todo' },
-  { id: 'tv', label: 'TV', href: '/tv' },
+  { id: 'todo',             label: 'To Do',            href: '/todo' },
+  { id: 'call-recordings',  label: 'Call Recordings',  href: '/call-recordings' },
 ];
 
 async function doLogout() {
@@ -195,22 +205,30 @@ export function ConceptShell({
   // Top-level + child-level nav item — left-bar active state (no full fill),
   // serif label, generous spacing. The bar carries the active signal so the
   // label is left to read as plain typography.
-  const NavLink = ({ href, label, on, size = 'top' }: { href: string; label: string; on: boolean; size?: 'top' | 'child' }) => (
-    <Link href={href} className="relative flex items-center pl-5 pr-3 transition" style={{ paddingTop: size === 'top' ? 12 : 9, paddingBottom: size === 'top' ? 12 : 9 }}>
-      {on && <span className="absolute left-0 rounded-r-sm" style={{ top: 6, bottom: 6, width: 3, background: AMBER, boxShadow: '2px 0 8px rgba(232,134,62,0.30)' }} />}
-      <span className={on && size === 'top' ? 'c2disp' : 'c2ui'} style={{ color: on ? '#B5631F' : (size === 'top' ? INK2 : INK2), fontSize: on && size === 'top' ? 19 : size === 'top' ? 15 : 14, letterSpacing: on && size === 'top' ? '-0.01em' : 0, fontWeight: size === 'top' ? 500 : 500 }}>{label}</span>
-    </Link>
-  );
+  const NavLink = ({ href, label, on, size = 'top' }: { href: string; label: string; on: boolean; size?: 'top' | 'child' }) => {
+    const isExt = href.startsWith('http');
+    return (
+      <Link href={href} target={isExt ? '_blank' : undefined} rel={isExt ? 'noopener noreferrer' : undefined}
+        className="relative flex items-center pl-5 pr-3 transition" style={{ paddingTop: size === 'top' ? 12 : 9, paddingBottom: size === 'top' ? 12 : 9 }}>
+        {on && <span className="absolute left-0 rounded-r-sm" style={{ top: 6, bottom: 6, width: 3, background: AMBER, boxShadow: '2px 0 8px rgba(232,134,62,0.30)' }} />}
+        <span className="c2ui" style={{ color: on ? '#B5631F' : INK2, fontSize: size === 'top' ? 15 : 14, fontWeight: on ? 600 : 500 }}>{label}{isExt && <span style={{ opacity: 0.45, fontSize: 11, marginLeft: 4 }}>↗</span>}</span>
+      </Link>
+    );
+  };
   // Collapsed-mode nav rail — vertical column of single-letter initials so
   // identity is preserved while the column shrinks to ~56px. Active item
   // still gets the amber bar so the visual signal is consistent across the
   // expanded/collapsed states.
-  const railItem = (href: string, label: string, on: boolean, initial: string) => (
-    <Link key={href} href={href} className="relative flex items-center justify-center w-10 h-10 rounded-lg transition" title={label} style={{ background: on ? 'rgba(232,134,62,0.10)' : 'transparent' }}>
-      {on && <span className="absolute left-0 rounded-r-sm" style={{ top: 6, bottom: 6, width: 3, background: AMBER }} />}
-      <span className="c2disp" style={{ color: on ? '#B5631F' : INK2, fontSize: 15, letterSpacing: '-0.01em', fontWeight: 500 }}>{initial}</span>
-    </Link>
-  );
+  const railItem = (href: string, label: string, on: boolean, initial: string) => {
+    const isExt = href.startsWith('http');
+    return (
+      <Link key={href} href={href} target={isExt ? '_blank' : undefined} rel={isExt ? 'noopener noreferrer' : undefined}
+        className="relative flex items-center justify-center w-10 h-10 rounded-lg transition" title={label} style={{ background: on ? 'rgba(232,134,62,0.10)' : 'transparent' }}>
+        {on && <span className="absolute left-0 rounded-r-sm" style={{ top: 6, bottom: 6, width: 3, background: AMBER }} />}
+        <span className="c2disp" style={{ color: on ? '#B5631F' : INK2, fontSize: 15, letterSpacing: '-0.01em', fontWeight: 500 }}>{initial}</span>
+      </Link>
+    );
+  };
   const ChevronLeft = (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
   );
@@ -228,7 +246,7 @@ export function ConceptShell({
             Collapsible to a ~56px rail of single-letter nav links + a
             chevron-right to expand. Matches the production ExecSidebar UX. */}
         {collapsed ? (
-          <aside className="hidden lg:flex flex-col items-center w-14 shrink-0 sticky top-0 h-screen py-7 gap-2" style={{ background: 'linear-gradient(180deg, rgba(253,248,242,0.76), rgba(251,244,236,0.56))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(237,220,206,0.75)' }}>
+          <aside className="hidden lg:flex flex-col items-center w-14 shrink-0 sticky top-0 h-screen py-7 gap-2" style={{ background: 'rgba(255,255,255,0.90)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(237,220,206,0.75)' }}>
             {/* Expand toggle */}
             <button onClick={toggleCollapsed} aria-label="Expand sidebar" className="flex items-center justify-center w-10 h-10 rounded-lg transition" style={{ color: INK2 }} title="Expand sidebar">
               {ChevronRight}
@@ -237,8 +255,7 @@ export function ConceptShell({
             {/* Top-level rail items + sub-items as single-letter initials. */}
             <div className="flex flex-col items-center gap-1">
               {NAV.map((c) => railItem(c.href, c.label, c.id === active, c.label.charAt(0)))}
-              {/* Employee children — initials TD / TV to distinguish */}
-              {EMP_CHILDREN.map((ch) => railItem(ch.href, ch.label, ch.id === active, ch.id === 'todo' ? 'T' : 'V'))}
+              {EMP_CHILDREN.map((ch) => railItem(ch.href, ch.label, ch.id === active, ch.label.charAt(0)))}
             </div>
             {/* Footer — sign-out icon only */}
             <div className="mt-auto flex flex-col items-center gap-2 pb-1">
@@ -249,17 +266,17 @@ export function ConceptShell({
             </div>
           </aside>
         ) : (
-          <aside className="hidden lg:flex flex-col w-64 shrink-0 sticky top-0 h-screen py-7" style={{ background: 'linear-gradient(180deg, rgba(253,248,242,0.76), rgba(251,244,236,0.56))', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(237,220,206,0.75)' }}>
+          <aside className="hidden lg:flex flex-col w-64 shrink-0 sticky top-0 h-screen py-7" style={{ background: 'rgba(255,255,255,0.90)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', borderRight: '1px solid rgba(237,220,206,0.75)' }}>
             {/* Wordmark + collapse toggle */}
             <div className="px-5">
               {goldRule}
               <div className="py-4 flex items-start justify-between gap-2">
-                <div className="min-w-0 flex items-center gap-2.5">
+                <div className="flex flex-col items-center gap-2 flex-1 min-w-0">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src="/logo.png" alt="Mango Automotive" className="h-8 w-auto object-contain shrink-0" />
-                  <div className="c2disp leading-tight" style={{ color: INK, fontSize: 16, letterSpacing: '-0.02em' }}>The Mango Matrix</div>
+                  <div className="c2disp leading-tight text-center" style={{ color: INK, fontSize: 15, letterSpacing: '-0.01em' }}>The Mango Matrix</div>
+                  <img src="/mango-badge-logo.png" alt="Mango Automotive" className="object-contain shrink-0" style={{ width: 88, height: 88 }} />
                 </div>
-                <button onClick={toggleCollapsed} aria-label="Collapse sidebar" title="Collapse sidebar" className="shrink-0 flex items-center justify-center w-7 h-7 rounded-lg transition -mt-0.5" style={{ color: FAINT }}>
+                <button onClick={toggleCollapsed} aria-label="Collapse sidebar" title="Collapse sidebar" className="shrink-0 flex items-center justify-center w-7 h-7 rounded-lg transition" style={{ color: FAINT }}>
                   {ChevronLeft}
                 </button>
               </div>
