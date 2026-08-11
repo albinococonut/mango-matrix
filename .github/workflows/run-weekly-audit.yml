@@ -42,10 +42,13 @@ jobs:
             JOB="${{ github.event.inputs.job }}"
             WEEK="${{ github.event.inputs.week }}"
           else
-            # schedule: infer from UTC hour
+            # schedule: infer from UTC hour/day
+            # GitHub Actions cron can fire 0-90 min late, so use a window:
+            # Saturday UTC 02:00–05:59 = Friday close snapshot
+            # All other times = daily drift check
             HOUR=$(date -u +%H)
             DAY=$(date -u +%u)   # 1=Mon … 7=Sun
-            if [ "$DAY" = "6" ] && [ "$HOUR" = "02" ]; then
+            if [ "$DAY" = "6" ] && [ "$HOUR" -ge 2 ] && [ "$HOUR" -le 5 ]; then
               JOB="take-weekly-snapshot"
             else
               JOB="check-weekly-drift"

@@ -78,6 +78,10 @@ export async function clearPendingEntriesForWeeks(weekStarts: string[]): Promise
 /**
  * Merge new diffs from a DriftReport into the log without overwriting
  * existing reviewed entries. Returns the count of newly added entries.
+ *
+ * If snapshotBased=true and an entry already exists as snapshotBased=false
+ * (seeded earlier by the updatedDate fallback), upgrade it in place so the
+ * before/after delta becomes visible. Review status and notes are preserved.
  */
 export async function seedDriftFromReport(
   weekStart: string,
@@ -87,15 +91,35 @@ export async function seedDriftFromReport(
   if (!report.diffs?.length) return 0;
 
   const existing = await getDriftLog();
-  const idSet = new Set(existing.map(e => e.id));
+  const idMap = new Map(existing.map((e, i) => [e.id, i]));
   const now = new Date().toISOString();
   let added = 0;
+  let upgraded = 0;
 
   for (const diff of report.diffs) {
     const id = `${diff.roId}_${weekStart}`;
-    if (idSet.has(id)) continue;
     const shop = SHOP_BY_NUM[diff.shopNum as ShopNum];
     if (!shop) continue;
+
+    const existingIdx = idMap.get(id);
+    if (existingIdx !== undefined) {
+      // Upgrade a non-snapshot entry when real snapshot data arrives
+      if (snapshotBased && !existing[existingIdx].snapshotBased) {
+        existing[existingIdx] = {
+          ...existing[existingIdx],
+          revenueBefore: diff.revenueBefore,
+          revenueAfter: diff.revenueAfter,
+          delta: diff.delta,
+          statusBefore: diff.statusBefore,
+          statusAfter: diff.statusAfter,
+          snapshotBased: true,
+          breakdownBefore: diff.breakdownBefore,
+          breakdownAfter: diff.breakdownAfter,
+        };
+        upgraded++;
+      }
+      continue;
+    }
 
     existing.push({
       id,
@@ -118,11 +142,11 @@ export async function seedDriftFromReport(
       status: 'pending',
       notes: '',
     });
-    idSet.add(id);
+    idMap.set(id, existing.length - 1);
     added++;
   }
 
-  if (added > 0) await saveDriftLog(existing);
+  if (added > 0 || upgraded > 0) await saveDriftLog(existing);
   return added;
 }
 

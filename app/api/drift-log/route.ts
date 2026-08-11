@@ -82,10 +82,12 @@ export async function GET(req: NextRequest) {
     await seedFromLiveScan(lastWeek);
     entries = await getDriftLog();
   } else {
-    Promise.all([
-      seedFromSnapshots(lastWeek),
-      seedFromLiveScan(lastWeek),
-    ]).catch(() => {});
+    // Run snapshot seeder first so it can upgrade any existing non-snapshot
+    // entries before the live scan runs (avoids a race where updatedDate scan
+    // seeds an entry as snapshotBased:false and then the snapshot data is ignored).
+    seedFromSnapshots(lastWeek)
+      .then(() => seedFromLiveScan(lastWeek))
+      .catch(() => {});
   }
 
   const filtered = entries.filter(e => e.weekStart === weekFilter);
