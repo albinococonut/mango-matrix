@@ -1097,10 +1097,20 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
 
   const lines: any[] = [];
+  // Hard deadline: curl's --max-time is 750s, so we must respond by then.
+  // Return partial results if we've been running for more than 620s so the
+  // function always replies before the GitHub Actions curl times out.
+  const warmStart = Date.now();
+  const DEADLINE_MS = 620_000;
+
   // Sequential (not Promise.all) to prevent 16 concurrent Tekmetric requests
   // from triggering 429 rate-limit storms and exponential backoff cascades that
   // push the total wall-clock time past Vercel's 800s function limit.
   for (const shop of SHOPS) {
+    if (Date.now() - warmStart > DEADLINE_MS) {
+      console.warn(`[parts-matrix] deadline reached after ${Math.round((Date.now() - warmStart) / 1000)}s — returning partial results`);
+      break;
+    }
     try {
       let ros: any[];
       if (mode === 'posted') {
@@ -1113,14 +1123,14 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
         });
       } else {
         // 'all' mode: current range + 60-day open-estimate sweep (same logic as API cold path)
+        // Fetches are sequential (not Promise.all) to halve Tekmetric pressure
+        // and reduce 429 storms that can add 30s per retry.
         const sweepStartDate = new Date(startISO);
         sweepStartDate.setDate(sweepStartDate.getDate() - 60);
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
-        const [rangeRos, sweepRos] = await Promise.all([
-          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
-          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
-        ]);
+        const rangeRos = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        const sweepRos = await fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString());
         const openFromSweep = sweepRos.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
           return !CLOSED.has(s);

@@ -107,34 +107,48 @@ function shopFromExtensionNumber(extNum: string | null | undefined): ShopNum | n
 const RC_PHONE_MAP_KEY = 'rc_phone_shop_map';
 
 async function buildPhoneShopMap(): Promise<Map<string, ShopNum>> {
-  // Priority 1: explicit env var override
+  // Parse the explicit env var override (entries here take priority over auto-discovery,
+  // but the env var is treated as a supplement — shops NOT covered by the env var still
+  // get auto-discovered from RC. This fixes shops added after the env var was last updated).
+  const envMap = new Map<string, ShopNum>();
   const envOverride = process.env.RINGCENTRAL_PHONE_MAP;
   if (envOverride) {
     try {
       const obj = JSON.parse(envOverride) as Record<string, string>;
-      const map = new Map<string, ShopNum>();
       for (const [shopNum, nums] of Object.entries(obj)) {
         for (const ph of String(nums).split(',').map(s => s.trim())) {
           const ten = normalizePhone(ph);
-          if (ten) map.set(ten, shopNum as ShopNum);
+          if (ten) envMap.set(ten, shopNum as ShopNum);
         }
       }
-      if (map.size > 0) return map;
     } catch {
       console.warn('[rc] RINGCENTRAL_PHONE_MAP is set but could not be parsed as JSON — ignoring');
     }
   }
 
-  // Priority 2: Redis cache
+  // Check whether every shop already has at least one number in the env map.
+  // If so, skip RC entirely — all shops are explicitly accounted for.
+  const envCoveredShops = new Set(envMap.values());
+  const allCovered = SHOPS.every(s => envCoveredShops.has(s.num as ShopNum));
+  if (allCovered && envMap.size > 0) return envMap;
+
+  // At least one shop is missing from the env var — use Redis cache or live RC fetch
+  // to auto-discover the remaining shops, then overlay the env var on top.
+  let discovered = new Map<string, ShopNum>();
   const cached = await readCache<Record<string, string>>(RC_PHONE_MAP_KEY);
-  if (cached) {
-    const map = new Map<string, ShopNum>();
-    for (const [ten, num] of Object.entries(cached)) map.set(ten, num as ShopNum);
-    if (map.size > 0) return map;
+  if (cached && Object.keys(cached).length > 0) {
+    for (const [ten, num] of Object.entries(cached)) discovered.set(ten, num as ShopNum);
+  } else {
+    discovered = await fetchAndCachePhoneMap();
   }
 
-  // Priority 3: fetch from RC API and cache for 24h
-  return await fetchAndCachePhoneMap();
+  // Merge: env var entries win; discovered fills in anything not explicitly mapped.
+  for (const [ten, shopNum] of discovered) {
+    if (!envMap.has(ten)) envMap.set(ten, shopNum);
+  }
+  const coveredAfterMerge = new Set(envMap.values()).size;
+  console.log(`[rc] phone map: ${envMap.size} numbers across ${coveredAfterMerge} shops (${envCoveredShops.size} explicit, ${coveredAfterMerge - envCoveredShops.size} auto-discovered)`);
+  return envMap;
 }
 
 async function fetchAndCachePhoneMap(): Promise<Map<string, ShopNum>> {
@@ -386,10 +400,15 @@ async function fetchWhisperTranscript(rcCallId: string, contentUri: string): Pro
   if (!openaiKey) return '';
   try {
     const token = await getRCToken();
-    const audioResp = await fetch(contentUri, {
+    let audioResp = await fetch(contentUri, {
       headers: { Authorization: `Bearer ${token}` },
       cache: 'no-store',
     });
+    // RC rate-limits audio downloads with 429 — wait 5s and retry once.
+    if (audioResp.status === 429) {
+      await new Promise(r => setTimeout(r, 5_000));
+      audioResp = await fetch(contentUri, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+    }
     if (!audioResp.ok) {
       console.warn(`[rc] audio download failed ${rcCallId}: ${audioResp.status}`);
       return '';
