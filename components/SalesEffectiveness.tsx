@@ -180,11 +180,11 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
             </div>
           )}
 
-          {grade.ticketCoverage.omittedItems.length > 0 && (
+          {(grade.ticketCoverage?.omittedItems?.length ?? 0) > 0 && (
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Items skipped on call</div>
               <div className="space-y-0.5">
-                {grade.ticketCoverage.omittedItems.map((it, i) => (
+                {(grade.ticketCoverage.omittedItems ?? []).map((it, i) => (
                   <div key={i} className="flex items-center gap-2 text-[12px]">
                     <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: it.severity === 'safety-critical' ? '#DC2626' : '#F4B65C' }} />
                     <span className="font-medium">{it.name}</span>
@@ -197,7 +197,7 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
           )}
 
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-            {Object.entries(grade.dimensionScores).filter(([, v]) => v != null).map(([k, v]) => (
+            {Object.entries(grade.dimensionScores ?? {}).filter(([, v]) => v != null).map(([k, v]) => (
               <div key={k} className="flex items-center justify-between gap-1">
                 <span className="text-[10.5px] text-mango-muted truncate">{DIM_LABELS[k] ?? k}</span>
                 <span className="text-[10.5px] font-bold tabular-nums" style={{ color: SCORE_COLOR(v as number) }}>{(v as number).toFixed(0)}/5</span>
@@ -205,11 +205,11 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
             ))}
           </div>
 
-          {grade.improvements.length > 0 && (
+          {(grade.improvements?.length ?? 0) > 0 && (
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Coaching points</div>
               <ol className="space-y-0.5 list-decimal list-inside">
-                {grade.improvements.map((imp, i) => <li key={i} className="text-[11.5px] text-mango-ink">{imp}</li>)}
+                {(grade.improvements ?? []).map((imp, i) => <li key={i} className="text-[11.5px] text-mango-ink">{imp}</li>)}
               </ol>
             </div>
           )}

@@ -65,7 +65,9 @@ async function authedFetch(path: string, params?: Record<string, string | number
     }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
-      const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(8000, 500 * 2 ** attempt);
+      // Cap retry-after at 30s — Tekmetric occasionally sends absurdly large
+      // values (e.g. 3600) that would hang the function past Vercel's timeout.
+      const delay = retryAfter > 0 ? Math.min(retryAfter * 1000, 30_000) : Math.min(8000, 500 * 2 ** attempt);
       await new Promise(r => setTimeout(r, delay));
       continue;
     }

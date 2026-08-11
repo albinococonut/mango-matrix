@@ -174,9 +174,11 @@ async function fetchAndCachePhoneMap(): Promise<Map<string, ShopNum>> {
     const extId = rec.extension?.id;
     if (!extId) return;
     try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 10_000);
       const r = await fetch(`${RC_BASE}/restapi/v1.0/account/~/extension/${extId}`, {
-        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
-      });
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: ctrl.signal,
+      }).finally(() => clearTimeout(tid));
       if (!r.ok) return;
       const d = await r.json() as { name?: string; site?: { name?: string } };
       const name = d.site?.name ?? d.name ?? '';
@@ -332,19 +334,26 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
     + `&dateTo=${encodeURIComponent(endDate + 'T23:59:59.999Z')}`;
 
   while (nextUrl) {
+    // 25-second timeout per fetch — prevents the function from hanging if RC
+    // drops the connection without closing it.
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 25_000);
     let resp = await fetch(nextUrl, {
       headers: { Authorization: `Bearer ${token}` },
       cache: 'no-store',
-    });
-    // RC CMN-301: rate limit — retry up to 3× with increasing waits (45s, 90s, 135s)
-    for (let attempt = 1; resp.status === 429 && attempt <= 3; attempt++) {
-      const waitMs = attempt * 45_000;
-      console.warn(`[rc] call-log rate limited (429), waiting ${waitMs / 1000}s (attempt ${attempt}/3)`);
-      await new Promise(r => setTimeout(r, waitMs));
+      signal: controller.signal,
+    }).finally(() => clearTimeout(tid));
+    // RC CMN-301: rate limit — retry up to 2× with 10s waits (total ≤20s extra)
+    for (let attempt = 1; resp.status === 429 && attempt <= 2; attempt++) {
+      console.warn(`[rc] call-log rate limited (429), waiting 10s (attempt ${attempt}/2)`);
+      await new Promise(r => setTimeout(r, 10_000));
+      const c2 = new AbortController();
+      const t2 = setTimeout(() => c2.abort(), 25_000);
       resp = await fetch(nextUrl, {
         headers: { Authorization: `Bearer ${token}` },
         cache: 'no-store',
-      });
+        signal: c2.signal,
+      }).finally(() => clearTimeout(t2));
     }
     if (!resp.ok) {
       throw new Error(`RC call-log fetch failed: ${resp.status} ${(await resp.text()).slice(0, 300)}`);
@@ -358,7 +367,9 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
     if (out.length > 10_000) break; // safety cap
   }
 
-  await writeCache(cacheKey, out, { ttlSeconds: 5 * 60 });
+  // 8-minute TTL so the 5-min cron always gets a cache hit on the second tick
+  // (avoids the "5min cache + 5min cron = miss every tick" thundering herd).
+  await writeCache(cacheKey, out, { ttlSeconds: 8 * 60 });
   return out;
 }
 
