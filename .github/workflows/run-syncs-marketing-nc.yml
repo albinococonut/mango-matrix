@@ -1,0 +1,37 @@
+name: Warm Marketing New Customers
+
+# Computes first-RO-per-customer-per-shop from full Tekmetric history and
+# writes the result to Redis. This is the only way the new-customer chart
+# on /marketing gets populated — the page itself never blocks on Tekmetric.
+#
+# Runs once a day (early morning MT). Manual dispatch available for seeding.
+
+on:
+  schedule:
+    # 6:00 AM UTC = 11 PM MT / midnight MST — quiet time, no Tekmetric load
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  warm-marketing-nc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Warm marketing new-customer cache
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?job=warm-marketing-new-customers" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 750)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::warm-marketing-new-customers returned HTTP $HTTP_CODE"
+            exit 1
+          fi
