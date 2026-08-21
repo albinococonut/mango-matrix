@@ -1,0 +1,37 @@
+name: Warm Marketing Attribution
+
+# Joins the new-customer cache with WhatConverts call data to attribute
+# new customers by channel (Google Ads, Direct Mail, Organic, Other).
+# Must run AFTER "Warm Marketing New Customers" has populated its cache.
+#
+# Runs once a day (after the new-customers job). Manual dispatch available.
+
+on:
+  schedule:
+    # 7:00 AM UTC = midnight MT — 1 hour after warm-marketing-new-customers
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  warm-marketing-attr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Warm marketing attribution cache
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?job=warm-marketing-attribution" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --max-time 750)
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.out
+          echo
+          if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "::error::warm-marketing-attribution returned HTTP $HTTP_CODE"
+            exit 1
+          fi
