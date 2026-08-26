@@ -49,7 +49,14 @@ async function authedFetch(path: string, params?: Record<string, string | number
     }
   }
   // Tekmetric throttles aggressive callers with 429. Back off exponentially and retry.
-  const maxAttempts = 5;
+  // Kept deliberately tight (3 attempts, 10s retry-after cap): with 8 shops fetched
+  // sequentially and multiple paginated calls per shop, a single page that keeps
+  // getting 429'd used to burn up to 150s (5 attempts x 30s cap) before giving up —
+  // enough on its own to blow past curl's 750s --max-time in the parts-matrix cron
+  // and produce a bare connection timeout instead of a clean HTTP error. Failing
+  // faster here lets the per-shop try/catch in warmPartsMatrixRange move on and
+  // keeps the overall warm job inside its deadline.
+  const maxAttempts = 3;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const fetchCtrl = new AbortController();
     const fetchTimer = setTimeout(() => fetchCtrl.abort(), 15000);
@@ -65,9 +72,9 @@ async function authedFetch(path: string, params?: Record<string, string | number
     }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
-      // Cap retry-after at 30s — Tekmetric occasionally sends absurdly large
+      // Cap retry-after at 10s — Tekmetric occasionally sends absurdly large
       // values (e.g. 3600) that would hang the function past Vercel's timeout.
-      const delay = retryAfter > 0 ? Math.min(retryAfter * 1000, 30_000) : Math.min(8000, 500 * 2 ** attempt);
+      const delay = retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : Math.min(4000, 500 * 2 ** attempt);
       await new Promise(r => setTimeout(r, delay));
       continue;
     }

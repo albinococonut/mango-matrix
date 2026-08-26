@@ -220,7 +220,10 @@ export async function POST(req: NextRequest) {
       const msg = await warmPartsMatrixRange(startParam, endParam, modeParam);
       return NextResponse.json({ job: 'warm-parts-matrix', status: 'ok', message: msg });
     } catch (e: any) {
-      return NextResponse.json({ job: 'warm-parts-matrix', status: 'error', error: e?.message || String(e) }, { status: 500 });
+      // Always 200 (same pattern as the runAllSyncs summary below) — GH Actions
+      // treats a 5xx as a hard failure and floods the inbox with cron emails.
+      // The error is still in the body for anyone checking manually.
+      return NextResponse.json({ job: 'warm-parts-matrix', status: 'error', error: e?.message || String(e) }, { status: 200 });
     }
   }
 

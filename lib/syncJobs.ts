@@ -1130,11 +1130,19 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
         const rangeRos = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
-        const sweepRos = await fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString());
-        const openFromSweep = sweepRos.filter((ro: any) => {
-          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
-          return !CLOSED.has(s);
-        });
+        // Skip the second (sweep) fetch if the range fetch alone already ate the
+        // budget — the outer deadline check only runs between shops, so without
+        // this a single throttled shop's range fetch followed by its sweep fetch
+        // could still double up and blow well past DEADLINE_MS before the loop
+        // ever gets a chance to bail.
+        const openFromSweep: any[] = [];
+        if (Date.now() - warmStart <= DEADLINE_MS) {
+          const sweepRos = await fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString());
+          openFromSweep.push(...sweepRos.filter((ro: any) => {
+            const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+            return !CLOSED.has(s);
+          }));
+        }
         const seenIds = new Set(rangeRos.map((ro: any) => ro.id));
         ros = [...rangeRos, ...openFromSweep.filter((ro: any) => !seenIds.has(ro.id))];
       }
