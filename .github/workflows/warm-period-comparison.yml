@@ -1,0 +1,69 @@
+name: Warm Period Comparison Cache
+
+# Pre-warms the period-comparison cache for the two default chart combinations
+# so the Diagnostic page always has fresh data:
+#   1. this_year + weekly (Shop-by-shop over time chart, default view)
+#   2. this_quarter + weekly (alternative range on same chart)
+#
+# When shop=all is warmed, the route automatically fans out to all 8 per-shop
+# caches as a side effect (using already-fetched RO data), so one call per
+# combination covers the full dashboard.
+#
+# Runs daily at 9 AM UTC (2 AM MT) — well before the business day, and the
+# 24h fresh TTL means this stays current until the next morning's run.
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  warm-period-comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Warm this_year + weekly (all shops)
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          # Derive the site base URL from the existing SYNC_CRON_URL secret
+          # (e.g. https://matrix.mangoautomotive.com/api/cron/run-syncs → https://matrix.mangoautomotive.com)
+          BASE_URL=$(echo "$SYNC_CRON_URL" | sed 's|/api/cron/run-syncs.*||')
+          HTTP_CODE=$(curl -sS -o /tmp/pc_year.out -w "%{http_code}" \
+            "${BASE_URL}/api/period-comparison?shop=all&range=this_year&granularity=weekly" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 750)
+          echo "HTTP $HTTP_CODE (this_year/weekly)"
+          cat /tmp/pc_year.out | head -c 300
+          echo
+          if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+            echo "::error::Period-comparison warm: auth failed ($HTTP_CODE — check SYNC_CRON_URL/CRON_SECRET)"
+            exit 1
+          fi
+          if [ "$HTTP_CODE" -ge 500 ]; then
+            echo "::warning::Period-comparison warm (this_year) returned HTTP $HTTP_CODE — transient, will retry tomorrow"
+          fi
+
+      - name: Warm this_quarter + weekly (all shops)
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          BASE_URL=$(echo "$SYNC_CRON_URL" | sed 's|/api/cron/run-syncs.*||')
+          HTTP_CODE=$(curl -sS -o /tmp/pc_qtr.out -w "%{http_code}" \
+            "${BASE_URL}/api/period-comparison?shop=all&range=this_quarter&granularity=weekly" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 750)
+          echo "HTTP $HTTP_CODE (this_quarter/weekly)"
+          cat /tmp/pc_qtr.out | head -c 300
+          echo
+          if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+            echo "::error::Period-comparison warm: auth failed ($HTTP_CODE — check SYNC_CRON_URL/CRON_SECRET)"
+            exit 1
+          fi
+          if [ "$HTTP_CODE" -ge 500 ]; then
+            echo "::warning::Period-comparison warm (this_quarter) returned HTTP $HTTP_CODE — transient, will retry tomorrow"
+          fi

@@ -20,6 +20,10 @@ import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 
 export const dynamic = 'force-dynamic';
+// Raised to 800s (via BOTH this export AND vercel.json) so the full-year
+// recompute (8 shops × ~10 months of ROs) fits within the function cap.
+// Without the vercel.json entry, Pro silently caps at 300s.
+export const maxDuration = 800;
 // Period comparison can span ~10 months × 8 shops (this_year vs last_year) —
 // far too heavy to recompute on every refresh. Cache in durable Redis and
 // serve stale on failure so the section is never empty once computed.
@@ -183,8 +187,21 @@ function buildPeriod(
   };
 }
 
+function safeEq(a: string, b: string) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
 export async function GET(req: NextRequest) {
-  if ((await getRole(req)) !== 'executive') {
+  // Internal warm calls from GH Actions cron carry a Bearer CRON_SECRET header
+  // instead of a session cookie — check that first so the warm job can bypass
+  // the executive-role check without needing a real session.
+  const cronSecret = process.env.CRON_SECRET;
+  const bearer = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  const isCronWarm = !!cronSecret && !!bearer && safeEq(bearer, cronSecret);
+  if (!isCronWarm && (await getRole(req)) !== 'executive') {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
   const range = (req.nextUrl.searchParams.get('range') as RangeKey) || 'this_year';

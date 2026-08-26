@@ -6,7 +6,8 @@
     "app/api/parts-matrix-usage/route.ts":        { "maxDuration": 120 },
     "app/api/shop-performance-heatmap/route.ts":  { "maxDuration": 120 },
     "app/api/metrics/route.ts":                   { "maxDuration": 120 },
-    "app/api/extras/route.ts":                    { "maxDuration": 120 }
+    "app/api/extras/route.ts":                    { "maxDuration": 120 },
+    "app/api/period-comparison/route.ts":         { "maxDuration": 800 }
   },
   "redirects": [
     {

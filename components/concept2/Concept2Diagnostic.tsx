@@ -7,13 +7,14 @@
 // system; reuses production's logic (chain-median diagnosis, real heatmap tiers).
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { SHOPS as SHOP_META } from '@/lib/shops';
 import { DEFAULT_GOALS, workingDaysBetween, isWorkingDay } from '@/lib/goals';
 import {
   pctTier, gpTier, closeTier, convTier, rebookTier, comebackTier, ratingTier, type Tier,
 } from '@/lib/heatmap';
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfQuarter, endOfQuarter, addDays } from 'date-fns';
-import { ConceptShell } from './kit';
+import { ConceptShell, COMPARISON_OPTS } from './kit';
 import ConceptAR from './ConceptAR';
 import { TrophyTallyQuarter } from './Concept2Employee';
 import LineChartBlock from '@/components/charts/LineChartBlock';
@@ -169,7 +170,7 @@ function Card({ id, eyebrow, title, sub, right, children, pad = true, colHeader 
     </section>
   );
 }
-function Dropdown({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: { key: string; label: string }[] }) {
+function Dropdown({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: readonly { key: string; label: string }[] }) {
   return (
     <div className="relative inline-block">
       <select value={value} onChange={(e) => onChange(e.target.value)}
@@ -249,7 +250,7 @@ interface GpTree {
   method: 'goal-met' | 'best-weeks'; goalWeeks: number; sampleWeeks: number;
 }
 
-function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRate?: number; conversion?: number | null; rebook?: number | null; partsGp?: number | null; laborGp?: number | null }): GpTree {
+function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRate?: number; conversion?: number | null; rebook?: number | null; partsGp?: number | null; laborGp?: number | null; comebackJobs?: number; comebackHours?: number; effectiveLaborRate?: number }): GpTree {
   const revProj = p.expected;
   const revGoal = p.goal ?? 0;
   const gpPctProj = (p.gpPct ?? 0) / 100;            // projectedGpPct arrives as a percent number
@@ -284,17 +285,31 @@ function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRat
   const closeCur = cur?.closeRate ?? b?.recent.closeRate ?? 0, closeGoal = b?.benchmark.closeRate ?? 0;
   const partsGp = cur?.partsGp ?? null, laborGp = cur?.laborGp ?? null;
 
-  // ── CAR COUNT → Call volume vs Call conversion (never re-books). ──
-  // If conversion is below the level run in goal-hitting weeks, it's a BOOKING
-  // problem; if it's already there, the gap is inbound CALL VOLUME.
+  // ── CAR COUNT → Throughput vs Call volume vs Call conversion. ──
+  // Priority order:
+  //   1. If the shop has significant approved-but-not-posted work (sold queue),
+  //      the constraint is tech capacity / throughput — not inbound demand.
+  //   2. If conversion is below goal-week level, it's a booking problem.
+  //   3. Otherwise the gap is inbound call volume (marketing / lead gen).
+  const approvedUnbilled = p.approvedUnbilled ?? 0;
+  // Flag throughput when ≥$5k sits in the sold queue AND that's >8% of weekly goal.
+  // The $5k floor avoids false positives on shops with trivial carry-over.
+  const isThroughputConstrained = approvedUnbilled >= 5000 && (revGoal <= 0 || approvedUnbilled / revGoal >= 0.08);
   const convAvail = convGoal != null && convCur != null && convGoal > 0;
   const convBelow = convAvail && (convCur as number) < (convGoal as number) * 0.98;
-  const carsBranches: GpBranch[] = [
-    { label: 'Call volume', detail: !convAvail ? 'inbound calls / leads -- marketing & phone coverage' : convBelow ? 'conversion is the constraint here, not lead volume' : `conversion already at goal (${pn(convGoal)}) -- the gap is inbound calls & leads: marketing & phone coverage`, active: convAvail ? !convBelow : false },
-    { label: 'Call conversion', detail: !convAvail ? 'booking rate of the calls you get (no history yet)' : convBelow ? `${pn(convCur)} → ${pn(convGoal)} -- book more of the calls you already get` : `${pn(convCur)} -- already at the goal-week level`, active: convBelow },
-  ];
-  const carsPrimaryCause = !convAvail ? 'Calls & conversion' : convBelow ? 'Call conversion' : 'Call volume';
-  const carsPrimaryFix = !convAvail ? 'check inbound call volume and booking rate' : convBelow ? `lift conversion ${pn(convCur)} → ${pn(convGoal)}` : 'grow inbound call & lead volume (marketing, phone coverage)';
+  const auK = Math.round(approvedUnbilled / 1000);
+  const carsBranches: GpBranch[] = isThroughputConstrained
+    ? [
+        { label: 'Production throughput', detail: `$${auK}k in sold-but-not-posted work is queued -- the constraint is technician capacity & bay availability, not inbound demand`, active: true },
+        { label: 'Call volume', detail: `$${auK}k approved backlog suggests demand is not the issue`, active: false },
+        { label: 'Call conversion', detail: convAvail ? (convBelow ? `${pn(convCur)} → ${pn(convGoal)}` : `${pn(convCur)} -- at goal-week level`) : 'no history yet', active: false },
+      ]
+    : [
+        { label: 'Call volume', detail: !convAvail ? 'inbound calls / leads -- marketing & phone coverage' : convBelow ? 'conversion is the constraint here, not lead volume' : `conversion already at goal (${pn(convGoal)}) -- the gap is inbound calls & leads: marketing & phone coverage`, active: convAvail ? !convBelow : false },
+        { label: 'Call conversion', detail: !convAvail ? 'booking rate of the calls you get (no history yet)' : convBelow ? `${pn(convCur)} → ${pn(convGoal)} -- book more of the calls you already get` : `${pn(convCur)} -- already at the goal-week level`, active: convBelow },
+      ];
+  const carsPrimaryCause = isThroughputConstrained ? 'Production throughput' : (!convAvail ? 'Calls & conversion' : convBelow ? 'Call conversion' : 'Call volume');
+  const carsPrimaryFix = isThroughputConstrained ? `clear the $${auK}k approved backlog -- flex tech hours or add capacity` : (!convAvail ? 'check inbound call volume and booking rate' : convBelow ? `lift conversion ${pn(convCur)} → ${pn(convGoal)}` : 'grow inbound call & lead volume (marketing, phone coverage)');
 
   // ── ARO → Close rate (primary driver) vs Ticket size / AWRO (secondary). ──
   const aroBranches: GpBranch[] = [
@@ -307,9 +322,29 @@ function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRat
   if (partsGp != null && laborGp != null) { if (partsGp <= laborGp) partsActive = true; else laborActive = true; }
   else if (partsGp != null) partsActive = true;
   else if (laborGp != null) laborActive = true;
+  // Build a specific, data-driven detail line for Labor GP%.
+  // Priority: detected comebacks → detected rate-cap → generic guidance.
+  const cbJobs = cur?.comebackJobs ?? 0;
+  const cbHrs = cur?.comebackHours ?? 0;
+  const effRate = cur?.effectiveLaborRate ?? 0;
+  // Rate-cap heuristic: if the shop's effective billing rate is <65% of what a
+  // healthy labor GP% implies (labor GP goal ~55% → effective rate ≈ 2.2× tech cost),
+  // flag extended-warranty / rate-capped work. We use 75% of effective-rate benchmark
+  // from best weeks; absent that data, use a floor of $80/hr.
+  const laborRateFloor = 80;
+  const isRateCapped = effRate > 0 && effRate < laborRateFloor;
+  let laborDetail: string;
+  if (cbJobs > 0) {
+    laborDetail = `${laborGp != null ? pf(laborGp) : '--'} -- ${cbJobs} warranty/comeback job${cbJobs > 1 ? 's' : ''} consumed ${cbHrs.toFixed(1)} tech hrs at no revenue`;
+    if (isRateCapped) laborDetail += `; effective billing rate $${Math.round(effRate)}/hr also suggests rate-capped work`;
+  } else if (isRateCapped) {
+    laborDetail = `${laborGp != null ? pf(laborGp) : '--'} -- effective billing rate $${Math.round(effRate)}/hr is below normal, likely extended-warranty or rate-capped work`;
+  } else {
+    laborDetail = `${laborGp != null ? pf(laborGp) : '--'} (margin on labor sales) -- comebacks eating hours, or labor discounted on the ticket`;
+  }
   const gpBranches: GpBranch[] = [
     { label: 'Parts GP%', detail: `${partsGp != null ? pf(partsGp) : '--'} (margin on parts sales) -- big jobs at low GP%, or parts not run through the pricing matrix`, active: partsActive },
-    { label: 'Labor GP%', detail: `${laborGp != null ? pf(laborGp) : '--'} (margin on labor sales) -- comebacks eating hours, or labor discounted on the ticket`, active: laborActive },
+    { label: 'Labor GP%', detail: laborDetail, active: laborActive },
   ];
   const gpPrimaryCause = partsActive ? 'Parts GP%' : laborActive ? 'Labor GP%' : 'Parts & labor margin';
   const gpPrimaryFix = partsActive ? 'lift parts GP% -- pricing matrix + check big low-GP jobs' : laborActive ? 'lift labor GP% -- cut comebacks + stop discounting labor' : 'check parts & labor margin';
@@ -333,14 +368,14 @@ function buildGpTree(p: ProjShop, b: ShopBenchmark | undefined, cur?: { closeRat
 }
 
 // ── live data ──────────────────────────────────────────────────────────────
-interface ProjShop { num: string; name: string; district: string; color: string; expected: number; goal: number | null; cars: number; aro: number; gpPct: number; ramping?: boolean }
+interface ProjShop { num: string; name: string; district: string; color: string; expected: number; goal: number | null; cars: number; aro: number; gpPct: number; ramping?: boolean; approvedUnbilled?: number }
 interface Live {
   hm: any; goalsReady: boolean;
   chain: { current: number; goal: number; projected: number; worst: number; best: number; cars: number; gp$: number; aro: number; gpPct: number; elapsed: number; total: number; conf: number | null; districts: { name: string; expected: number; goal: number | null; cars: number }[]; shops: ProjShop[] };
   trees: GpTree[];
 }
 
-export default function Concept2Diagnostic() {
+export default function Concept2Diagnostic({ role }: { role?: string }) {
   const [range, setRange] = useState('this_week');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -353,6 +388,14 @@ export default function Concept2Diagnostic() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<'diagnostics' | 'charts'>(
+    searchParams.get('tab') === 'diagnostics' ? 'diagnostics' : 'charts',
+  );
+
+  useEffect(() => {
+    setTab(searchParams.get('tab') === 'diagnostics' ? 'diagnostics' : 'charts');
+  }, [searchParams]);
 
   useEffect(() => {
     // Skip fetch for custom range if dates aren't set yet
@@ -381,7 +424,7 @@ export default function Concept2Diagnostic() {
       const elTot = elapsedAndTotal(period, new Date(), customStart, customEnd);
 
       let chain: Live['chain'];
-      const curByShop: Record<string, { closeRate?: number; conversion?: number | null; rebook?: number | null; partsGp?: number | null; laborGp?: number | null }> = {};
+      const curByShop: Record<string, { closeRate?: number; conversion?: number | null; rebook?: number | null; partsGp?: number | null; laborGp?: number | null; comebackJobs?: number; comebackHours?: number; effectiveLaborRate?: number }> = {};
 
       if (completed) {
         if (useHeatmap) {
@@ -403,8 +446,8 @@ export default function Concept2Diagnostic() {
             conversion: c.conversion != null && c.conversion >= 0 ? c.conversion : null,
             rebook: c.rebook != null && c.rebook >= 0 ? c.rebook : null,
           };
-          // Supplement with parts/labor GP% from the metrics API
-          if (k) curByShop[m.num] = { ...(curByShop[m.num] || {}), partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null };
+          // Supplement with parts/labor GP% and comeback detection from the metrics API
+          if (k) curByShop[m.num] = { ...(curByShop[m.num] || {}), partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null, comebackJobs: k.comebackJobs ?? 0, comebackHours: k.comebackHours ?? 0, effectiveLaborRate: k.effectiveLaborRate ?? 0 };
           // Prorate the weekly goal to the week's actual working days, so a
           // holiday-shortened week (e.g. Memorial week = 4 days) isn't judged
           // against a full 5-day target -- same proration the projection uses.
@@ -465,8 +508,8 @@ export default function Concept2Diagnostic() {
       } else {
         // current/forward period -- driven by the live projection payload
         const kByShop: Record<string, any> = {}; for (const s of metrics?.kpi?.byShop ?? []) kByShop[s.shopNum] = s;
-        // current parts/labor GP% feed the GP% leaf's margin sub-causes
-        for (const m of META) { const k = kByShop[m.num]; if (k) curByShop[m.num] = { partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null }; }
+        // current parts/labor GP% and comeback signals feed the GP% leaf's margin sub-causes
+        for (const m of META) { const k = kByShop[m.num]; if (k) curByShop[m.num] = { partsGp: k.partsGpPct ?? null, laborGp: k.laborGpPct ?? null, comebackJobs: k.comebackJobs ?? 0, comebackHours: k.comebackHours ?? 0, effectiveLaborRate: k.effectiveLaborRate ?? 0 }; }
         const p = proj?.portfolio, per = proj?.period;
         const sumRev = META.reduce((a, m) => { const k = kByShop[m.num]; return a + (k?.revenue ?? 0); }, 0);
         const sumGoal = META.reduce((a, m) => a + (DEFAULT_GOALS[m.num]?.revenueWeekly ?? 0), 0);
@@ -480,7 +523,7 @@ export default function Concept2Diagnostic() {
           aro: p?.projectedAro ?? (cars ? sumRev / cars : 0), gpPct: sumRev ? (gp$ / sumRev) * 100 : 0,
           elapsed: elTot.elapsed, total: elTot.total, conf: typeof p?.confidence === 'number' ? p.confidence : null,
           districts: (proj?.districts ?? []).map((d: any) => ({ name: d.label, expected: d.expected, goal: d.goalRevenue ?? null, cars: d.projectedCars })),
-          shops: (proj?.shops ?? []).map((s: any) => { const m = META.find((x) => x.num === s.shopNum); return { num: s.shopNum, color: m?.color || FAINT, name: s.shopName, district: s.district, expected: s.expected, goal: s.goalRevenue ?? null, cars: s.projectedCars, aro: s.projectedAro, gpPct: s.projectedGpPct, ramping: s.isRamping }; }),
+          shops: (proj?.shops ?? []).map((s: any) => { const m = META.find((x) => x.num === s.shopNum); return { num: s.shopNum, color: m?.color || FAINT, name: s.shopName, district: s.district, expected: s.expected, goal: s.goalRevenue ?? null, cars: s.projectedCars, aro: s.projectedAro, gpPct: s.projectedGpPct, ramping: s.isRamping, approvedUnbilled: s.approvedUnbilled ?? 0 }; }),
         };
       }
 
@@ -494,8 +537,8 @@ export default function Concept2Diagnostic() {
     return () => { alive = false; };
   }, [range, refreshTick, customStart, customEnd]);
 
-  if (err) return <Shell range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}><div className="c2ui text-center py-24" style={{ color: INK2 }}>Diagnostic data is warming up -- refresh in a moment.</div></Shell>;
-  if (!data) return <Shell range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}><LoadingSkeleton /></Shell>;
+  if (err) return <Shell role={role} range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd} tab={tab} setTab={setTab}><div className="c2ui text-center py-24" style={{ color: INK2 }}>Diagnostic data is warming up -- refresh in a moment.</div></Shell>;
+  if (!data) return <Shell role={role} range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd} tab={tab} setTab={setTab}><LoadingSkeleton /></Shell>;
 
   const { chain, trees, hm } = data;
   const pace = chain.goal ? chain.current / chain.goal : 0;
@@ -545,7 +588,8 @@ export default function Concept2Diagnostic() {
   const hmWeeks: string[] = hm?.weeks ?? [];
 
   return (
-    <Shell range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}>
+    <Shell role={role} range={range} setRange={setRange} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd} tab={tab} setTab={setTab}>
+      {tab === 'diagnostics' && <>
       {/* Revenue Projection (or last week's actuals) */}
       <Card id="projection" eyebrow={completed ? 'Last Week' : 'Forecast'} title={completed ? 'Last Week -- Actuals' : 'Revenue Projection'}
         right={
@@ -798,7 +842,7 @@ export default function Concept2Diagnostic() {
                                   <span className="c2disp tabular-nums" style={{ color: leak ? '#B5631F' : '#3E8E5E', fontSize: 12.5 }}>{leak ? usdK(nd.gp$ ?? 0) + ' short' : '+' + usdK(-(nd.gp$ ?? 0)) + ' ahead'}</span>
                                 </div>
                                 <div className="c2ui text-[12.5px] mt-0.5" style={{ color: INK2 }}>
-                                  <span className="tabular-nums">{nd.cur}</span> → <span className="tabular-nums" style={{ color: INK, fontWeight: 600 }}>{nd.goal}</span>
+                                  <span className="tabular-nums" style={{ fontWeight: 600 }}>{nd.cur}</span><span style={{ color: FAINT }}> → </span><span className="tabular-nums" style={{ color: INK2 }}>{nd.goal}</span><span style={{ color: FAINT, fontSize: 11 }}> goal</span>
                                 </div>
                                 {nd.note && leak && <div className="c2ui text-[12.5px] mt-0.5" style={{ color: FAINT }}>{nd.note}</div>}
                               </div>
@@ -816,6 +860,9 @@ export default function Concept2Diagnostic() {
         <div className="c2ui text-[12.5px] mt-4 leading-relaxed" style={{ color: FAINT }}>Method: GP$ sits at the top, decomposed exactly -- GP$ = Revenue x GP%, then the Revenue gap = Car count x ARO. <span style={{ color: INK2, fontWeight: 600 }}>Car count</span> → Call volume vs Call conversion (never re-books). <span style={{ color: INK2, fontWeight: 600 }}>ARO</span> → Close rate (declined-work follow-up / financing). <span style={{ color: INK2, fontWeight: 600 }}>GP%</span> → Parts GP% (big low-GP jobs / pricing matrix) vs Labor GP% (comebacks / discounted labor). Goal levels are the median of each metric across the weeks the shop actually hit its revenue goal (best weeks where goal is rare). Everything scales to the selected timeframe.</div>
       </Card>
 
+      </>}
+
+      {tab === 'charts' && <>
       {/* Shop comparison -- metric + range + granularity + comparison */}
       <ComparisonSection />
 
@@ -831,11 +878,9 @@ export default function Concept2Diagnostic() {
       {/* Return Customers */}
       <ReturnCustomers />
 
-      {/* Past Trophies Earned this Quarter -- moved here from the Employee
-          view at user request so the YTD trophy ledger lives at the END of
-          the Diagnostic page. The Employee view keeps the THIS-WEEK trophy
-          tally; this is the cumulative season-to-date leaderboard. */}
+      {/* Past Trophies Earned this Quarter */}
       <div id="trophies-ytd" className="scroll-mt-6 mb-6"><TrophyTallyQuarter /></div>
+      </>}
 
       <footer className="c2ui text-center text-[12.5px] py-8" style={{ color: FAINT }}>The Mango Matrix · Diagnostic · concept 2 · live data + functionality</footer>
     </Shell>
@@ -866,7 +911,7 @@ const CMP_RANGES = [
   { key: 'all_time', label: 'All Time' }, { key: 'custom', label: 'Custom' },
 ];
 const CMP_GRAN = [{ key: 'daily', label: 'Daily' }, { key: 'weekly', label: 'Weekly' }, { key: 'monthly', label: 'Monthly' }];
-const CMP_COMPARE = [{ key: 'none', label: 'No Comparison' }, { key: 'previous_period', label: 'Previous Period' }, { key: 'same_period_last_year', label: 'Same Period Last Year' }];
+const CMP_COMPARE = COMPARISON_OPTS;
 // Non-revenue metrics are weekly snapshots (heatmap), so a timeframe maps to a
 // trailing number of weeks of data -- keeps the SAME timeframe dropdown the rest
 // of the dashboard uses instead of an odd "N weeks" selector.
@@ -907,48 +952,60 @@ function ComparisonSection() {
   const [focus, setFocus] = useState<string | null>(null);
   const [cmpCustomStart, setCmpCustomStart] = useState('');
   const [cmpCustomEnd, setCmpCustomEnd] = useState('');
-  const [cur, setCur] = useState<any | null>(null);
-  const [cmp, setCmp] = useState<any | null>(null);
+
+  // period-comparison data keyed by shopNum — covers all daily metrics (revenue,
+  // gpDollars, gpPct, cars, aro, closeRate, comebacks, hours). One request per
+  // shop, all parallel; Redis-cached by the API so arbitrary date ranges (incl.
+  // All Time back to each shop's first RO) work without a heatmap window limit.
+  const [pcByShop, setPcByShop] = useState<Record<string, { cur: any[]; cmp: any[] | null }> | null>(null);
+  const [pcLoading, setPcLoading] = useState(false);
+
+  // heatmap data only for snapshot-only metrics (conversion, rebook)
   const [heat, setHeat] = useState<any | null>(null);
-  const [cmpLoading, setCmpLoading] = useState(false);
-  const [cmpFailed, setCmpFailed] = useState(false);
-  const isRevenue = metric === 'revenue';
+
+  const isDailyMetric = !['conversion', 'rebook'].includes(metric);
   const cfg = CMP_METRICS.find((m) => m.key === metric)!;
 
+  // Fetch per-shop from period-comparison for all daily metrics.
+  // Always fetches all shops regardless of shopSel so shop-switching is instant.
   useEffect(() => {
-    if (!isRevenue) return;
+    if (!isDailyMetric) return;
     if (range === 'custom' && (!cmpCustomStart || !cmpCustomEnd)) return;
-    const scope = `cur:revenue:${range}`;
+    const scope = `pc2:${metric}:${range}:${gran}:${compare}:${cmpCustomStart}:${cmpCustomEnd}`;
     const snap = cmpSnapRead<any>(scope);
-    setCur(snap ?? null);
-    let c = false;
-    safe<any>(`/api/metrics?range=${toApiRange(range, cmpCustomStart, cmpCustomEnd)}`).then((d) => {
-      if (c) return;
-      if (d?.dailyByShop) { setCur(d.dailyByShop); cmpSnapWrite(scope, d.dailyByShop); }
-    });
-    return () => { c = true; };
-  }, [isRevenue, range, cmpCustomStart, cmpCustomEnd]);
+    if (snap) setPcByShop(snap);
+    setPcLoading(true);
+    const buildParams = (shopNum: string) => {
+      const p = new URLSearchParams({ granularity: gran, shop: shopNum });
+      if (range === 'all_time') {
+        const today = new Date().toISOString().slice(0, 10);
+        p.set('range', 'custom'); p.set('start', '2020-01-01'); p.set('end', today);
+      } else if (range === 'custom') {
+        p.set('range', 'custom'); p.set('start', cmpCustomStart); p.set('end', cmpCustomEnd);
+      } else {
+        p.set('range', range);
+      }
+      if (compare !== 'none') p.set('compare', compare);
+      return p.toString();
+    };
+    let cancelled = false;
+    Promise.all(META.map((m) => safe<any>(`/api/period-comparison?${buildParams(m.num)}`))).then((results) => {
+      if (cancelled) return;
+      const byShop: Record<string, { cur: any[]; cmp: any[] | null }> = {};
+      META.forEach((m, i) => {
+        const d = results[i];
+        byShop[m.num] = { cur: d?.current?.weeks || [], cmp: d?.comparison?.weeks?.length ? d.comparison.weeks : null };
+      });
+      setPcByShop(byShop);
+      cmpSnapWrite(scope, byShop);
+      setPcLoading(false);
+    }).catch(() => { if (!cancelled) setPcLoading(false); });
+    return () => { cancelled = true; };
+  }, [isDailyMetric, metric, range, gran, compare, cmpCustomStart, cmpCustomEnd]);
+
+  // Heatmap fetch — only for conversion + rebook (weekly snapshots)
   useEffect(() => {
-    if (!isRevenue || compare === 'none') { setCmp(null); setCmpLoading(false); setCmpFailed(false); return; }
-    if (range === 'custom' && (!cmpCustomStart || !cmpCustomEnd)) return;
-    const scope = `cmp:${range}:${compare}`;
-    const snap = cmpSnapRead<any>(scope);
-    setCmp(snap ?? null);
-    setCmpFailed(false);
-    if (snap) { setCmpLoading(false); return; }
-    setCmpLoading(true);
-    let c = false;
-    const q = new URLSearchParams({ range: 'custom', compare, base: toApiRange(range, cmpCustomStart, cmpCustomEnd) });
-    safe<any>(`/api/metrics?${q}`).then((d) => {
-      if (c) return;
-      setCmpLoading(false);
-      if (d?.dailyByShop) { setCmp(d.dailyByShop); cmpSnapWrite(scope, d.dailyByShop); }
-      else { setCmpFailed(true); }
-    });
-    return () => { c = true; setCmpLoading(false); };
-  }, [isRevenue, compare, range, cmpCustomStart, cmpCustomEnd]);
-  useEffect(() => {
-    if (isRevenue) return;
+    if (isDailyMetric) return;
     const scope = `heat:${metric}:${range}`;
     const snap = cmpSnapRead<any>(scope);
     setHeat(snap ?? null);
@@ -958,39 +1015,61 @@ function ComparisonSection() {
       if (d?.shops) { setHeat(d); cmpSnapWrite(scope, d); }
     });
     return () => { c = true; };
-  }, [isRevenue, range, metric]);
-  // Reset comparison when switching to a non-revenue metric — the dashed
-  // comparison line only works for revenue (dailyByShop from /api/metrics).
-  useEffect(() => { if (!isRevenue) setCompare('none'); }, [isRevenue]);
+  }, [isDailyMetric, range, metric]);
 
-  function bucketize(input: { date: string; v: number }[]): { date: string; v: number }[] {
-    let pts = input;
-    if (gran === 'daily') pts = pts.filter((p) => !isWeekendStr(p.date));
-    else if (gran === 'weekly') { const m = new Map<string, number>(); for (const p of pts) { const [y, mo, d] = p.date.split('-').map(Number); const dt = new Date(Date.UTC(y, mo - 1, d)); const dow = (dt.getUTCDay() + 6) % 7; dt.setUTCDate(dt.getUTCDate() - dow); const k = dt.toISOString().slice(0, 10); m.set(k, (m.get(k) || 0) + p.v); } pts = [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, v]) => ({ date, v })); }
-    else if (gran === 'monthly') { const m = new Map<string, number>(); for (const p of pts) { const k = p.date.slice(0, 7) + '-01'; m.set(k, (m.get(k) || 0) + p.v); } pts = [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, v]) => ({ date, v })); }
-    return pts;
+  // Drop comparison when switching to a snapshot-only metric (heatmap has no compare)
+  useEffect(() => { if (!isDailyMetric) setCompare('none'); }, [isDailyMetric]);
+
+  // Extract the relevant value from a period-comparison WeekBucket
+  function pcWeekVal(w: any): number {
+    if (!w) return 0;
+    switch (metric) {
+      case 'revenue':   return w.revenue   || 0;
+      case 'gpDollars': return w.gpDollars || 0;
+      case 'gpPct':     return w.gpPct     || 0; // already 0-100
+      case 'cars':      return w.cars      || 0;
+      case 'aro':       return w.aro       || 0;
+      case 'closeRate': return w.closeRate || 0; // already 0-100
+      case 'comebacks': return w.comebacks || 0;
+      case 'hours':     return w.hours     || 0;
+      default:          return 0;
+    }
   }
 
   const isCombined = shopSel === 'combined';
   const shopsList = META.filter((m) => shopSel === 'all' || isCombined || shopSel === m.num);
-  // Rate metrics are averaged when combining; all others are summed.
   const RATE_METRICS = new Set(['gpPct', 'aro', 'closeRate', 'conversion', 'rebook']);
   let xLabels: string[] = []; let stepMode = false; let loading = false;
   let series: { num: string; name: string; color: string; cur: (number | null)[]; cmp: (number | null)[] | null }[] = [];
-  if (isRevenue) {
-    loading = !cur;
-    if (cur) {
-      const useStep = !!cmp && compare !== 'none';
-      stepMode = useStep;
-      const built = shopsList.map((m) => ({ m, curB: bucketize((cur[m.num] || []).map((p: any) => ({ date: p.date, v: p.revenue }))), cmpB: useStep && cmp ? bucketize((cmp[m.num] || []).map((p: any) => ({ date: p.date, v: p.revenue }))) : null }));
-      const maxLen = Math.max(1, ...built.map((b) => (useStep ? Math.max(b.curB.length, b.cmpB?.length || 0) : b.curB.length)));
-      xLabels = useStep
-        ? Array.from({ length: maxLen }, (_, i) => (gran === 'daily' ? `D${i + 1}` : gran === 'weekly' ? `W${i + 1}` : `M${i + 1}`))
-        : (built.find((b) => b.curB.length)?.curB || []).map((p) => p.date);
-      const allSeries = built.map(({ m, curB, cmpB }) => ({ num: m.num, name: m.name, color: m.color, cur: xLabels.map((_, i) => curB[i]?.v ?? null), cmp: cmpB ? xLabels.map((_, i) => cmpB[i]?.v ?? null) : null }));
+
+  if (isDailyMetric) {
+    loading = !pcByShop && pcLoading;
+    if (pcByShop) {
+      const hasComparison = compare !== 'none' && shopsList.some((m) => pcByShop[m.num]?.cmp);
+      stepMode = hasComparison;
+      if (hasComparison) {
+        const maxLen = Math.max(1, ...shopsList.map((m) => { const d = pcByShop[m.num]; return Math.max(d?.cur.length || 0, d?.cmp?.length || 0); }));
+        xLabels = Array.from({ length: maxLen }, (_, i) => (gran === 'daily' ? `D${i + 1}` : gran === 'weekly' ? `W${i + 1}` : `M${i + 1}`));
+      } else {
+        const seen = new Set<string>(); const all: string[] = [];
+        for (const m of shopsList) { for (const w of pcByShop[m.num]?.cur || []) { const k = w.weekStart; if (!seen.has(k)) { seen.add(k); all.push(k); } } }
+        xLabels = all.sort();
+      }
+      const isRate = RATE_METRICS.has(metric);
+      const allSeries = shopsList.map((m) => {
+        const d = pcByShop[m.num] || { cur: [], cmp: null };
+        const curMap = new Map<string, number>(d.cur.map((w: any) => [w.weekStart, pcWeekVal(w)]));
+        const curVals = hasComparison
+          ? d.cur.map((w: any) => pcWeekVal(w)).concat(Array(Math.max(0, xLabels.length - d.cur.length)).fill(null))
+          : xLabels.map((lbl) => curMap.get(lbl) ?? null);
+        const cmpVals = hasComparison && d.cmp
+          ? d.cmp.map((w: any) => pcWeekVal(w)).concat(Array(Math.max(0, xLabels.length - d.cmp.length)).fill(null))
+          : null;
+        return { num: m.num, name: m.name, color: m.color, cur: curVals, cmp: cmpVals };
+      });
       if (isCombined) {
-        const combinedCur = xLabels.map((_, i) => allSeries.reduce((a, s) => a + (s.cur[i] ?? 0), 0));
-        const combinedCmp = useStep ? xLabels.map((_, i) => allSeries.reduce((a, s) => a + (s.cmp ? (s.cmp[i] ?? 0) : 0), 0)) : null;
+        const combinedCur = xLabels.map((_, i) => { const vals = allSeries.map((s) => s.cur[i]).filter((v): v is number => v != null); if (!vals.length) return null; return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0); });
+        const combinedCmp = hasComparison ? xLabels.map((_, i) => { const vals = allSeries.map((s) => s.cmp?.[i]).filter((v): v is number => v != null); if (!vals.length) return null; return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0); }) : null;
         series = [{ num: 'combined', name: 'Chain Total', color: AMBER, cur: combinedCur, cmp: combinedCmp }];
       } else {
         series = allSeries;
@@ -999,30 +1078,39 @@ function ComparisonSection() {
   } else {
     loading = !heat;
     if (heat) {
-      xLabels = heat.weeks || [];
+      const wkLabels: string[] = heat.weeks || [];
       const isRate = RATE_METRICS.has(metric);
-      const allSeries = shopsList.map((m) => { const row = (heat.shops || []).find((s: any) => s.shopNum === m.num); const curr = (heat.weeks || []).map((_: any, i: number) => { const cell = row?.cells?.[i]; const raw = cell ? cell[cfg.field] : null; return raw == null ? null : (cfg.scale ? raw * cfg.scale : raw); }); return { num: m.num, name: m.name, color: m.color, cur: curr, cmp: null }; });
-      if (isCombined) {
-        const combinedCur = xLabels.map((_, i) => {
-          const vals = allSeries.map((s) => s.cur[i]).filter((v): v is number => v != null);
-          if (!vals.length) return null;
-          return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0);
-        });
-        series = [{ num: 'combined', name: 'Chain Total', color: AMBER, cur: combinedCur, cmp: null }];
+      const allSeries = shopsList.map((m) => { const row = (heat.shops || []).find((s: any) => s.shopNum === m.num); const curr = wkLabels.map((_: any, i: number) => { const cell = row?.cells?.[i]; const raw = cell ? cell[cfg.field] : null; return raw == null ? null : (cfg.scale ? raw * cfg.scale : raw); }); return { num: m.num, name: m.name, color: m.color, cur: curr, cmp: null }; });
+      if (gran === 'monthly' && wkLabels.length > 0) {
+        const seenM = new Set<string>(); const monthKeys: string[] = [];
+        for (const wk of wkLabels) { const mk = wk.slice(0, 7) + '-01'; if (!seenM.has(mk)) { seenM.add(mk); monthKeys.push(mk); } }
+        const wkToMi = wkLabels.map((wk) => monthKeys.indexOf(wk.slice(0, 7) + '-01'));
+        const agg = (cur: (number | null)[]) => monthKeys.map((_, mi) => { const vals = cur.filter((v, i) => v != null && wkToMi[i] === mi) as number[]; if (!vals.length) return null; return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0); });
+        xLabels = monthKeys;
+        const aggSeries = allSeries.map((s) => ({ ...s, cur: agg(s.cur) }));
+        if (isCombined) {
+          const combinedCur = monthKeys.map((_, mi) => { const vals = aggSeries.map((s) => s.cur[mi]).filter((v): v is number => v != null); if (!vals.length) return null; return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0); });
+          series = [{ num: 'combined', name: 'Chain Total', color: AMBER, cur: combinedCur, cmp: null }];
+        } else {
+          series = aggSeries;
+        }
       } else {
-        series = allSeries;
+        xLabels = wkLabels;
+        if (isCombined) {
+          const combinedCur = wkLabels.map((_, i) => { const vals = allSeries.map((s) => s.cur[i]).filter((v): v is number => v != null); if (!vals.length) return null; return isRate ? vals.reduce((a, b) => a + b, 0) / vals.length : vals.reduce((a, b) => a + b, 0); });
+          series = [{ num: 'combined', name: 'Chain Total', color: AMBER, cur: combinedCur, cmp: null }];
+        } else {
+          series = allSeries;
+        }
       }
     }
   }
 
   const allVals = series.flatMap((s) => [...s.cur, ...(s.cmp || [])]).filter((v): v is number => v != null && isFinite(v));
   const min = allVals.length ? Math.min(...allVals) : 0, max = allVals.length ? Math.max(...allVals) : 1;
-  // comparison loaded but every shop's comparison series is empty (e.g. the
-  // comparison window has no data) → tell the user instead of a silent no-op
-  const cmpRequested = isRevenue && compare !== 'none';
-  const cmpEmpty = cmpRequested && !!cmp && !series.some((s) => s.cmp && s.cmp.some((v) => v != null));
-  const n = xLabels.length, W = 900, H = 240, padX = 10, padT = 12, padB = 8;
-  const xAt = (i: number) => padX + (n <= 1 ? 0 : (i / (n - 1)) * (W - padX * 2));
+  const cmpEmpty = isDailyMetric && compare !== 'none' && !!pcByShop && !series.some((s) => s.cmp && s.cmp.some((v) => v != null));
+  const n = xLabels.length, W = 900, H = 240, padL = 52, padR = 10, padT = 12, padB = 8;
+  const xAt = (i: number) => padL + (n <= 1 ? 0 : (i / (n - 1)) * (W - padL - padR));
   const yAt = (v: number) => padT + (1 - (v - min) / (max - min || 1)) * (H - padT - padB);
   const pathFor = (vals: (number | null)[]) => { let d = '', st = false; vals.forEach((v, i) => { if (v == null || !isFinite(v)) return; d += `${st ? 'L' : 'M'}${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)} `; st = true; }); return d.trim(); };
   const fmtX = (l: string) => (stepMode || !/^\d{4}-\d{2}-\d{2}$/.test(l) ? l : new Date(l + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }));
@@ -1045,25 +1133,23 @@ function ComparisonSection() {
         </div>
       )}
       <Dropdown value={gran} onChange={setGran} opts={CMP_GRAN} />
-      {isRevenue && <Dropdown value={compare} onChange={setCompare} opts={CMP_COMPARE} />}
+      {isDailyMetric && <Dropdown value={compare} onChange={setCompare} opts={CMP_COMPARE} />}
     </div>
   );
 
   return (
     <Card id="comparison" eyebrow="Shop Comparison" title="Shop-by-shop over time" colHeader
-      sub={isRevenue ? `${cfg.label} per shop · ${gran}${compare !== 'none' ? ' · solid = current, dashed = comparison' : ''}` : `Weekly ${cfg.label} per shop -- click a shop to isolate it.`}
+      sub={isDailyMetric ? `${cfg.label} per shop · ${gran}${compare !== 'none' ? ' · solid = current, dashed = comparison' : ''}` : `${gran.charAt(0).toUpperCase() + gran.slice(1)} ${cfg.label} per shop -- click a shop to isolate it.`}
       right={controls}>
       {loading ? <div className="c2ui text-[13px] py-6" style={{ color: INK2 }}>Loading…</div> : !series.length || !n ? <div className="c2ui text-[13px] py-6" style={{ color: INK2 }}>No data for this selection.</div> : (
         <div className="w-full overflow-hidden">
-          {cmpLoading && <div className="c2ui text-[13px] mb-2" style={{ color: INK2 }}>Loading comparison…</div>}
-          {cmpFailed && !cmpLoading && <div className="c2ui text-[13px] mb-2" style={{ color: '#B5631F' }}>Comparison data unavailable for this date range — try a shorter period.</div>}
-          {cmpEmpty && !cmpLoading && <div className="c2ui text-[13px] mb-2" style={{ color: '#B5631F' }}>No data in the comparison window for this selection -- only the current period is shown.</div>}
+          {cmpEmpty && <div className="c2ui text-[13px] mb-2" style={{ color: '#B5631F' }}>No data in the comparison window for this selection — only the current period is shown.</div>}
           <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto', display: 'block' }} preserveAspectRatio="xMidYMid meet">
-            {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={padT + f * (H - padT - padB)} y2={padT + f * (H - padT - padB)} stroke="rgba(34,32,28,0.06)" strokeWidth={1} />)}
-            {/* comparison (dashed) drawn first so the solid current period sits on top */}
+            {[0, 0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={padL} x2={W} y1={padT + f * (H - padT - padB)} y2={padT + f * (H - padT - padB)} stroke="rgba(34,32,28,0.06)" strokeWidth={1} />)}
+            {[0, 0.25, 0.5, 0.75, 1].map((f) => { const v = max - f * (max - min); const y = padT + f * (H - padT - padB); return <text key={'ya' + f} x={padL - 6} y={y + 3.5} textAnchor="end" fontSize={10} fill={FAINT} fontFamily="system-ui,-apple-system,sans-serif">{cfg.fmt(v)}</text>; })}
             {series.map((s) => s.cmp ? <path key={s.num + 'c'} d={pathFor(s.cmp)} fill="none" stroke={s.color} strokeWidth={1.6} strokeDasharray="5 4" strokeLinecap="round" opacity={focus && focus !== s.num ? 0.05 : 0.55} /> : null)}
-            {series.map((s) => <path key={s.num} d={pathFor(s.cur)} fill="none" stroke={s.color} strokeWidth={focus === s.num ? 3 : 2} strokeLinecap="round" strokeLinejoin="round" opacity={focus && focus !== s.num ? 0.08 : 0.95} />)}
-            {series.map((s) => { if (focus && focus !== s.num) return null; const li = s.cur.map((v, i) => [v, i] as [number | null, number]).filter(([v]) => v != null) as [number, number][]; if (!li.length) return null; const [v, i] = li[li.length - 1]; return <circle key={s.num} cx={xAt(i)} cy={yAt(v)} r={3.5} fill="#fff" stroke={s.color} strokeWidth={2} />; })}
+            {series.map((s) => { const baseOp = focus && focus !== s.num ? 0.08 : 0.95; const sw = focus === s.num ? 3 : 2; const lastPts = s.cur.map((v, i) => [v, i] as [number | null, number]).filter(([v]) => v != null) as [number, number][]; const hasCurSeg = lastPts.length >= 2 && s.cur[s.cur.length - 1] != null; const completePath = pathFor(hasCurSeg ? s.cur.slice(0, -1) : s.cur); const lastSeg = hasCurSeg ? `M${xAt(lastPts[lastPts.length-2][1]).toFixed(1)} ${yAt(lastPts[lastPts.length-2][0]).toFixed(1)} L${xAt(lastPts[lastPts.length-1][1]).toFixed(1)} ${yAt(lastPts[lastPts.length-1][0]).toFixed(1)}` : ''; return <g key={s.num}><path d={completePath} fill="none" stroke={s.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={baseOp} />{hasCurSeg && <path d={lastSeg} fill="none" stroke={s.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" opacity={Math.min(baseOp, 0.15)} />}</g>; })}
+            {series.map((s) => { if (focus && focus !== s.num) return null; const li = s.cur.map((v, i) => [v, i] as [number | null, number]).filter(([v]) => v != null) as [number, number][]; if (!li.length) return null; const [v, i] = li[li.length - 1]; return <circle key={s.num} cx={xAt(i)} cy={yAt(v)} r={3.5} fill="#fff" stroke={s.color} strokeWidth={2} opacity={0.15} />; })}
           </svg>
           <div className="flex justify-between c2ui text-[12.5px] tabular-nums mt-1" style={{ color: FAINT }}>{xLabels.map((l, i) => (i % labelStep === 0 || i === n - 1) ? <span key={i}>{fmtX(l)}</span> : <span key={i} />)}</div>
           <div className="flex flex-wrap gap-2 mt-4">
@@ -1164,14 +1250,14 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
         <table className="border-separate" style={{ borderSpacing: '5px', width: '100%', tableLayout: 'fixed', minWidth: 760 }}>
           <thead><tr>
             <th className="c2ui text-left text-[12.5px] font-semibold uppercase tracking-wide pb-1 pr-3" style={{ color: FAINT, width: 118 }}>Shop</th>
-            {weeks.map((w, i) => <th key={w} className="c2ui text-center text-[12.5px] font-medium pb-1 px-1" style={{ color: FAINT }}>{wkLabel(w, i)}</th>)}
+            {weeks.map((w, i) => <th key={w} className="c2ui text-center text-[12.5px] font-medium pb-1 px-1" style={{ color: FAINT, opacity: i === weeks.length - 1 ? 0.45 : 1 }}>{wkLabel(w, i)}</th>)}
           </tr></thead>
           <tbody>
             {shops.map((s) => { const meta = META.find((m) => m.num === s.shopNum); return (
               <tr key={s.shopNum}>
                 <td className="c2ui pr-3 text-[13px] font-medium whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: INK }}><span className="inline-flex items-center gap-2"><span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: meta?.color || FAINT }} />{meta?.name || s.shopName}</span></td>
                 {weeks.map((w, i) => { const c = (s.cells || [])[i]; const { tier, big } = cellRender(s, c, w); return (
-                  <td key={w} className="rounded-lg text-center align-middle" style={{ ...(c ? heatCell(tierScore(tier)) : { background: 'rgba(34,32,28,0.03)' }), height: 42 }}>
+                  <td key={w} className="rounded-lg text-center align-middle" style={{ ...(c ? heatCell(tierScore(tier)) : { background: 'rgba(34,32,28,0.03)' }), height: 42, opacity: i === weeks.length - 1 ? 0.4 : 1 }}>
                     <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 12.5 }}>{big}</span>
                   </td>); })}
               </tr>); })}
@@ -1185,7 +1271,7 @@ function HeatmapMatrix({ shops, weeks, metric, setMetric }: { shops: any[]; week
                 </span>
               </td>
               {weeks.map((w, i) => { const c = allRow.cells[i]; const { tier, big } = cellRender(allRow, c, w); return (
-                <td key={w} className="rounded-lg text-center align-middle" style={{ ...(c ? heatCell(tierScore(tier)) : { background: 'rgba(34,32,28,0.03)' }), height: 42 }}>
+                <td key={w} className="rounded-lg text-center align-middle" style={{ ...(c ? heatCell(tierScore(tier)) : { background: 'rgba(34,32,28,0.03)' }), height: 42, opacity: i === weeks.length - 1 ? 0.4 : 1 }}>
                   <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 12.5 }}>{big}</span>
                 </td>); })}
             </tr>
@@ -1384,10 +1470,12 @@ function ReturnCustomers() {
 }
 
 // ── Shell + header (with timeframe selector) ───────────────────────────────
-const DIAG_SECTIONS = [
+const DIAG_SECTIONS_DIAGNOSTICS = [
   { id: 'projection', label: 'Revenue Projection' },
   { id: 'gp-projection', label: 'GP Projection' },
   { id: 'opportunity', label: 'Where GP$ Leaks' },
+];
+const DIAG_SECTIONS_CHARTS = [
   { id: 'comparison', label: 'Shop Comparison' },
   { id: 'performance', label: 'Shop Performance' },
   { id: 'trends', label: 'Performance Trends' },
@@ -1395,28 +1483,34 @@ const DIAG_SECTIONS = [
   { id: 'return-customers', label: 'Return Customers' },
   { id: 'trophies-ytd', label: 'Past Trophies' },
 ];
-function Shell({ range, setRange, customStart, setCustomStart, customEnd, setCustomEnd, children }: {
+function Shell({ role, range, setRange, customStart, setCustomStart, customEnd, setCustomEnd, tab, setTab, children }: {
+  role?: string;
   range: string; setRange: (v: string) => void;
   customStart?: string; setCustomStart?: (v: string) => void;
   customEnd?: string; setCustomEnd?: (v: string) => void;
+  tab: 'diagnostics' | 'charts'; setTab: (v: 'diagnostics' | 'charts') => void;
   children: React.ReactNode;
 }) {
+  const sections = tab === 'diagnostics' ? DIAG_SECTIONS_DIAGNOSTICS : DIAG_SECTIONS_CHARTS;
   return (
-    <ConceptShell active="diagnostic" title="Diagnostic" sub="Operational analytics · multi-state portfolio · live data" sections={DIAG_SECTIONS}
+    <ConceptShell role={role} active={tab === 'diagnostics' ? 'diagnostic' : 'diagnostic-charts'} title="Diagnostic" sub="Operational analytics · multi-state portfolio · live data" sections={sections}
       headerRight={
         <div className="flex items-center gap-2 flex-wrap">
-          <Dropdown value={range} onChange={setRange} opts={RANGES.map((r) => ({ key: r.key, label: r.label }))} />
-          {range === 'custom' && setCustomStart && setCustomEnd && (
-            <div className="flex items-center gap-1.5">
-              <input type="text" placeholder="YYYY-MM-DD" value={customStart ?? ''} onChange={(e) => setCustomStart(e.target.value)}
-                className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
-                style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
-              <span className="c2ui text-[13px]" style={{ color: INK2 }}>–</span>
-              <input type="text" placeholder="YYYY-MM-DD" value={customEnd ?? ''} onChange={(e) => setCustomEnd(e.target.value)}
-                className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
-                style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
-            </div>
-          )}
+          {/* Range picker — only relevant for the Diagnostics tab */}
+          {tab === 'diagnostics' && <>
+            <Dropdown value={range} onChange={setRange} opts={RANGES.map((r) => ({ key: r.key, label: r.label }))} />
+            {range === 'custom' && setCustomStart && setCustomEnd && (
+              <div className="flex items-center gap-1.5">
+                <input type="text" placeholder="YYYY-MM-DD" value={customStart ?? ''} onChange={(e) => setCustomStart(e.target.value)}
+                  className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+                  style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+                <span className="c2ui text-[13px]" style={{ color: INK2 }}>–</span>
+                <input type="text" placeholder="YYYY-MM-DD" value={customEnd ?? ''} onChange={(e) => setCustomEnd(e.target.value)}
+                  className="c2ui rounded-xl border px-2.5 py-1 text-[13px] outline-none"
+                  style={{ background: 'rgba(255,255,255,0.7)', borderColor: 'rgba(34,32,28,0.15)', color: INK, width: 112 }} />
+              </div>
+            )}
+          </>}
         </div>
       }>
       {children}
