@@ -187,12 +187,16 @@ async function processShop(
     console.error(`[attr-v2] ${shop.num} RO fetch failed — callers recorded without revenue:`, e);
   }
 
-  // 4. Phone lookups — 3 concurrent, 4s hard timeout each.
-  // authedFetch retries 429s with up to 30s delay × 5 attempts = 150s per call,
-  // which blows the total budget. The 4s cap skips slow/rate-limited lookups
-  // (they return null, counted as no RO) so the function always completes.
-  const LOOKUP_MS = 4_000;
-  const entries = Array.from(byPhone.entries());
+  // 4. Phone lookups — 5 concurrent, 3s hard timeout each.
+  // Cap at MAX_CALLERS_PER_SHOP (oldest first) so each shop call completes
+  // within the 600s Vercel/curl budget. Successful shops had 645–1087 callers
+  // at ~2.7s per concurrent batch of 5; 800 × 3s / 5 = 480s worst-case.
+  const MAX_CALLERS = 800;
+  const LOOKUP_MS = 3_000;
+  const entries = Array.from(byPhone.entries()).slice(0, MAX_CALLERS);
+  if (byPhone.size > MAX_CALLERS) {
+    console.log(`[attr-v2] ${shop.num} — capped at ${MAX_CALLERS} of ${byPhone.size} unique callers`);
+  }
   const matched = await batchedMap(entries, async ([phone, { lead, channel }]) => {
     const firstCall = new Date(lead.date_created);
     const windowEnd = new Date(firstCall.getTime() + ATTR_WINDOW_DAYS * 86_400_000);
