@@ -9,10 +9,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runAllSyncs } from '@/lib/syncJobs';
-import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop, warmPartsMatrixRange, warmCallRecordingsForShop } from '@/lib/syncJobs';
+import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop, warmDeclinedJobsForShop, backfillWeekMetricsForShop, warmPartsMatrixRange, warmCallRecordingsForShop, prefetchCallLog } from '@/lib/syncJobs';
 import { SHOPS } from '@/lib/shops';
 import { takeWeeklySnapshot, checkWeeklyDrift, currentSnapshotWeekStart } from '@/lib/weeklySnapshot';
 import { warmSalesEffectivenessForShop, SE_SHOP_CACHE_KEY } from '@/lib/salesEffectiveness';
+import { computeAndCacheNewCustomers } from '@/lib/marketingNewCustomers';
+import { computeAndCacheAttribution, computeAndCacheAttributionForShop, aggregateAttributionShops } from '@/lib/marketingAttribution';
 import { readCache } from '@/lib/cache';
 
 export const dynamic = 'force-dynamic';
@@ -104,7 +106,13 @@ export async function POST(req: NextRequest) {
       const msg = await warmSalesEffectivenessForShop(shopNum);
       return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'ok', shop: shopNum, durationMs: Date.now() - t0, message: msg });
     } catch (e: any) {
-      return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'error', shop: shopNum, durationMs: Date.now() - t0, error: e?.message || String(e) }, { status: 500 });
+      const errMsg: string = e?.message || String(e);
+      // RC CMN-301 rate limit — transient, next tick will retry. Return 200 so
+      // GH Actions doesn't spam failure emails for a recoverable condition.
+      if (errMsg.includes('CMN-301') || errMsg.includes('Request rate exceeded')) {
+        return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'rate-limited', shop: shopNum, durationMs: Date.now() - t0, message: 'RC rate limited — will retry next tick' });
+      }
+      return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'error', shop: shopNum, durationMs: Date.now() - t0, error: errMsg }, { status: 500 });
     }
   }
 
@@ -112,16 +120,22 @@ export async function POST(req: NextRequest) {
     const shopParam = url.searchParams.get('shop') || '';
     const shops = shopParam === 'all' || !shopParam ? SHOPS.map(s => s.num) : [shopParam];
     const startedAt = new Date().toISOString();
-    const out: Array<{ shop: string; status: 'ok' | 'error'; durationMs: number; message?: string; error?: string }> = [];
-    for (const num of shops) {
-      const t0 = Date.now();
-      try {
+    // Pre-fetch the RC call log once so all shops share the cache hit.
+    // This avoids a thundering herd of 8 shops all hitting RC simultaneously.
+    await prefetchCallLog();
+    // Run all shops concurrently — they all hit the warm cache now.
+    const settled = await Promise.allSettled(
+      shops.map(async (num) => {
+        const t0 = Date.now();
         const msg = await warmCallRecordingsForShop(num);
-        out.push({ shop: num, status: 'ok', durationMs: Date.now() - t0, message: msg });
-      } catch (e: any) {
-        out.push({ shop: num, status: 'error', durationMs: Date.now() - t0, error: e?.message || String(e) });
-      }
-    }
+        return { shop: num, status: 'ok' as const, durationMs: Date.now() - t0, message: msg };
+      })
+    );
+    const out = settled.map((r, i) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : { shop: shops[i], status: 'error' as const, durationMs: 0, error: (r.reason as any)?.message || String(r.reason) }
+    );
     return NextResponse.json({ startedAt, finishedAt: new Date().toISOString(), mode: 'targeted', job: targetJob, results: out });
   }
 
@@ -161,6 +175,41 @@ export async function POST(req: NextRequest) {
       shopsRequested: shops,
       results: out,
     });
+  }
+
+  // warm-marketing-new-customers: full Tekmetric RO pull to compute first-visit months.
+  // Runs rarely (daily from GH Actions) — not part of the 15-min sweep.
+  if (targetJob === 'warm-marketing-new-customers') {
+    const t0 = Date.now();
+    try {
+      const rows = await computeAndCacheNewCustomers();
+      return NextResponse.json({ job: targetJob, status: 'ok', rows: rows.length, durationMs: Date.now() - t0 });
+    } catch (e: any) {
+      return NextResponse.json({ job: targetJob, status: 'error', durationMs: Date.now() - t0, error: e?.message || String(e) }, { status: 500 });
+    }
+  }
+
+  // warm-marketing-attribution: WC call history → dedup by phone → TM lookup → RO revenue.
+  // ?shop=NNN   process one shop and write a partial cache (used by per-shop workflow)
+  // ?shop=aggregate  merge all partial caches into the final attribution key
+  // (no ?shop param)  process all shops sequentially (legacy / manual dispatch)
+  if (targetJob === 'warm-marketing-attribution') {
+    const t0 = Date.now();
+    const shopParam = url.searchParams.get('shop') || '';
+    try {
+      if (shopParam === 'aggregate') {
+        const cache = await aggregateAttributionShops();
+        return NextResponse.json({ job: targetJob, status: 'ok', mode: 'aggregate', callers: cache.callers.length, summaryRows: cache.summary.length, durationMs: Date.now() - t0 });
+      }
+      if (shopParam && shopParam !== 'all') {
+        const result = await computeAndCacheAttributionForShop(shopParam);
+        return NextResponse.json({ job: targetJob, status: 'ok', mode: 'shop', shop: shopParam, callers: result.callers, durationMs: Date.now() - t0 });
+      }
+      const cache = await computeAndCacheAttribution();
+      return NextResponse.json({ job: targetJob, status: 'ok', mode: 'all', callers: cache.callers.length, summaryRows: cache.summary.length, durationMs: Date.now() - t0 });
+    } catch (e: any) {
+      return NextResponse.json({ job: targetJob, status: 'error', durationMs: Date.now() - t0, error: e?.message || String(e) }, { status: 500 });
+    }
   }
 
   // ── Weekly snapshot (take) ────────────────────────────────────────────────
@@ -220,10 +269,16 @@ export async function POST(req: NextRequest) {
       const msg = await warmPartsMatrixRange(startParam, endParam, modeParam);
       return NextResponse.json({ job: 'warm-parts-matrix', status: 'ok', message: msg });
     } catch (e: any) {
-      // Always 200 (same pattern as the runAllSyncs summary below) — GH Actions
-      // treats a 5xx as a hard failure and floods the inbox with cron emails.
-      // The error is still in the body for anyone checking manually.
-      return NextResponse.json({ job: 'warm-parts-matrix', status: 'error', error: e?.message || String(e) }, { status: 200 });
+      const errMsg: string = e?.message || String(e);
+      // Always return 200 — the warm job is best-effort. Any error (429, timeout,
+      // ECONNRESET, etc.) is transient; the next GH Actions tick will retry.
+      // Returning 500 here caused GH Actions to fail and send failure emails.
+      const isRateLimit = errMsg.includes('429') || errMsg.toLowerCase().includes('timeout') || errMsg.toLowerCase().includes('aborted');
+      return NextResponse.json({
+        job: 'warm-parts-matrix',
+        status: isRateLimit ? 'rate-limited' : 'error',
+        message: `Warm job failed (will retry next tick): ${errMsg.slice(0, 200)}`,
+      });
     }
   }
 

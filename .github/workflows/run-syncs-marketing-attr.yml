@@ -1,10 +1,9 @@
 name: Warm Marketing Attribution
 
-# Joins the new-customer cache with WhatConverts call data to attribute
-# new customers by channel (Google Ads, Direct Mail, Organic, Other).
-# Must run AFTER "Warm Marketing New Customers" has populated its cache.
-#
-# Runs once a day (after the new-customers job). Manual dispatch available.
+# Attributes new customers to marketing channel by matching WhatConverts call
+# history to Tekmetric repair orders via phone number lookup.
+# Runs per-shop in parallel to stay well within Vercel's per-function timeout.
+# Must run AFTER warm-marketing-new-customers has populated its cache.
 
 on:
   schedule:
@@ -15,23 +14,62 @@ on:
 jobs:
   warm-marketing-attr:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 30
     steps:
-      - name: Warm marketing attribution cache
+      - name: Warm attribution — all shops in parallel
         env:
           SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -e
-          HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
-            -X POST "${SYNC_CRON_URL}?job=warm-marketing-attribution" \
+          FAIL=0
+
+          run_shop() {
+            local SHOP=$1
+            local HTTP_CODE
+            HTTP_CODE=$(curl -sS -o "/tmp/attr_${SHOP}.out" -w "%{http_code}" \
+              -X POST "${SYNC_CRON_URL}?job=warm-marketing-attribution&shop=${SHOP}" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Content-Type: application/json" \
+              --max-time 600)
+            echo "shop ${SHOP}: HTTP ${HTTP_CODE} — $(cat /tmp/attr_${SHOP}.out)"
+            if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
+              echo "::warning::shop ${SHOP} returned HTTP ${HTTP_CODE}"
+              return 1
+            fi
+          }
+
+          # Launch all shops in parallel
+          pids=()
+          for shop in 001 002 003 004 005 006 007 009; do
+            run_shop "$shop" &
+            pids+=($!)
+          done
+
+          # Wait for all; track any failures
+          for pid in "${pids[@]}"; do
+            wait "$pid" || FAIL=1
+          done
+
+          if [ $FAIL -eq 1 ]; then
+            echo "::warning::one or more shop attribution jobs failed — proceeding to aggregate with available data"
+          fi
+
+      - name: Aggregate attribution cache
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          HTTP_CODE=$(curl -sS -o /tmp/attr_aggregate.out -w "%{http_code}" \
+            -X POST "${SYNC_CRON_URL}?job=warm-marketing-attribution&shop=aggregate" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            --max-time 750)
-          echo "HTTP $HTTP_CODE"
-          cat /tmp/sync.out
+            --max-time 60)
+          echo "aggregate: HTTP ${HTTP_CODE}"
+          cat /tmp/attr_aggregate.out
           echo
           if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
-            echo "::error::warm-marketing-attribution returned HTTP $HTTP_CODE"
+            echo "::error::aggregate step returned HTTP ${HTTP_CODE}"
             exit 1
           fi

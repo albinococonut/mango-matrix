@@ -702,6 +702,21 @@ export async function fetchCallRecordingsForShop(
   return out;
 }
 
+// Warms fetchRCCallLog's cache for the trailing-7-day window (same range
+// warmCallRecordingsForShop uses) before the per-shop warm calls run
+// concurrently, so all 8 shops share these 2 RC API calls instead of each
+// triggering its own — avoids a thundering herd on the CMN-301 rate limit.
+export async function prefetchCallLog(): Promise<void> {
+  const now = new Date();
+  const endDate = now.toISOString().slice(0, 10);
+  const start = new Date(now); start.setDate(start.getDate() - 7);
+  const startDate = start.toISOString().slice(0, 10);
+  await Promise.all([
+    fetchRCCallLog(startDate, endDate, 'Inbound'),
+    fetchRCCallLog(startDate, endDate, 'Outbound'),
+  ]);
+}
+
 // --- Admin: force-refresh the phone map ---
 // Call this if shop numbers get reassigned or new numbers are added to RC.
 // Clears the Redis cache so the next fetchAllLeads re-discovers from RC.
