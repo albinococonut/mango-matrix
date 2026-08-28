@@ -40,7 +40,14 @@ async function getAccessToken(): Promise<string> {
   return tokenCache.token;
 }
 
-async function authedFetch(path: string, params?: Record<string, string | number | undefined>) {
+// deadlineAt: an optional Date.now()-scale wall-clock cutoff. Callers that
+// paginate (fetchROsByCreatedDate / fetchAllRepairOrders) pass the same
+// deadline into every page request so that 429 backoff on ONE page can't
+// silently eat the entire remaining time budget — without this, a single
+// stalled shop could hold the whole warm-parts-matrix run past Vercel's
+// maxDuration with no response ever sent (GH Actions then sees a bare curl
+// timeout instead of a clean HTTP error).
+async function authedFetch(path: string, params?: Record<string, string | number | undefined>, deadlineAt?: number) {
   const token = await getAccessToken();
   const url = new URL(`${BASE}${path}`);
   if (params) {
@@ -49,40 +56,45 @@ async function authedFetch(path: string, params?: Record<string, string | number
     }
   }
   // Tekmetric throttles aggressive callers with 429. Back off exponentially and retry.
-  // Kept deliberately tight (3 attempts, 10s retry-after cap): with 8 shops fetched
-  // sequentially and multiple paginated calls per shop, a single page that keeps
-  // getting 429'd used to burn up to 150s (5 attempts x 30s cap) before giving up —
-  // enough on its own to blow past curl's 750s --max-time in the parts-matrix cron
-  // and produce a bare connection timeout instead of a clean HTTP error. Failing
-  // faster here lets the per-shop try/catch in warmPartsMatrixRange move on and
-  // keeps the overall warm job inside its deadline.
-  const maxAttempts = 3;
+  const maxAttempts = 5;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (deadlineAt && Date.now() > deadlineAt) {
+      throw new Error(`Tekmetric ${path}: deadline exceeded before request`);
+    }
     const fetchCtrl = new AbortController();
     const fetchTimer = setTimeout(() => fetchCtrl.abort(), 15000);
     let res: Response;
+    let body: any;
     try {
       res = await fetch(url.toString(), {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         cache: 'no-store',
         signal: fetchCtrl.signal,
       });
+      // Read body while timer is still active — prevents a hang if the server
+      // sends headers quickly but then stalls delivering the response body.
+      body = res.status === 429 ? null : await (res.ok ? res.json() : res.text());
     } finally {
       clearTimeout(fetchTimer);
     }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
-      // Cap retry-after at 10s — Tekmetric occasionally sends absurdly large
+      // Cap retry-after at 30s — Tekmetric occasionally sends absurdly large
       // values (e.g. 3600) that would hang the function past Vercel's timeout.
-      const delay = retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : Math.min(4000, 500 * 2 ** attempt);
-      await new Promise(r => setTimeout(r, delay));
+      const delay = retryAfter > 0 ? Math.min(retryAfter * 1000, 30_000) : Math.min(8000, 500 * 2 ** attempt);
+      if (deadlineAt) {
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) throw new Error(`Tekmetric ${path}: deadline exceeded during 429 backoff`);
+        await new Promise(r => setTimeout(r, Math.min(delay, remaining)));
+      } else {
+        await new Promise(r => setTimeout(r, delay));
+      }
       continue;
     }
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Tekmetric ${path} ${res.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Tekmetric ${path} ${res.status}: ${String(body).slice(0, 300)}`);
     }
-    return res.json();
+    return body;
   }
   throw new Error(`Tekmetric ${path} 429: exhausted retries`);
 }
@@ -183,17 +195,24 @@ export interface ROFilter {
 
 // Fetch ROs that were CREATED in the given range regardless of posted status.
 // This captures open/work-in-progress tickets that have no postedDate yet.
-export async function fetchROsByCreatedDate(shopId: number, createdStart: string, createdEnd: string): Promise<RepairOrder[]> {
+// deadlineAt (optional): stop paginating and return whatever has been
+// fetched so far once past this wall-clock cutoff, instead of continuing to
+// page (and retry through 429s) indefinitely. See authedFetch for why.
+export async function fetchROsByCreatedDate(shopId: number, createdStart: string, createdEnd: string, deadlineAt?: number): Promise<RepairOrder[]> {
   const out: RepairOrder[] = [];
   let page = 0;
   while (true) {
+    if (deadlineAt && Date.now() > deadlineAt) {
+      console.warn(`[tekmetric] fetchROsByCreatedDate shop=${shopId}: deadline exceeded after ${page} page(s) — returning partial results`);
+      break;
+    }
     const data = (await authedFetch('/repair-orders', {
       shop: shopId,
       createdDateStart: createdStart,
       createdDateEnd: createdEnd,
       page,
       size: 200,
-    })) as { content: RepairOrder[]; last: boolean };
+    }, deadlineAt)) as { content: RepairOrder[]; last: boolean };
     out.push(...data.content.map((ro) => ro.shopId ? ro : { ...ro, shopId }));
     if (data.last) break;
     page++;
@@ -202,17 +221,21 @@ export async function fetchROsByCreatedDate(shopId: number, createdStart: string
   return out;
 }
 
-export async function fetchAllRepairOrders(f: ROFilter): Promise<RepairOrder[]> {
+export async function fetchAllRepairOrders(f: ROFilter, deadlineAt?: number): Promise<RepairOrder[]> {
   const out: RepairOrder[] = [];
   let page = 0;
   while (true) {
+    if (deadlineAt && Date.now() > deadlineAt) {
+      console.warn(`[tekmetric] fetchAllRepairOrders shop=${f.shopId}: deadline exceeded after ${page} page(s) — returning partial results`);
+      break;
+    }
     const data = (await authedFetch('/repair-orders', {
       shop: f.shopId,
       postedDateStart: f.postedDateStart,
       postedDateEnd: f.postedDateEnd,
       page,
       size: f.size ?? 200,
-    })) as { content: RepairOrder[]; last: boolean; totalPages: number };
+    }, deadlineAt)) as { content: RepairOrder[]; last: boolean; totalPages: number };
     // Stamp shopId onto every RO so callers can filter by shop after
     // concatenating results from multiple shops (e.g. rosForChain). The
     // Tekmetric API endpoint is scoped to one shop via ?shop=<id> so the
@@ -258,6 +281,36 @@ export async function fetchAllAppointments(f: AppointmentFilter): Promise<Appoin
     if (page > 500) break;
   }
   return out;
+}
+
+// ---- Bulk customer phone index ----
+// Fetch every customer for a shop (paginated) and return a phone-digits →
+// customerId map. Used by marketing attribution to match WC callers to TM
+// customers in one sweep instead of one API call per caller phone.
+
+export async function buildCustomerPhoneIndex(shopId: number): Promise<Map<string, number>> {
+  const map = new Map<string, number>(); // normalized last-10-digits → customerId
+  let page = 0;
+  while (true) {
+    const data = await authedFetch('/customers', { shop: shopId, page, size: 200 }) as {
+      content: any[];
+      last: boolean;
+    };
+    for (const c of data.content) {
+      const phones = collectPhoneDigits(c);
+      for (const raw of phones) {
+        const norm = raw.replace(/\D/g, '').slice(-10);
+        if (norm.length >= 7 && !map.has(norm)) {
+          map.set(norm, c.id as number);
+        }
+      }
+    }
+    if (data.last) break;
+    page++;
+    if (page > 500) break;
+  }
+  console.log(`[TM] shop ${shopId} — phone index built: ${map.size} unique phones`);
+  return map;
 }
 
 // ---- Customer-by-phone search ----

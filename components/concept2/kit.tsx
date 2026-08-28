@@ -124,6 +124,26 @@ export const COMPARISON_OPTS = [
   { key: 'same_period_last_year', label: 'Same Period Last Year' },
 ] as const;
 
+export type PeriodRangeKey =
+  | 'this_week' | 'last_week'
+  | 'this_month' | 'last_month'
+  | 'this_quarter'
+  | 'this_year' | 'last_year'
+  | 'last_90_days'
+  | 'all_time';
+
+export const PERIOD_RANGES = [
+  { key: 'this_week',    label: 'This Week' },
+  { key: 'last_week',    label: 'Last Week' },
+  { key: 'this_month',   label: 'This Month' },
+  { key: 'last_month',   label: 'Last Month' },
+  { key: 'this_quarter', label: 'This Quarter' },
+  { key: 'this_year',    label: 'This Year' },
+  { key: 'last_year',    label: 'Last Year' },
+  { key: 'last_90_days', label: 'Last 90 Days' },
+  { key: 'all_time',     label: 'All Time' },
+] as const;
+
 // ── ConceptShell — frosted sidebar + cream/orb background + page header ──────
 type NavId = 'diagnostic' | 'diagnostic-charts' | 'review' | 'employee' | 'todo' | 'call-recordings' | 'tv' | 'parts-matrix' | 'ticker' | 'gbp' | 'intranet';
 const NAV: { id: NavId; label: string; href: string }[] = [

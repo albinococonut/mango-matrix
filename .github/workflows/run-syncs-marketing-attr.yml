@@ -31,7 +31,7 @@ jobs:
               -X POST "${SYNC_CRON_URL}?job=warm-marketing-attribution&shop=${SHOP}" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json" \
-              --max-time 600)
+              --max-time 700)
             echo "shop ${SHOP}: HTTP ${HTTP_CODE} — $(cat /tmp/attr_${SHOP}.out)"
             if [ "$HTTP_CODE" -ge 500 ] || [ "$HTTP_CODE" = "401" ]; then
               echo "::warning::shop ${SHOP} returned HTTP ${HTTP_CODE}"

@@ -1107,6 +1107,16 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
   // Sequential (not Promise.all) to prevent 16 concurrent Tekmetric requests
   // from triggering 429 rate-limit storms and exponential backoff cascades that
   // push the total wall-clock time past Vercel's 800s function limit.
+  //
+  // deadlineAt is also threaded into every fetchROsByCreatedDate/fetchAllRepairOrders
+  // call below (not just checked between shops here). Without that, a single
+  // shop whose Tekmetric requests are getting 429'd could burn through its
+  // retry/backoff budget across many paginated pages and blow past this
+  // per-shop check entirely — that's what was producing the bare curl
+  // timeouts (0 bytes received) in the GH Actions logs even with the
+  // between-shop check in place, since the check never got a chance to run
+  // again once a single shop's fetch call started stalling.
+  const deadlineAt = warmStart + DEADLINE_MS;
   for (const shop of SHOPS) {
     if (Date.now() - warmStart > DEADLINE_MS) {
       console.warn(`[parts-matrix] deadline reached after ${Math.round((Date.now() - warmStart) / 1000)}s — returning partial results`);
@@ -1115,9 +1125,9 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
     try {
       let ros: any[];
       if (mode === 'posted') {
-        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO });
+        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO }, deadlineAt);
       } else if (mode === 'open') {
-        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadlineAt);
         ros = all.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
           return !CLOSED.has(s);
@@ -1130,20 +1140,12 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
         sweepStartDate.setDate(sweepStartDate.getDate() - 60);
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
-        const rangeRos = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
-        // Skip the second (sweep) fetch if the range fetch alone already ate the
-        // budget — the outer deadline check only runs between shops, so without
-        // this a single throttled shop's range fetch followed by its sweep fetch
-        // could still double up and blow well past DEADLINE_MS before the loop
-        // ever gets a chance to bail.
-        const openFromSweep: any[] = [];
-        if (Date.now() - warmStart <= DEADLINE_MS) {
-          const sweepRos = await fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString());
-          openFromSweep.push(...sweepRos.filter((ro: any) => {
-            const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
-            return !CLOSED.has(s);
-          }));
-        }
+        const rangeRos = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadlineAt);
+        const sweepRos = await fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString(), deadlineAt);
+        const openFromSweep = sweepRos.filter((ro: any) => {
+          const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
+          return !CLOSED.has(s);
+        });
         const seenIds = new Set(rangeRos.map((ro: any) => ro.id));
         ros = [...rangeRos, ...openFromSweep.filter((ro: any) => !seenIds.has(ro.id))];
       }
