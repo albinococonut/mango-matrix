@@ -54,12 +54,16 @@ async function authedFetch(path: string, params?: Record<string, string | number
     const fetchCtrl = new AbortController();
     const fetchTimer = setTimeout(() => fetchCtrl.abort(), 15000);
     let res: Response;
+    let body: any;
     try {
       res = await fetch(url.toString(), {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         cache: 'no-store',
         signal: fetchCtrl.signal,
       });
+      // Read body while timer is still active — prevents a hang if the server
+      // sends headers quickly but then stalls delivering the response body.
+      body = res.status === 429 ? null : await (res.ok ? res.json() : res.text());
     } finally {
       clearTimeout(fetchTimer);
     }
@@ -72,10 +76,9 @@ async function authedFetch(path: string, params?: Record<string, string | number
       continue;
     }
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Tekmetric ${path} ${res.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Tekmetric ${path} ${res.status}: ${String(body).slice(0, 300)}`);
     }
-    return res.json();
+    return body;
   }
   throw new Error(`Tekmetric ${path} 429: exhausted retries`);
 }
@@ -251,6 +254,36 @@ export async function fetchAllAppointments(f: AppointmentFilter): Promise<Appoin
     if (page > 500) break;
   }
   return out;
+}
+
+// ---- Bulk customer phone index ----
+// Fetch every customer for a shop (paginated) and return a phone-digits →
+// customerId map. Used by marketing attribution to match WC callers to TM
+// customers in one sweep instead of one API call per caller phone.
+
+export async function buildCustomerPhoneIndex(shopId: number): Promise<Map<string, number>> {
+  const map = new Map<string, number>(); // normalized last-10-digits → customerId
+  let page = 0;
+  while (true) {
+    const data = await authedFetch('/customers', { shop: shopId, page, size: 200 }) as {
+      content: any[];
+      last: boolean;
+    };
+    for (const c of data.content) {
+      const phones = collectPhoneDigits(c);
+      for (const raw of phones) {
+        const norm = raw.replace(/\D/g, '').slice(-10);
+        if (norm.length >= 7 && !map.has(norm)) {
+          map.set(norm, c.id as number);
+        }
+      }
+    }
+    if (data.last) break;
+    page++;
+    if (page > 500) break;
+  }
+  console.log(`[TM] shop ${shopId} — phone index built: ${map.size} unique phones`);
+  return map;
 }
 
 // ---- Customer-by-phone search ----

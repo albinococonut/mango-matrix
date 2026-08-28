@@ -19,14 +19,13 @@ import { fetchAllLeads, type Lead } from './whatconverts';
 import { SHOPS } from './shops';
 import type { ShopNum } from './shops';
 import { writeCache, readCache } from './cache';
-import { fetchROsByCreatedDate, searchCustomersByPhone, c2d } from './tekmetric';
+import { fetchROsByCreatedDate, buildCustomerPhoneIndex, c2d } from './tekmetric';
 import type { RepairOrder } from './tekmetric';
 
 const ATTR_WINDOW_DAYS = 60;
 
-// Months of WC history to pull. 3 months keeps the phone-lookup count manageable
-// (~75 unique callers/shop vs ~300 for 12 months) and avoids Tekmetric rate-limit
-// storms. The marketing dashboard only compares recent spend anyway.
+// Months of WC call history to pull. With bulk phone matching (no per-caller
+// API calls), 3 months stays fast and keeps the attribution window relevant.
 const MONTHS_BACK = 3;
 
 export const ATTRIBUTION_CACHE_KEY = 'marketing_attribution_v2';
@@ -172,40 +171,38 @@ async function processShop(
   console.log(`[attr-v2] ${shop.num} — ${byPhone.size} unique callers (${leads.length} raw leads)`);
   if (!byPhone.size) return [];
 
-  // 3. Bulk-fetch ROs for the period → index by customerId
+  // 3. Build customer phone index + fetch ROs in parallel.
+  // The phone index replaces per-caller API lookups: one paginated sweep of all
+  // TM customers gives us a phone → customerId map for instant local matching.
   const roWindowEnd = new Date(now.getTime() + ATTR_WINDOW_DAYS * 86_400_000)
     .toISOString().slice(0, 10);
+
+  let phoneIndex = new Map<string, number>();
   const rosByCustomer = new Map<number, RepairOrder[]>();
+
   try {
-    const ros = await fetchROsByCreatedDate(shop.tekmetricId, effectiveStart, roWindowEnd);
-    for (const ro of ros) {
-      if (!rosByCustomer.has(ro.customerId)) rosByCustomer.set(ro.customerId, []);
-      rosByCustomer.get(ro.customerId)!.push(ro);
-    }
-    console.log(`[attr-v2] ${shop.num} — ${ros.length} ROs indexed`);
+    [phoneIndex] = await Promise.all([
+      buildCustomerPhoneIndex(shop.tekmetricId),
+      fetchROsByCreatedDate(shop.tekmetricId, effectiveStart, roWindowEnd).then(ros => {
+        for (const ro of ros) {
+          if (!rosByCustomer.has(ro.customerId)) rosByCustomer.set(ro.customerId, []);
+          rosByCustomer.get(ro.customerId)!.push(ro);
+        }
+        console.log(`[attr-v2] ${shop.num} — ${ros.length} ROs indexed`);
+      }),
+    ]);
   } catch (e) {
-    console.error(`[attr-v2] ${shop.num} RO fetch failed — callers recorded without revenue:`, e);
+    console.error(`[attr-v2] ${shop.num} index build failed:`, e);
   }
 
-  // 4. Phone lookups — 5 concurrent, 3s hard timeout each.
-  // Cap at MAX_CALLERS_PER_SHOP (oldest first) so each shop call completes
-  // within the 600s Vercel/curl budget. Successful shops had 645–1087 callers
-  // at ~2.7s per concurrent batch of 5; 800 × 3s / 5 = 480s worst-case.
-  const MAX_CALLERS = 800;
-  const LOOKUP_MS = 3_000;
-  const entries = Array.from(byPhone.entries()).slice(0, MAX_CALLERS);
-  if (byPhone.size > MAX_CALLERS) {
-    console.log(`[attr-v2] ${shop.num} — capped at ${MAX_CALLERS} of ${byPhone.size} unique callers`);
-  }
-  const matched = await batchedMap(entries, async ([phone, { lead, channel }]) => {
+  // 4. Match all unique callers locally — no per-caller API calls.
+  const callers: MatchedCaller[] = [];
+  for (const [phone, { lead, channel }] of byPhone.entries()) {
     const firstCall = new Date(lead.date_created);
     const windowEnd = new Date(firstCall.getTime() + ATTR_WINDOW_DAYS * 86_400_000);
     const callMonth = lead.date_created.slice(0, 7);
 
-    const customerId = await Promise.race([
-      searchCustomersByPhone(shop.tekmetricId, phone),
-      new Promise<null>(r => setTimeout(() => r(null), LOOKUP_MS)),
-    ]);
+    const customerId = phoneIndex.get(phone) ?? null;
     let roId: number | null = null;
     let revenue = 0;
 
@@ -216,11 +213,12 @@ async function processShop(
       if (firstRO) { roId = firstRO.id; revenue = Math.round(c2d(firstRO.totalSales)); }
     }
 
-    return { shopNum: shop.num, callMonth, channel, customerId, roId, revenue } as MatchedCaller;
-  }, 5);
+    callers.push({ shopNum: shop.num, callMonth, channel, customerId, roId, revenue });
+  }
 
-  const callers = matched.filter((c): c is MatchedCaller => c !== null);
-  console.log(`[attr-v2] ${shop.num} — ${callers.length} matched callers`);
+  const matched = callers.filter(c => c.customerId !== null).length;
+  const converted = callers.filter(c => c.roId !== null).length;
+  console.log(`[attr-v2] ${shop.num} — ${callers.length} callers, ${matched} TM-matched, ${converted} with RO`);
   return callers;
 }
 
