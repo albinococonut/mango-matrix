@@ -35,6 +35,12 @@ export interface Lead {
   call_transcription: string;
   recording?: string;
   play_recording?: string;
+  // Marketing-source attribution WhatConverts derives per lead (UTM / referrer
+  // based) — used by lib/marketingAttribution.ts to classify channel.
+  traffic_source?: string;
+  traffic_medium?: string;
+  traffic_campaign?: string;
+  traffic_type?: string;
   // WhatConverts' own AI analysis
   lead_analysis?: {
     'Call Outcome'?: string;
