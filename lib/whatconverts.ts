@@ -35,12 +35,13 @@ export interface Lead {
   call_transcription: string;
   recording?: string;
   play_recording?: string;
-  // Marketing-source attribution WhatConverts derives per lead (UTM / referrer
-  // based) — used by lib/marketingAttribution.ts to classify channel.
-  traffic_source?: string;
-  traffic_medium?: string;
-  traffic_campaign?: string;
-  traffic_type?: string;
+  // Traffic / UTM attribution fields
+  traffic_source?: string;    // e.g. "google", "bing", "direct"
+  traffic_medium?: string;    // e.g. "cpc", "organic", "paid"
+  traffic_campaign?: string;  // Google Ads campaign name
+  traffic_keyword?: string;   // search keyword
+  traffic_content?: string;
+  traffic_type?: string;      // WhatConverts' own channel bucket
   // WhatConverts' own AI analysis
   lead_analysis?: {
     'Call Outcome'?: string;
@@ -66,12 +67,19 @@ async function authedGet(shop: ShopNum, path: string, params: Record<string, str
   const basic = Buffer.from(`${token}:${secret}`).toString('base64');
   const url = new URL(`${BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
-    cache: 'no-store',
-  });
-  if (!res.ok) throw new Error(`WhatConverts ${path} shop ${shop} ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return res.json();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
+      cache: 'no-store',
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`WhatConverts ${path} shop ${shop} ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return await res.json(); // timer still active during body read
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function fetchAllLeads(f: LeadFilter): Promise<Lead[]> {
@@ -85,6 +93,7 @@ export async function fetchAllLeads(f: LeadFilter): Promise<Lead[]> {
       lead_type: f.leadType ?? 'phone_call',
       per_page: 250,
       page_number: page,
+      include_values: 'traffic_source,traffic_medium,traffic_campaign,traffic_keyword,traffic_type',
     })) as { leads: Lead[]; total_pages: number };
     out.push(...(data.leads || []));
     totalPages = data.total_pages || 1;

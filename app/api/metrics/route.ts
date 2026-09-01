@@ -7,9 +7,9 @@ import { readCache, writeCache, isFresh } from '@/lib/cache';
 
 export const dynamic = 'force-dynamic';
 // Serve the computed payload from durable Redis so a page refresh doesn't
-// recompute/refetch (Shop Performance Comparison, KPI cards, Weekly Leaderboard
-// all hit this). The cron keeps the underlying ROs warm; this just stops the
-// per-refresh reload. Only the simple range case is cached (not custom/compare).
+// recompute/refetch (Shop Performance Comparison, KPI cards, Weekly Leaderboard,
+// Review page all hit this). Comparison requests are not cached (range varies
+// per comparison mode). Custom date ranges are cached by exact date strings.
 const RESP_FRESH_MS = 20 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
@@ -35,9 +35,15 @@ export async function GET(req: NextRequest) {
   } else {
     w = resolveRange(range);
   }
-  // Cacheable only for the plain range case (no custom range, no comparison).
-  const cacheable = !compare && !(range === 'custom');
-  const respKey = cacheable ? `metrics_${range}_${shop || 'all'}` : null;
+  // Cacheable for all non-comparison requests. Custom ranges use the exact
+  // date strings as the cache key so the same week boundary is only computed
+  // once per 20-minute window instead of on every page load.
+  const cacheable = !compare;
+  const respKey = cacheable
+    ? (range === 'custom' && start && end
+      ? `metrics_custom_${start}_${end}_${shop || 'all'}`
+      : `metrics_${range}_${shop || 'all'}`)
+    : null;
   if (respKey) {
     const cached = await readCache<any>(respKey);
     if (cached && (await isFresh(respKey, RESP_FRESH_MS))) {

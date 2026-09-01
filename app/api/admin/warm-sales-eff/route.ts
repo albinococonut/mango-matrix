@@ -5,7 +5,7 @@ import { readCache } from '@/lib/cache';
 import { SHOPS } from '@/lib/shops';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 export const GET = requireExecutive(async (req: NextRequest) => {
   const shopParam = req.nextUrl.searchParams.get('shop');

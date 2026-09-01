@@ -3,6 +3,7 @@
 //   (2) Customer agreed to that specific time.
 
 import Anthropic from '@anthropic-ai/sdk';
+import { readCache, writeCache } from './cache';
 import type { Lead } from './whatconverts';
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
@@ -153,9 +154,23 @@ export async function scoreSalvageability(transcript: string): Promise<SalvageSc
   }
 }
 
+const SALVAGE_CACHE_KEY = (leadId: number) => `salvage:${leadId}`;
+const SALVAGE_TTL = 14 * 24 * 60 * 60;
+
 export async function scoreSalvageabilityBatch(leads: Lead[], concurrency = 6): Promise<Map<number, SalvageScore>> {
   const results = new Map<number, SalvageScore>();
-  const queue = leads.slice();
+
+  const cached = await Promise.all(leads.map(l => readCache<SalvageScore>(SALVAGE_CACHE_KEY(l.lead_id))));
+  const toScore: Lead[] = [];
+  for (let i = 0; i < leads.length; i++) {
+    if (cached[i]) {
+      results.set(leads[i].lead_id, cached[i]!);
+    } else {
+      toScore.push(leads[i]);
+    }
+  }
+
+  const queue = toScore.slice();
   let errors = 0;
   let lastError: string | undefined;
   const workers = Array.from({ length: concurrency }, async () => {
@@ -163,6 +178,9 @@ export async function scoreSalvageabilityBatch(leads: Lead[], concurrency = 6): 
       const lead = queue.shift()!;
       try {
         const s = await scoreSalvageability(lead.call_transcription || '');
+        if (lead.call_transcription && lead.call_transcription.length >= 30) {
+          await writeCache(SALVAGE_CACHE_KEY(lead.lead_id), s, { ttlSeconds: SALVAGE_TTL });
+        }
         results.set(lead.lead_id, s);
       } catch (e: any) {
         errors++;
@@ -172,14 +190,33 @@ export async function scoreSalvageabilityBatch(leads: Lead[], concurrency = 6): 
     }
   });
   await Promise.all(workers);
-  if (errors > 0) console.error(`[salvageability] ${errors}/${leads.length} errored. Last: ${lastError}`);
+  if (errors > 0) console.error(`[salvageability] ${errors}/${toScore.length} errored. Last: ${lastError}`);
   return results;
 }
 
-/** Run with bounded concurrency to stay polite. */
+const CLASSIFY_CACHE_KEY = (leadId: number) => `classify:${leadId}`;
+const CLASSIFY_TTL = 14 * 24 * 60 * 60; // 14 days — call outcomes don't change
+
+/** Run with bounded concurrency to stay polite. Skips leads already cached. */
 export async function classifyBatch(leads: Lead[], concurrency = 8): Promise<Map<number, Classification>> {
   const results = new Map<number, Classification>();
-  const queue = leads.slice();
+
+  // Batch-load all cached results in one pass before spinning up workers.
+  const cached = await Promise.all(leads.map(l => readCache<Classification>(CLASSIFY_CACHE_KEY(l.lead_id))));
+  const toClassify: Lead[] = [];
+  for (let i = 0; i < leads.length; i++) {
+    if (cached[i]) {
+      results.set(leads[i].lead_id, cached[i]!);
+    } else {
+      toClassify.push(leads[i]);
+    }
+  }
+
+  if (toClassify.length > 0) {
+    console.log(`[classify] ${results.size} cached, ${toClassify.length} new to classify`);
+  }
+
+  const queue = toClassify.slice();
   let errors = 0;
   let lastError: string | undefined;
   const workers = Array.from({ length: concurrency }, async () => {
@@ -187,6 +224,11 @@ export async function classifyBatch(leads: Lead[], concurrency = 8): Promise<Map
       const lead = queue.shift()!;
       try {
         const c = await classifyTranscript(lead.call_transcription || '');
+        // Only cache if transcript was non-empty — a blank transcript produces
+        // a meaningless result and we want to re-try when the transcript arrives.
+        if (lead.call_transcription && lead.call_transcription.length >= 30) {
+          await writeCache(CLASSIFY_CACHE_KEY(lead.lead_id), c, { ttlSeconds: CLASSIFY_TTL });
+        }
         results.set(lead.lead_id, c);
       } catch (e: any) {
         errors++;
@@ -196,6 +238,6 @@ export async function classifyBatch(leads: Lead[], concurrency = 8): Promise<Map
     }
   });
   await Promise.all(workers);
-  if (errors > 0) console.error(`[classify] ${errors}/${leads.length} transcripts errored. Last error: ${lastError}`);
+  if (errors > 0) console.error(`[classify] ${errors}/${toClassify.length} errored. Last: ${lastError}`);
   return results;
 }

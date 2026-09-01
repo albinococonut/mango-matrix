@@ -18,7 +18,7 @@ export default async function Concept2TodoPage() {
   const session = await verifySession(cookies().get(COOKIE_NAME)?.value);
   if (!session) redirect('/login');
   return (
-    <ConceptShell active="todo" title="To Do" sub="Per-shop action queue · live presence · optimistic mutations" email={session.email}>
+    <ConceptShell active="todo" title="To Do" sub="Per-shop action queue · live presence · optimistic mutations" email={session.email} role={session.role}>
       <Concept2TodoSection userEmail={session.email} />
     </ConceptShell>
   );

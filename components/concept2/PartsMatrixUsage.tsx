@@ -6,7 +6,7 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import {
-  Card, Dropdown, ConceptShell, BigStat, MiniStat,
+  Card, Dropdown, ConceptShell, BigStat, MiniStat, COMPARISON_OPTS,
   INK, INK2, FAINT, LINE, AMBER, GOOD, BAD, COOL,
 } from '@/components/concept2/kit';
 import { SHOPS, DISTRICTS } from '@/lib/shops';
@@ -28,9 +28,11 @@ const RANGES = [
 ];
 
 const CHART_RANGES = [
+  { key: 'last_7_days',  label: 'Last 7 Days' },
+  { key: 'last_4_weeks', label: 'Last 4 Weeks' },
   { key: 'last_90_days', label: 'Last 90 Days' },
   { key: 'last_year',    label: 'Last Year' },
-  { key: 'all',         label: 'All Time' },
+  { key: 'all',          label: 'All Time' },
 ];
 
 const MODE_OPTS = [
@@ -40,7 +42,6 @@ const MODE_OPTS = [
 ];
 
 const TYPE_FILTERS: { key: string; label: string }[] = [
-  { key: 'all',       label: 'All' },
   { key: 'manual',    label: 'Manual Override' },
   { key: 'canned',    label: 'Canned Job' },
   { key: 'matrix',    label: 'Matrix' },
@@ -71,7 +72,9 @@ function rangeToDateParams(range: string): { start: string; end: string } {
 
 function chartCutoff(range: string): Date {
   const d = new Date();
-  if (range === 'last_90_days') d.setDate(d.getDate() - 90);
+  if (range === 'last_7_days') d.setDate(d.getDate() - 7);
+  else if (range === 'last_4_weeks') d.setDate(d.getDate() - 28);
+  else if (range === 'last_90_days') d.setDate(d.getDate() - 90);
   else if (range === 'last_year') d.setFullYear(d.getFullYear() - 1);
   else d.setFullYear(2024, 0, 1);
   return d;
@@ -190,7 +193,7 @@ const C_MANUAL  = '#FF6B4A';   // coral
 const C_CANNED  = '#F5A623';   // mango
 
 // ── Main component ───────────────────────────────────────────────────────────
-export default function PartsMatrixUsage({ email }: { email: string }) {
+export default function PartsMatrixUsage({ email, role }: { email: string; role?: string }) {
   // ── View granularity ──
   const [projView, setProjView] = useState<'portfolio' | 'districts' | 'shops'>('portfolio');
 
@@ -210,11 +213,12 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   const [histLoading, setHistLoading] = useState(true);
   const [histBackfilling, setHistBackfilling] = useState(false);
   const [histRemaining, setHistRemaining]     = useState(0);
-  const [chartRange, setChartRange]   = useState('last_year');
-  const [showComparison, setShowComparison] = useState(false);
-  const [histShop, setHistShop]       = useState('combined');
+  const [chartRange, setChartRange]   = useState('last_90_days');
+  const [comparison, setComparison] = useState('none');
+  const [histShop, setHistShop]       = useState('all');
   const [trendFocus, setTrendFocus]   = useState<string | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const [filterShop, setFilterShop] = useState<string | null>(null);
 
   // ── Load review state ────────────────────────────────────────────────────
   useEffect(() => {
@@ -331,9 +335,12 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   const cutoff = chartCutoff(chartRange);
   const primaryWeeks = history.filter((b) => new Date(b.weekStart + 'T00:00:00Z') >= cutoff);
   const histMap = new Map(history.map((b) => [b.weekStart, b]));
-  const xInterval = chartRange === 'last_90_days' ? 1 : chartRange === 'last_year' ? 7 : 12;
+  const xInterval = (chartRange === 'last_7_days' || chartRange === 'last_4_weeks') ? 1 : chartRange === 'last_90_days' ? 1 : chartRange === 'last_year' ? 7 : 12;
 
   const isSpecificShop = histShop !== 'combined' && histShop !== 'all';
+
+  const compOffsetDays = comparison === 'previous_period' ? primaryWeeks.length * 7 : 364;
+  const compLabel = comparison === 'previous_period' ? '(prior)' : '(−1yr)';
 
   const chartData = primaryWeeks
     .filter((pw) => {
@@ -342,8 +349,8 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
     })
     .map((pw) => {
       const compDate = new Date(pw.weekStart + 'T00:00:00Z');
-      compDate.setUTCDate(compDate.getUTCDate() - 364);
-      const comp = histMap.get(compDate.toISOString().slice(0, 10));
+      compDate.setUTCDate(compDate.getUTCDate() - compOffsetDays);
+      const comp = comparison !== 'none' ? histMap.get(compDate.toISOString().slice(0, 10)) : undefined;
       const safe = (n: number, d: number) => (d > 0 ? (n / d) * 100 : 0);
       if (isSpecificShop) {
         const sb = pw.shops![histShop];
@@ -437,6 +444,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
   const COL_HEADERS = showReviewCols ? COL_HEADERS_REVIEW : COL_HEADERS_BASE;
 
   const filtered: PartLine[] = scopedLines.filter((l) => {
+    if (filterShop && l.shopNum !== filterShop) return false;
     if (filterType !== 'all' && l.pricingType !== filterType) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -468,6 +476,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
       title="Parts Pricing"
       sub="Per-part classification · approve manual overrides · matrix vs canned"
       email={email}
+      role={role}
       sections={PAGE_SECTIONS}
       headerRight={null}
     >
@@ -497,43 +506,51 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
       }>
         {s ? (<>
           {/* ── Portfolio view ─────────────────────────────────────────────── */}
-          {projView === 'portfolio' && (<>
-            <div className="rounded-3xl p-6 mb-4" style={{ background: 'linear-gradient(160deg, rgba(232,134,62,0.12), rgba(242,206,112,0.08) 55%, rgba(139,205,197,0.10))', border: `1px solid ${LINE}` }}>
-              <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-8 items-center">
-                <div>
+          {projView === 'portfolio' && (
+            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,240px)_1fr] gap-3 mb-4 items-stretch">
+              {/* Left column: stats + revenue stacked */}
+              <div className="flex flex-col gap-3">
+                <div className="rounded-3xl p-5 flex-1" style={{ background: 'linear-gradient(160deg, rgba(232,134,62,0.12), rgba(242,206,112,0.08) 55%, rgba(139,205,197,0.10))', border: `1px solid ${LINE}` }}>
                   <BigStat
                     label="Manual price adjustments"
                     value={pct(s.manual / s.total)}
-                    sub={`${s.manual.toLocaleString()} of ${s.total.toLocaleString()} parts manually adjusted`}
+                    sub={`${s.manual.toLocaleString()} of ${s.total.toLocaleString()} parts`}
                     color={s.total > 0 && s.manual / s.total > 0.15 ? BAD : GOOD}
                   />
-                  <div className="flex flex-wrap gap-x-6 gap-y-1 mt-5 c2ui text-[13px]" style={{ color: INK2 }}>
-                    <span>Matrix <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{pct(s.matrix / s.total)}</span></span>
-                    <span>Canned <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{pct(s.canned / s.total)}</span></span>
-                    <span>No charge <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 16 }}>{s.no_charge.toLocaleString()}</span></span>
+                  <div className="flex flex-wrap gap-x-5 gap-y-1 mt-4 c2ui text-[12px]" style={{ color: INK2 }}>
+                    <span>Matrix <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 15 }}>{pct(s.matrix / s.total)}</span></span>
+                    <span>Canned <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 15 }}>{pct(s.canned / s.total)}</span></span>
+                    <span>No charge <span className="c2disp tabular-nums" style={{ color: INK, fontSize: 15 }}>{s.no_charge.toLocaleString()}</span></span>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <MiniStat label="Manual" value={pct(s.manual / s.total)} />
-                  <MiniStat label="Matrix" value={pct(s.matrix / s.total)} />
-                  <MiniStat label="Canned job" value={pct(s.canned / s.total)} />
-                  <MiniStat label="Total parts" value={s.total.toLocaleString()} />
+                <div className="rounded-2xl p-5" style={{ background: 'radial-gradient(135% 160% at 28% -10%, rgba(240,166,92,0.50), rgba(240,166,92,0.16) 70%, rgba(240,166,92,0.08))', boxShadow: 'inset 0 0 0 1px rgba(240,166,92,0.28)' }}>
+                  <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: '#B5631F' }}>Revenue left on table</div>
+                  <div className="c2disp tabular-nums mt-1.5" style={{ color: INK, fontSize: 28, letterSpacing: '-0.02em' }}>{usd(s.manualRevenueLostCents / 100)}</div>
+                  <div className="c2ui text-[12px] mt-1" style={{ color: INK2 }}>manual parts underpriced vs matrix</div>
                 </div>
               </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-              <div className="rounded-2xl p-5" style={{ background: 'linear-gradient(150deg, rgba(232,134,62,0.12), rgba(242,206,112,0.10))', border: `1px solid rgba(232,134,62,0.25)` }}>
-                <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: '#B5631F' }}>Revenue left on table</div>
-                <div className="c2disp tabular-nums mt-1.5" style={{ color: INK, fontSize: 32, letterSpacing: '-0.02em' }}>{usd(s.manualRevenueLostCents / 100)}</div>
-                <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>manual parts underpriced vs matrix</div>
+              {/* Right column: 8 shop boxes */}
+              <div className="grid grid-cols-4 grid-rows-2 gap-1.5 h-full">
+                {shopStats.map((sh) => {
+                  const shop = SHOPS.find((s) => s.num === sh.shopNum);
+                  return (
+                    <div key={sh.shopNum} className="rounded-xl p-3 cursor-pointer transition-opacity hover:opacity-80 flex flex-col justify-between"
+                      onClick={() => { setFilterShop(sh.shopNum); setFilterType('manual'); setShowTable(true); setPage(0); setTimeout(() => document.getElementById('parts-detail-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}
+                      style={{ background: shop ? `${shop.color}14` : 'rgba(34,32,28,0.04)', border: `1px solid ${shop ? `${shop.color}35` : LINE}` }}>
+                      <div className="flex items-center gap-1.5">
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: shop?.color ?? INK2, display: 'inline-block', flexShrink: 0 }} />
+                        <span className="c2ui text-[12px] font-semibold truncate" style={{ color: shop?.color ?? INK2 }}>{sh.shopName.startsWith('The ') ? sh.shopName.slice(4) : sh.shopName}</span>
+                      </div>
+                      <div>
+                        <div className="c2disp tabular-nums" style={{ color: INK, fontSize: 26, letterSpacing: '-0.02em' }}>{pct(sh.manual / sh.total)}</div>
+                        <div className="c2ui text-[12px]" style={{ color: INK2 }}>{usd(sh.lostCents / 100)}</div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="rounded-2xl p-5" style={{ background: 'rgba(255,255,255,0.55)', border: `1px solid ${LINE}` }}>
-                <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.16em]" style={{ color: FAINT }}>Revenue above matrix</div>
-                <div className="c2disp tabular-nums mt-1.5" style={{ color: INK, fontSize: 32, letterSpacing: '-0.02em' }}>{usd(s.manualRevenueGainedCents / 100)}</div>
-                <div className="c2ui text-[12.5px] mt-1" style={{ color: INK2 }}>manual parts overpriced vs matrix</div>
-              </div>
             </div>
-          </>)}
+          )}
 
           {/* ── Districts view ──────────────────────────────────────────────── */}
           {projView === 'districts' && (
@@ -581,7 +598,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
           )}
 
           {/* ── Parts detail expand (A/R pattern) ──────────────────────────── */}
-          <div className="mt-6 pt-5" style={{ borderTop: `1px solid ${LINE}` }}>
+          <div id="parts-detail-anchor" className="mt-6 pt-5" style={{ borderTop: `1px solid ${LINE}` }}>
             <button onClick={() => setShowTable((v) => !v)} className="w-full flex items-center justify-between gap-2 text-left">
               <span className="c2ui text-[12.5px] font-semibold uppercase tracking-wide flex items-center gap-2" style={{ color: FAINT }}>
                 Parts detail · {scopedLines.length.toLocaleString()} parts
@@ -598,6 +615,23 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
             {showTable && (
               <div className="mt-4 -mx-6 -mb-5">
                 <div className="px-6 pt-1 pb-4 flex flex-wrap gap-3 items-center" style={{ borderBottom: `1px solid ${LINE}` }}>
+                  {/* Shop filter pills */}
+                  <div className="flex flex-wrap gap-1.5 w-full mb-1">
+                    {SHOPS.map((sh) => (
+                      <button key={sh.num}
+                        onClick={() => { setFilterShop((f) => f === sh.num ? null : sh.num); setPage(0); }}
+                        className="c2ui inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-semibold transition"
+                        style={{
+                          background: filterShop === sh.num ? `${sh.color}28` : 'rgba(34,32,28,0.05)',
+                          border: `1.5px solid ${filterShop === sh.num ? sh.color : 'transparent'}`,
+                          color: filterShop === sh.num ? sh.color : INK2,
+                          opacity: filterShop !== null && filterShop !== sh.num ? 0.38 : 1,
+                        }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: sh.color, display: 'inline-block', flexShrink: 0 }} />
+                        {sh.name}
+                      </button>
+                    ))}
+                  </div>
                   <div className="inline-flex rounded-full p-1 gap-0.5" style={{ background: 'rgba(34,32,28,0.05)', border: `1px solid ${LINE}` }}>
                     {TYPE_FILTERS.map((f) => (
                       <button key={f.key} onClick={() => { setFilterType(f.key); setPage(0); }}
@@ -640,6 +674,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                       )}
                       {rows.map((l, i) => {
                         const review = reviewMap[l.id];
+                        const tekShopId = SHOPS.find((s) => s.num === l.shopNum)?.tekmetricId;
                         const status = review?.status ?? 'pending';
                         const isApproved = status === 'approved';
                         const isRejected = status === 'rejected';
@@ -651,7 +686,9 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                           <tr key={`${l.roId}-${l.jobId}-${i}`}
                             style={{ borderBottom: `1px solid ${LINE}`, background: rowBg, opacity: isApproved ? 0.72 : 1 }}>
                             <td className="c2ui px-4 py-2.5 text-[12.5px] whitespace-nowrap font-semibold" style={{ color: INK }}>
-                              {l.roNumber}
+                              {tekShopId
+                                ? <a href={`https://shop.tekmetric.com/admin/shop/${tekShopId}/repair-orders/${l.roId}`} target="_blank" rel="noopener noreferrer" style={{ color: INK, textDecoration: 'none' }} className="hover:underline">{l.roNumber}</a>
+                                : l.roNumber}
                               {review?.reviewedBy && <div className="c2ui text-[10px] mt-0.5" style={{ color: FAINT }}>{review.reviewedBy.split('@')[0]}</div>}
                             </td>
                             <td className="c2ui px-4 py-2.5 text-[12.5px] whitespace-nowrap" style={{ color: INK2 }}>{l.shopNum}</td>
@@ -743,7 +780,7 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
         <div className="flex items-center gap-2 flex-wrap justify-end">
           <Dropdown value={histShop} onChange={(v) => { setHistShop(v); setTrendFocus(null); }} opts={[{ key: 'combined', label: 'Combined' }, { key: 'all', label: 'All Shops' }, ...SHOPS.map((s) => ({ key: s.num, label: s.name }))]} />
           <Dropdown value={chartRange} onChange={setChartRange} opts={CHART_RANGES} />
-          <Dropdown value={showComparison ? 'prior_year' : 'none'} onChange={(v) => setShowComparison(v !== 'none')} opts={[{ key: 'none', label: 'No Comparison' }, { key: 'prior_year', label: 'vs Prior Year' }]} />
+          <Dropdown value={comparison} onChange={setComparison} opts={COMPARISON_OPTS} />
         </div>
       }>
         {(histLoading || histBackfilling) && (
@@ -817,12 +854,19 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                   ))}
                 </div>
                 {(() => {
-                  const W = 900, H = 220, padL = 32, padR = 8, padT = 12, padB = 26;
+                  const W = 900, H = 280, padL = 36, padR = 8, padT = 12, padB = 26;
                   const cW = W - padL - padR;
                   const cH = H - padT - padB;
                   const n = allShopsXLabels.length;
                   const xAt = (i: number) => padL + (n <= 1 ? cW / 2 : (i / (n - 1)) * cW);
-                  const yAt = (v: number) => padT + (1 - v / 100) * cH;
+                  // Tight y-axis: compute min/max from actual data with padding
+                  const allVals = allShopsSeries.flatMap((s) => s.vals.filter((v): v is number => v !== null));
+                  const rawMin = allVals.length > 0 ? Math.min(...allVals) : 0;
+                  const rawMax = allVals.length > 0 ? Math.max(...allVals) : 100;
+                  const yMin = Math.max(0, Math.floor((rawMin - 4) / 5) * 5);
+                  const yMax = Math.min(100, Math.ceil((rawMax + 4) / 5) * 5);
+                  const yRange = (yMax - yMin) || 1;
+                  const yAt = (v: number) => padT + (1 - (v - yMin) / yRange) * cH;
                   const pathFor = (vals: (number | null)[]) => {
                     let d = '';
                     for (let i = 0; i < vals.length; i++) {
@@ -833,7 +877,8 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                     }
                     return d;
                   };
-                  const gridLines = [0, 25, 50, 75, 100];
+                  const gridStep = Math.max(5, Math.ceil(yRange / 4 / 5) * 5);
+                  const gridLines = Array.from({ length: 5 }, (_, i) => yMin + i * gridStep).filter((v) => v <= yMax + 1);
                   const xTickInterval = n <= 13 ? 1 : n <= 26 ? 2 : 4;
                   return (
                     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', display: 'block', overflow: 'visible' }}>
@@ -870,16 +915,16 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                   <ResponsiveContainer width="100%" height={220}>
                     <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                       <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: LINE }} tickLine={false} interval={xInterval} />
-                      <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={axisStyle} axisLine={false} tickLine={false} width={36} domain={[0, 100]} />
+                      <YAxis tickFormatter={(v) => `${v.toFixed(0)}%`} tick={axisStyle} axisLine={false} tickLine={false} width={36} domain={[(min: number) => Math.max(0, Math.floor((min - 4) / 5) * 5), (max: number) => Math.min(100, Math.ceil((max + 4) / 5) * 5)]} />
                       <Tooltip content={<ChartTooltip />} />
                       <Legend wrapperStyle={{ fontSize: 11, color: INK2 }} />
                       <Line type="monotone" dataKey="matrixPct" name="Matrix %" stroke={C_MATRIX} dot={false} strokeWidth={2} />
                       <Line type="monotone" dataKey="manualPct" name="Manual %" stroke={C_MANUAL} dot={false} strokeWidth={2} />
                       <Line type="monotone" dataKey="cannedPct" name="Canned %" stroke={C_CANNED} dot={false} strokeWidth={2} />
-                      {showComparison && <>
-                        <Line type="monotone" dataKey="compMatrixPct" name="Matrix % (−1yr)" stroke={C_MATRIX} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
-                        <Line type="monotone" dataKey="compManualPct" name="Manual % (−1yr)" stroke={C_MANUAL} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
-                        <Line type="monotone" dataKey="compCannedPct" name="Canned % (−1yr)" stroke={C_CANNED} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
+                      {comparison !== 'none' && <>
+                        <Line type="monotone" dataKey="compMatrixPct" name={`Matrix % ${compLabel}`} stroke={C_MATRIX} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
+                        <Line type="monotone" dataKey="compManualPct" name={`Manual % ${compLabel}`} stroke={C_MANUAL} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
+                        <Line type="monotone" dataKey="compCannedPct" name={`Canned % ${compLabel}`} stroke={C_CANNED} dot={false} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.45} legendType="none" />
                       </>}
                     </LineChart>
                   </ResponsiveContainer>
@@ -903,8 +948,8 @@ export default function PartsMatrixUsage({ email }: { email: string }) {
                       <Tooltip content={<ChartTooltip isDollar />} />
                       <Legend wrapperStyle={{ fontSize: 11, color: INK2 }} />
                       <Area type="monotone" dataKey="lostDollars" name="Rev left on table" stroke={C_MANUAL} strokeWidth={2} fill="url(#lostGrad)" dot={false} />
-                      {showComparison && (
-                        <Area type="monotone" dataKey="compLostDollars" name="Prior year" stroke={AMBER} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.55} fill="url(#compGrad)" dot={false} />
+                      {comparison !== 'none' && (
+                        <Area type="monotone" dataKey="compLostDollars" name={`Rev on table ${compLabel}`} stroke={AMBER} strokeWidth={1.5} strokeDasharray="5 3" strokeOpacity={0.55} fill="url(#compGrad)" dot={false} />
                       )}
                     </AreaChart>
                   </ResponsiveContainer>

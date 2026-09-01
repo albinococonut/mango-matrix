@@ -22,7 +22,7 @@ export default async function EmployeePage() {
   const session = await verifySession(cookies().get(COOKIE_NAME)?.value);
   if (!session) redirect('/login');
   return (
-    <ConceptShell active="employee" sections={EMP_SECTIONS} email={session.email}>
+    <ConceptShell active="employee" sections={EMP_SECTIONS} email={session.email} role={session.role}>
       <Concept2Employee role={session.role} />
     </ConceptShell>
   );

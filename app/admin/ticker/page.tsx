@@ -27,7 +27,7 @@ export default async function TickerAdminPage() {
   }
 
   return (
-    <ConceptShell active="ticker" title="Daily Ticker" sub="Control what scrolls on the intranet ticker" email={session.email ?? undefined}>
+    <ConceptShell active="ticker" title="Daily Ticker" sub="Control what scrolls on the intranet ticker" email={session.email ?? undefined} role={session.role ?? undefined}>
       <div className="max-w-3xl">
         {!dbConfigured && (
           <div className="mb-6 rounded-2xl px-5 py-4" style={{ background: 'rgba(192,90,46,0.08)', border: '1px solid rgba(192,90,46,0.25)' }}>

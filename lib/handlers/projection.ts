@@ -17,6 +17,8 @@ import { projectV2, capPerJobAndSum, detectCheckpoint, V2Input } from '@/lib/for
 import { readSettledWeeks } from '@/lib/reconcile';
 import { holidayFactors } from '@/lib/holidays';
 import { writeProjectionLog, logWriteEnabled, modelV2Enabled, ProjectionLog } from '@/lib/learningStore';
+import { readBiasCorrection } from '@/lib/projBias';
+import { readBandMultiplier } from '@/lib/projCalibration';
 import { readCache, writeCache, isFresh, cacheUpdatedAt } from '@/lib/cache';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
@@ -389,6 +391,9 @@ async function compute(period: PeriodKey, cStart: string | undefined, cEnd: stri
         }
       }
       const approvedUnbilled = capPerJobAndSum(jobSubs, cap);
+      // Expose on the per-shop projection so the diagnostic can detect whether
+      // a car-count gap is a throughput constraint (queue full) vs a demand gap.
+      (proj as any).approvedUnbilled = approvedUnbilled;
       const apptRes = apptByShop.get(shop) || { appts: [] as Appointment[], freshness: 'missing' as ApptsFreshness, ageMs: null };
       // Null when cache is missing/expired — the model must not fabricate 0.
       const bookedAppts: number | null = apptRes.freshness === 'missing'
@@ -421,7 +426,27 @@ async function compute(period: PeriodKey, cStart: string | undefined, cEnd: stri
         bookedAppts,
         shopBaselineMedian, shopBaselineTrailing4,
       };
-      const v2 = projectV2(v2Input);
+      const v2Raw          = projectV2(v2Input);
+      const biasCorrection = await readBiasCorrection(shop);
+      const bandMult       = await readBandMultiplier(cpLabel);
+
+      // Two post-processing adjustments, applied in order:
+      // 1) Bias correction: shifts point/low/high proportionally to correct the
+      //    rolling mean signed error for this shop (neutral until 6 settled weeks).
+      // 2) Band calibration: widens/narrows [low,high] around the point to hit the
+      //    target 80% coverage rate for this checkpoint.
+      const bPoint = Math.round(v2Raw.point * biasCorrection);
+      const bLow   = Math.round(v2Raw.low   * biasCorrection);
+      const bHigh  = Math.round(v2Raw.high  * biasCorrection);
+      const v2 = {
+        ...v2Raw,
+        point: bPoint,
+        low:   Math.round(bPoint - (bPoint - bLow)  * bandMult),
+        high:  Math.round(bPoint + (bHigh - bPoint) * bandMult),
+        contributions: biasCorrection !== 1.0
+          ? [...v2Raw.contributions, { label: `Bias ×${biasCorrection.toFixed(3)}`, amount: bPoint - v2Raw.point }]
+          : v2Raw.contributions,
+      };
 
       // Always write the learning-store record (gated by LOG_WRITE inside).
       const logRec: ProjectionLog = {
@@ -465,6 +490,7 @@ async function compute(period: PeriodKey, cStart: string | undefined, cEnd: stri
         if (v2.rampWarning) (proj as any).rampWarning = v2.rampWarning;
         (proj as any).modelVersion = v2.modelVersion;
         (proj as any).apptsFreshness = apptRes.freshness;
+        if (biasCorrection !== 1.0) (proj as any).biasCorrection = biasCorrection;
       } else {
         // Always attach contributions for the tooltip even when v1 serves —
         // so QC can compare v2's reasoning against v1's number side-by-side.

@@ -61,7 +61,7 @@ export default function Dashboard({
   const [opportunity, setOpportunity] = useState<any | null>(null);
   // Real data-refresh times per source (from sync-job heartbeats), shown in
   // Mountain Time so every viewer sees the same value.
-  const [dataStatus, setDataStatus] = useState<{ tekmetric: number | null; whatconverts: number | null; revenueSettledThrough?: string | null } | null>(null);
+  const [dataStatus, setDataStatus] = useState<{ tekmetric: number | null; ringcentral: number | null; revenueSettledThrough?: string | null } | null>(null);
   useEffect(() => {
     let alive = true;
     const pull = () => fetch('/api/extras?view=data-status').then(r => r.json()).then(d => { if (alive) setDataStatus(d); }).catch(() => {});
@@ -184,7 +184,7 @@ export default function Dashboard({
         {dataStatus && (
           <>
             {' · '}Tekmetric {fmtMT(dataStatus.tekmetric) ?? 'syncing…'}
-            {' · '}WhatConverts {fmtMT(dataStatus.whatconverts) ?? 'syncing…'}
+            {' · '}RingCentral {fmtMT(dataStatus.ringcentral) ?? 'syncing…'}
             {dataStatus.revenueSettledThrough && <>{' · '}Revenue settled through {dataStatus.revenueSettledThrough}</>}
           </>
         )}

@@ -126,14 +126,11 @@ async function buildPhoneShopMap(): Promise<Map<string, ShopNum>> {
     }
   }
 
-  // Check whether every shop already has at least one number in the env map.
-  // If so, skip RC entirely — all shops are explicitly accounted for.
+  // Always supplement the env var with RC auto-discovery — the env var may have
+  // stale or incomplete numbers for some shops, and RC is the authoritative source.
+  // The env var wins on any phone it explicitly lists; RC fills in everything else.
   const envCoveredShops = new Set(envMap.values());
-  const allCovered = SHOPS.every(s => envCoveredShops.has(s.num as ShopNum));
-  if (allCovered && envMap.size > 0) return envMap;
 
-  // At least one shop is missing from the env var — use Redis cache or live RC fetch
-  // to auto-discover the remaining shops, then overlay the env var on top.
   let discovered = new Map<string, ShopNum>();
   const cached = await readCache<Record<string, string>>(RC_PHONE_MAP_KEY);
   if (cached && Object.keys(cached).length > 0) {
@@ -357,10 +354,10 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
       cache: 'no-store',
       signal: controller.signal,
     }).finally(() => clearTimeout(tid));
-    // RC CMN-301: rate limit — retry up to 2× with 10s waits (total ≤20s extra)
+    // RC CMN-301: rate limit — retry up to 2× with 3s waits
     for (let attempt = 1; resp.status === 429 && attempt <= 2; attempt++) {
-      console.warn(`[rc] call-log rate limited (429), waiting 10s (attempt ${attempt}/2)`);
-      await new Promise(r => setTimeout(r, 10_000));
+      console.warn(`[rc] call-log rate limited (429), waiting 3s (attempt ${attempt}/2)`);
+      await new Promise(r => setTimeout(r, 3_000));
       const c2 = new AbortController();
       const t2 = setTimeout(() => c2.abort(), 25_000);
       resp = await fetch(nextUrl, {
@@ -381,9 +378,10 @@ async function fetchRCCallLog(startDate: string, endDate: string, direction: 'In
     if (out.length > 10_000) break; // safety cap
   }
 
-  // 8-minute TTL so the 5-min cron always gets a cache hit on the second tick
-  // (avoids the "5min cache + 5min cron = miss every tick" thundering herd).
-  await writeCache(cacheKey, out, { ttlSeconds: 8 * 60 });
+  // 15-minute TTL — long enough that the 5-min cron gets multiple cache hits
+  // between real RC fetches, reducing the number of paginated API calls by ~2×
+  // and cutting the frequency we hit RC rate limits.
+  await writeCache(cacheKey, out, { ttlSeconds: 15 * 60 });
   return out;
 }
 
@@ -621,8 +619,35 @@ export async function fetchOutboundCalls(f: LeadFilter): Promise<OutboundCall[]>
 // --- Call Recordings: unified inbound+outbound snapshot for a shop ---
 // Used by the Call Recordings section in the employee view. Returns all
 // calls (inbound + outbound) for a shop in the given date range, in
-// reverse-chronological order. Transcripts are served from cache only
-// (no new Whisper invocations) to keep the sync job fast.
+// reverse-chronological order. Transcripts are read from cache here;
+// fillCallRecordingTranscripts() (called from warmCallRecordingsForShop)
+// handles the actual Whisper invocations for both inbound and outbound.
+
+// Whisper-transcribe entries that have a recording but no cached transcript.
+// Call this after fetchCallRecordingsForShop to populate transcripts before
+// they are stored in the shop snapshot. Cap limits Whisper calls per shop/run.
+export async function fillCallRecordingTranscripts(
+  entries: CallRecordingEntryWithUri[],
+  cap = TRANSCRIPT_CAP,
+): Promise<void> {
+  if (!process.env.OPENAI_API_KEY) return;
+  const needsTranscript = entries.filter(
+    e => e.hasRecording && e.contentUri && !e.transcript && e.durationSeconds >= 30
+  );
+  const batch = needsTranscript.slice(0, cap);
+  if (batch.length > 0) {
+    console.log(`[rc] transcribing ${batch.length} call recording(s) via Whisper`);
+  }
+  for (let i = 0; i < batch.length; i += 5) {
+    await Promise.allSettled(
+      batch.slice(i, i + 5).map(async (entry) => {
+        try {
+          entry.transcript = await fetchWhisperTranscript(entry.callId, entry.contentUri!);
+        } catch { /* non-fatal — transcript stays empty */ }
+      })
+    );
+  }
+}
 
 export interface CallRecordingEntry {
   callId: string;
@@ -702,19 +727,25 @@ export async function fetchCallRecordingsForShop(
   return out;
 }
 
-// Warms fetchRCCallLog's cache for the trailing-7-day window (same range
-// warmCallRecordingsForShop uses) before the per-shop warm calls run
-// concurrently, so all 8 shops share these 2 RC API calls instead of each
-// triggering its own — avoids a thundering herd on the CMN-301 rate limit.
-export async function prefetchCallLog(): Promise<void> {
+// --- Pre-fetch call log cache (call once before parallel shop processing) ---
+// Warms both the inbound and outbound 7-day call log cache so that all shops
+// hit a cache hit when they process concurrently instead of thundering-herding RC.
+export async function prefetchRCCallLog(): Promise<void> {
   const now = new Date();
   const endDate = now.toISOString().slice(0, 10);
   const start = new Date(now); start.setDate(start.getDate() - 7);
   const startDate = start.toISOString().slice(0, 10);
-  await Promise.all([
+  // Use allSettled so a rate-limit or RC error on any one fetch doesn't abort
+  // the others. Each shop's fetchCallRecordingsForShop will still attempt its
+  // own fetch if the cache is cold — these are best-effort pre-warms only.
+  const results = await Promise.allSettled([
     fetchRCCallLog(startDate, endDate, 'Inbound'),
     fetchRCCallLog(startDate, endDate, 'Outbound'),
+    buildPhoneShopMap(),
   ]);
+  for (const r of results) {
+    if (r.status === 'rejected') console.warn('[rc] prefetch partial failure (non-fatal):', r.reason?.message ?? r.reason);
+  }
 }
 
 // --- Admin: force-refresh the phone map ---

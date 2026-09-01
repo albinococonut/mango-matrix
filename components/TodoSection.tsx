@@ -980,7 +980,6 @@ function CallbackRowView({ c, onSet }: { c: CallbackRow; onSet: (leadId: number,
         <span className="inline-block text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 mt-1" style={{ background: probBg, color: probColor }}>
           {(c.probability * 100).toFixed(0)}%
         </span>
-        <span className="text-[11px] text-mango-muted mt-1">· called {formatRelative(c.dateCreated)}</span>
       </div>
       {phoneStr ? (
         <div className="text-lg font-semibold text-mango-ink tabular-nums mt-1 tracking-wide">{formatPhone(phoneStr)}</div>

@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
         // Client timeout is 90s, Vercel maxDuration is 120s — both calls run
         // concurrently per shop so the wall-clock cost is ~max(call1, call2) per shop.
         const sweepStartDate = new Date(startISO);
-        sweepStartDate.setDate(sweepStartDate.getDate() - 60);
+        sweepStartDate.setDate(sweepStartDate.getDate() - 21);
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
         const [rangeRos, sweepRos] = await Promise.all([

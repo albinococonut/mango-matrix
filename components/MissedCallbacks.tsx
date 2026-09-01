@@ -12,7 +12,7 @@
 // module scope, so both render sites share the same response.
 
 import { useEffect, useState, useCallback } from 'react';
-import { Phone, PlayCircle, Check, X, MessageSquare, AlertTriangle, ArrowUpDown } from 'lucide-react';
+import { Phone, Check, X, MessageSquare, AlertTriangle, ArrowUpDown } from 'lucide-react';
 import { num, usd, usdK } from '@/lib/format';
 
 type Status = 'open' | 'resolved' | 'not_salvageable';
@@ -243,9 +243,6 @@ function CallbackRow({ row, shopNum, onChange }: { row: CallRow; shopNum: string
   const badge = probBadge(row.probability);
   // Derive the /play page URL — play_recording is the canonical player URL;
   // fall back to swapping /download → /play on the direct audio URL.
-  const callPageUrl = row.playRecording
-    || (row.recording ? row.recording.replace(/\/download$/, '/play') : null);
-
   const post = useCallback(async (action: string, extra: Record<string, any> = {}) => {
     setBusy(action);
     try {
@@ -332,6 +329,15 @@ function CallbackRow({ row, shopNum, onChange }: { row: CallRow; shopNum: string
         {row.resolution?.attemptCount ? <><span>·</span><span>{row.resolution.attemptCount} attempt{row.resolution.attemptCount === 1 ? '' : 's'}</span></> : null}
       </div>
 
+      {/* Inline recording player */}
+      {row.recording && (
+        <div className="mt-2">
+          <div className="c2ui text-[11px] font-semibold uppercase tracking-wide mb-1" style={{ color: FAINT }}>Recording</div>
+          <audio controls className="w-full" style={{ height: 32 }}
+            src={`/api/recording?leadId=${row.leadId}&shop=${shopNum}`} />
+        </div>
+      )}
+
       {/* Action row */}
       <div className="mt-3 pt-2.5 flex items-center gap-2 flex-wrap" style={{ borderTop: `1px solid ${LINE_STRONG}` }}>
         {telHref ? (
@@ -370,13 +376,6 @@ function CallbackRow({ row, shopNum, onChange }: { row: CallRow; shopNum: string
 
         {/* Media + note — right side */}
         <div className="ml-auto flex items-center gap-1.5">
-          {callPageUrl && (
-            <a href={callPageUrl} target="_blank" rel="noreferrer"
-              className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full"
-              style={{ background: 'rgba(255,255,255,0.65)', border: `1px solid ${LINE}`, color: INK2 }}>
-              <PlayCircle className="w-3 h-3" /> Recording ↗
-            </a>
-          )}
           {row.transcriptPreview && (
             <button onClick={() => setShowTranscript(v => !v)}
               className="c2ui inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-full"

@@ -80,9 +80,23 @@ export function allWeekStartsSince(floor: string): string[] {
 export async function getMissingWeeks(): Promise<string[]> {
   const all = allWeekStartsSince(PM_HIST_FLOOR);
   const stored = await readAllPartsHistory();
-  const storedSet = new Set(stored.map((b) => b.weekStart));
-  // Newest-first so the chart fills in from the right
-  return all.filter((w) => !storedSet.has(w)).reverse();
+  const storedMap = new Map(stored.map((b) => [b.weekStart, b]));
+  // Recompute recent weeks (last 16 weeks) that are missing per-shop breakdown —
+  // those were stored before the `shops` field was added to computeAndSaveWeek.
+  // Also recompute weeks computed during the canned-job misclassification window
+  // (Jul 7–14 2026, commits 8801f37→6669253) — those have inflated manual%.
+  const cutoffDate = new Date();
+  cutoffDate.setUTCDate(cutoffDate.getUTCDate() - 112); // 16 weeks
+  const recentCutoff = cutoffDate.toISOString().slice(0, 10);
+  const BUG_WINDOW_START = '2026-07-07T00:00:00Z';
+  const BUG_WINDOW_END   = '2026-07-14T21:10:00Z'; // commit 6669253 deployed
+  return all.filter((w) => {
+    const bucket = storedMap.get(w);
+    if (!bucket) return true;
+    if (w >= recentCutoff && (!bucket.shops || Object.keys(bucket.shops).length < SHOPS.length - 2)) return true;
+    if (bucket.computedAt >= BUG_WINDOW_START && bucket.computedAt <= BUG_WINDOW_END) return true;
+    return false;
+  }).reverse();
 }
 
 export async function computeAndSaveWeek(weekStart: string): Promise<PartsWeekBucket> {

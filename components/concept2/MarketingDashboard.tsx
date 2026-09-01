@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, Fragment } from 'react';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, Legend, Cell, ReferenceLine,
@@ -11,6 +11,7 @@ import {
 } from './kit';
 import LineChartBlock from '@/components/charts/LineChartBlock';
 import { SHOPS } from '@/lib/shops';
+import { MARKETING_DATA_CUTOFF } from '@/lib/marketingSpend';
 // ── types ──────────────────────────────────────────────────────────────────
 
 interface MonthSpend { googleAds: number; advertising: number; listing: number; seo?: number }
@@ -154,7 +155,6 @@ function filterMonthsByPeriod(months: string[], period: PeriodRangeKey): string[
         return new Date(my, mm - 1, 1) >= cutoff;
       });
     }
-    case 'all_time':
     default:
       return months;
   }
@@ -583,10 +583,11 @@ function NewCustTooltip({ active, payload, label, isIndividual }: any) {
 // ── main component ─────────────────────────────────────────────────────────
 
 export default function MarketingDashboard() {
-  const [data, setData]       = useState<Payload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [view, setView]       = useState('combined');
-  const [period, setPeriod]   = useState<PeriodRangeKey>('all_time');
+  const [data, setData]           = useState<Payload | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [view, setView]           = useState('combined');
+  const [period, setPeriod]       = useState<PeriodRangeKey>('this_year');
+  const [cutoffDismissed, setCutoffDismissed] = useState(false);
 
   useEffect(() => {
     safe<Payload>('/api/marketing').then(d => { if (d) setData(d); setLoading(false); });
@@ -594,7 +595,7 @@ export default function MarketingDashboard() {
 
   const visibleMonths = useMemo(() => {
     if (!data) return [];
-    return filterMonthsByPeriod(data.months, period);
+    return filterMonthsByPeriod(data.months, period).filter(m => m <= MARKETING_DATA_CUTOFF);
   }, [data, period]);
 
   const isAll        = view === 'all';
@@ -624,6 +625,15 @@ export default function MarketingDashboard() {
     data ? buildChannelRoi(visibleMonths, roiShops, data.spend, data.repairPal, data.attribution, data.upswell ?? null, data.referralCosts ?? null, data.newCustomers ?? []) : [],
   [data, visibleMonths, roiShops]);
 
+  const perShopRoi = useMemo(() => {
+    if (!data || !isAll) return [];
+    return roiShops.map(num => ({
+      num,
+      name: SHOP_NAMES[num] ?? num,
+      rows: buildChannelRoi(visibleMonths, [num], data.spend, data.repairPal, data.attribution, data.upswell ?? null, data.referralCosts ?? null, data.newCustomers ?? []),
+    }));
+  }, [data, visibleMonths, roiShops, isAll]);
+
   const responseCDFData  = useMemo(() => buildResponseCDFData(), []);
   const allShopsLagData  = useMemo(() => {
     if (!data?.upswell) return [];
@@ -646,6 +656,41 @@ export default function MarketingDashboard() {
   if (!data) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300, color: '#C05A2E' }}>
       Marketing data unavailable
+    </div>
+  );
+
+  // ── data cutoff banner ───────────────────────────────────────────────────
+  const cutoffLabel = (() => {
+    const [y, mo] = MARKETING_DATA_CUTOFF.split('-').map(Number);
+    return new Date(y, mo - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  })();
+  const dataCutoffBanner = !cutoffDismissed && (
+    <div style={{
+      background: '#FFF8E6', border: '1.5px solid #F5A623', borderRadius: 10,
+      padding: '14px 18px', marginBottom: 20, display: 'flex', gap: 14, alignItems: 'flex-start',
+    }}>
+      <span style={{ fontSize: 22, lineHeight: 1, marginTop: 1 }}>⚠️</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: '#7A4A00', marginBottom: 4 }}>
+          Marketing data is current through {cutoffLabel} only
+        </div>
+        <div style={{ fontSize: 13, color: '#5A3800', lineHeight: 1.5 }}>
+          All spend figures, attribution, and ROI calculations are capped at {cutoffLabel}.
+          Data for later months will appear automatically once the following files are uploaded:
+        </div>
+        <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13, color: '#5A3800', lineHeight: 1.8 }}>
+          <li><strong>QuickBooks P&amp;L by Month export</strong> — one tab per shop (8 shops total), covering the new month. Feeds: Google Ads cost, Direct Mail cost, Listing fees, SEO fees.</li>
+          <li><strong>Upswell campaign export</strong> — address-matched direct mail revenue attribution.</li>
+          <li><strong>RepairPal/AAA/Costco expense summary</strong> — if listing fee amounts changed.</li>
+        </ul>
+        <div style={{ fontSize: 12, color: '#7A4A00', marginTop: 8, fontStyle: 'italic' }}>
+          Reminder: upload these files ~30 days after month close (i.e., around the 30th of the following month).
+        </div>
+      </div>
+      <button onClick={() => setCutoffDismissed(true)} style={{
+        background: 'none', border: 'none', cursor: 'pointer', color: '#7A4A00',
+        fontSize: 18, lineHeight: 1, padding: 2, flexShrink: 0,
+      }} title="Dismiss">×</button>
     </div>
   );
 
@@ -816,44 +861,93 @@ export default function MarketingDashboard() {
             </tr>
           </thead>
           <tbody>
-            {channelRoi.map(row => {
-              const netColor = row.net >= 0 ? GOOD : '#E05A2E';
-              return (
-                <tr key={row.label} style={{ borderBottom: `1px solid ${LINE}` }}>
-                  <td style={{ padding: '10px 12px 10px 0' }}>
-                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: row.color, marginRight: 7, verticalAlign: 'middle' }} />
-                    <span style={{ color: INK, fontWeight: 600 }}>{row.label}</span>
-                  </td>
-                  <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
-                    {row.visits.toLocaleString()}
-                  </td>
-                  <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
-                    {row.revenue > 0 ? (
-                      <>
-                        ${row.revenue.toLocaleString()}
-                        {row.revenueIsEstimated && <span style={{ color: FAINT, fontSize: 11 }}> *</span>}
-                      </>
-                    ) : <span style={{ color: FAINT }}>—</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
-                    {row.gpDollars > 0 ? (
-                      <>${row.gpDollars.toLocaleString()}<span style={{ color: FAINT, fontSize: 11 }}> *</span></>
-                    ) : <span style={{ color: FAINT }}>—</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
-                    {row.cost > 0 ? `$${row.cost.toLocaleString()}` : <span style={{ color: FAINT }}>—</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', padding: '10px 8px', fontWeight: 600, color: INK }}>
-                    {row.cac != null ? `$${row.cac.toLocaleString()}` : <span style={{ color: FAINT, fontWeight: 400 }}>—</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', padding: '10px 0 10px 8px', fontWeight: 700, color: netColor }}>
-                    {row.gpDollars > 0 && row.cost > 0 ? (
-                      <>{row.net >= 0 ? '+' : ''}${row.net.toLocaleString()}</>
-                    ) : <span style={{ color: FAINT, fontWeight: 400 }}>—</span>}
-                  </td>
-                </tr>
-              );
-            })}
+            {isAll
+              ? perShopRoi.map(({ num, name, rows }) => (
+                  <Fragment key={num}>
+                    <tr>
+                      <td colSpan={7} style={{ padding: '14px 0 4px', fontWeight: 700, color: INK, fontSize: 12, letterSpacing: '0.04em', borderTop: `2px solid ${LINE}` }}>
+                        {name}
+                      </td>
+                    </tr>
+                    {rows.map(row => {
+                      const netColor = row.net >= 0 ? GOOD : '#E05A2E';
+                      return (
+                        <tr key={`${num}-${row.label}`} style={{ borderBottom: `1px solid ${LINE}` }}>
+                          <td style={{ padding: '10px 12px 10px 0' }}>
+                            <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: row.color, marginRight: 7, verticalAlign: 'middle' }} />
+                            <span style={{ color: INK, fontWeight: 600 }}>{row.label}</span>
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                            {row.visits.toLocaleString()}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                            {row.revenue > 0 ? (
+                              <>
+                                ${row.revenue.toLocaleString()}
+                                {row.revenueIsEstimated && <span style={{ color: FAINT, fontSize: 11 }}> *</span>}
+                              </>
+                            ) : <span style={{ color: FAINT }}>—</span>}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                            {row.gpDollars > 0 ? (
+                              <>${row.gpDollars.toLocaleString()}<span style={{ color: FAINT, fontSize: 11 }}> *</span></>
+                            ) : <span style={{ color: FAINT }}>—</span>}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                            {row.cost > 0 ? `$${row.cost.toLocaleString()}` : <span style={{ color: FAINT }}>—</span>}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '10px 8px', fontWeight: 600, color: INK }}>
+                            {row.cac != null ? `$${row.cac.toLocaleString()}` : <span style={{ color: FAINT, fontWeight: 400 }}>—</span>}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '10px 0 10px 8px', fontWeight: 700, color: netColor }}>
+                            {row.gpDollars > 0 && row.cost > 0 ? (
+                              <>{row.net >= 0 ? '+' : ''}${row.net.toLocaleString()}</>
+                            ) : <span style={{ color: FAINT, fontWeight: 400 }}>—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
+                ))
+              : channelRoi.map(row => {
+                  const netColor = row.net >= 0 ? GOOD : '#E05A2E';
+                  return (
+                    <tr key={row.label} style={{ borderBottom: `1px solid ${LINE}` }}>
+                      <td style={{ padding: '10px 12px 10px 0' }}>
+                        <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: row.color, marginRight: 7, verticalAlign: 'middle' }} />
+                        <span style={{ color: INK, fontWeight: 600 }}>{row.label}</span>
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                        {row.visits.toLocaleString()}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                        {row.revenue > 0 ? (
+                          <>
+                            ${row.revenue.toLocaleString()}
+                            {row.revenueIsEstimated && <span style={{ color: FAINT, fontSize: 11 }}> *</span>}
+                          </>
+                        ) : <span style={{ color: FAINT }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                        {row.gpDollars > 0 ? (
+                          <>${row.gpDollars.toLocaleString()}<span style={{ color: FAINT, fontSize: 11 }}> *</span></>
+                        ) : <span style={{ color: FAINT }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '10px 8px', color: INK2 }}>
+                        {row.cost > 0 ? `$${row.cost.toLocaleString()}` : <span style={{ color: FAINT }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '10px 8px', fontWeight: 600, color: INK }}>
+                        {row.cac != null ? `$${row.cac.toLocaleString()}` : <span style={{ color: FAINT, fontWeight: 400 }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '10px 0 10px 8px', fontWeight: 700, color: netColor }}>
+                        {row.gpDollars > 0 && row.cost > 0 ? (
+                          <>{row.net >= 0 ? '+' : ''}${row.net.toLocaleString()}</>
+                        ) : <span style={{ color: FAINT, fontWeight: 400 }}>—</span>}
+                      </td>
+                    </tr>
+                  );
+                })
+            }
           </tbody>
         </table>
         <p style={{ fontSize: 11, color: FAINT, marginTop: 8 }}>
@@ -1308,6 +1402,7 @@ export default function MarketingDashboard() {
 
   return (
     <div>
+      {dataCutoffBanner}
       {roiCard}
       {newCustChart}
       {spendChart}

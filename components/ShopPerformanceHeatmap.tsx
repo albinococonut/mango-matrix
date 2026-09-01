@@ -136,7 +136,7 @@ export default function ShopPerformanceHeatmap() {
         const g = revGoal(row.shopNum, wkISO);
         if (!g) return { tier: null, big: fmtK(c.revenue), small: 'no goal' };
         const r = c.revenue / g;
-        return { tier: pctTier(r), big: Math.round(r * 100) + '%', small: `${fmtK(c.revenue)} / ${fmtK(g)}` };
+        return { tier: pctTier(r), big: fmtK(c.revenue), small: `${Math.round(r * 100)}% of ${fmtK(g)} goal` };
       }
       case 'cars': {
         const med = rowMedian(row.cells, (x) => x.cars);
@@ -195,7 +195,7 @@ export default function ShopPerformanceHeatmap() {
   }
 
   const hint: Record<Metric, string> = {
-    revenue: 'Percent of weekly revenue goal. Current week is prorated by working-days elapsed.',
+    revenue: 'Revenue in dollars. Cell color shows percent of weekly goal. Current week is prorated by working-days elapsed.',
     gpPct: 'Gross-profit % against the 58% target.',
     gpDollars: 'GP dollars vs each shop’s typical week.',
     cars: 'Car count vs each shop’s typical week.',

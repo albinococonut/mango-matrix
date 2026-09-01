@@ -9,5 +9,5 @@ export default async function DiagnosticPage() {
   const session = await verifySession(cookies().get(COOKIE_NAME)?.value);
   if (!session) redirect('/login');
   if (session.role !== 'executive') redirect('/employee');
-  return <Concept2Diagnostic />;
+  return <Concept2Diagnostic role={session.role} />;
 }

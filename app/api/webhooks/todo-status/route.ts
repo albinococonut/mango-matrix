@@ -21,7 +21,7 @@ export async function GET() {
   // jobs, so a recent timestamp confirms the cron is firing.
   const [hbTek, hbWc, fbrIdx, mcIdx, djIdx] = await Promise.all([
     cacheUpdatedAt('hb_tekmetric'),
-    cacheUpdatedAt('hb_whatconverts'),
+    cacheUpdatedAt('hb_ringcentral'),
     cacheUpdatedAt('fbr_warm_idx'),
     cacheUpdatedAt('missed_callbacks_warm_idx'),
     cacheUpdatedAt('declined_jobs_warm_idx'),

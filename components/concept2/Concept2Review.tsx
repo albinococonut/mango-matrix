@@ -301,18 +301,20 @@ export default function Concept2Review() {
       if (d?.summary) setPartsGpDiag(d);
     });
   }, [weekStart, weekEnd, mtdStartStr, mtdEndStr]);
-  // Drift log — load once on mount (persists across week navigation).
+  // Drift log — reload whenever the viewed week changes.
   useEffect(() => {
-    safe<{ entries: DriftLogEntry[] }>('/api/drift-log').then(d => {
+    setDriftLoading(true);
+    setDriftLog([]);
+    safe<{ entries: DriftLogEntry[] }>(`/api/drift-log?weekStart=${weekStart}`).then(d => {
       if (d?.entries) setDriftLog(d.entries);
       setDriftLoading(false);
     });
-  }, []);
+  }, [weekStart]);
 
   const refreshDrift = async () => {
     setDriftRefreshing(true);
     try {
-      const res = await fetch('/api/drift-log', { method: 'POST' });
+      const res = await fetch(`/api/drift-log?weekStart=${weekStart}`, { method: 'POST' });
       const d = await res.json();
       if (d?.entries) setDriftLog(d.entries);
     } finally {

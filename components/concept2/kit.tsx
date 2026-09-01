@@ -74,6 +74,21 @@ export function Card({ id, eyebrow, title, sub, right, children, pad = true, col
     </section>
   );
 }
+// Standard time-period options used across all dashboards.
+// Import this instead of defining local arrays so every dropdown shows identical choices.
+export const PERIOD_RANGES = [
+  { key: 'this_week',    label: 'This Week' },
+  { key: 'last_week',    label: 'Last Week' },
+  { key: 'this_month',   label: 'This Month' },
+  { key: 'last_month',   label: 'Last Month' },
+  { key: 'this_quarter', label: 'This Quarter' },
+  { key: 'this_year',    label: 'This Year' },
+  { key: 'last_year',    label: 'Last Year' },
+  { key: 'last_90_days', label: 'Last 90 Days' },
+] as const;
+
+export type PeriodRangeKey = typeof PERIOD_RANGES[number]['key'];
+
 export function Dropdown({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: readonly { key: string; label: string }[] }) {
   return (
     <div className="relative inline-block">
@@ -145,20 +160,22 @@ export const PERIOD_RANGES = [
 ] as const;
 
 // ── ConceptShell — frosted sidebar + cream/orb background + page header ──────
-type NavId = 'diagnostic' | 'diagnostic-charts' | 'review' | 'employee' | 'todo' | 'call-recordings' | 'tv' | 'parts-matrix' | 'ticker' | 'gbp' | 'intranet';
-const NAV: { id: NavId; label: string; href: string }[] = [
-  { id: 'diagnostic-charts', label: 'Charts',      href: '/diagnostic?tab=charts' },
-  { id: 'diagnostic',        label: 'Diagnostics', href: '/diagnostic?tab=diagnostics' },
-  { id: 'review',       label: 'Weekly Review', href: '/review' },
-  { id: 'parts-matrix', label: 'Parts Pricing', href: '/parts-matrix' },
-  { id: 'ticker',       label: 'Daily Ticker',  href: '/admin/ticker' },
-  { id: 'employee',     label: 'Matrix',        href: '/employee' },
-  { id: 'intranet',     label: 'Intranet',      href: 'https://intranet.mangoautomotive.com' },
+type NavId = 'diagnostic' | 'diagnostic-charts' | 'review' | 'employee' | 'todo' | 'call-recordings' | 'tv' | 'parts-matrix' | 'ticker' | 'gbp' | 'intranet' | 'marketing';
+const NAV: { id: NavId; label: string; href: string; execOnly?: boolean }[] = [
+  { id: 'diagnostic-charts', label: 'Charts',        href: '/diagnostic?tab=charts',      execOnly: true },
+  { id: 'diagnostic',        label: 'Diagnostics',   href: '/diagnostic?tab=diagnostics', execOnly: true },
+  { id: 'review',            label: 'Weekly Review', href: '/review',                     execOnly: true },
+  { id: 'marketing',         label: 'Marketing',     href: '/marketing',                  execOnly: true },
+  { id: 'ticker',            label: 'Daily Ticker',  href: '/admin/ticker',               execOnly: true },
+  { id: 'intranet',          label: 'Intranet',      href: 'https://intranet.mangoautomotive.com', execOnly: true },
+  { id: 'employee',          label: 'Matrix',        href: '/employee' },
+  { id: 'parts-matrix',      label: 'Parts Pricing', href: '/parts-matrix' },
 ];
 const EMP_CHILDREN: { id: NavId; label: string; href: string }[] = [
   { id: 'todo',             label: 'To Do',            href: '/todo' },
   { id: 'call-recordings',  label: 'Call Recordings',  href: '/call-recordings' },
 ];
+const PREVIEW_KEY = 'c2_preview_as_employee_v1';
 
 async function doLogout() {
   await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ logout: true }) });
@@ -177,13 +194,21 @@ function Orbs() {
 }
 
 export function ConceptShell({
-  active, eyebrow = 'The Mango Matrix', title, sub, sections, headerRight, email, children,
+  active, eyebrow = 'The Mango Matrix', title, sub, sections, headerRight, email, role, children,
 }: {
   active: NavId; eyebrow?: string; title?: string; sub?: string;
-  sections?: { id: string; label: string }[]; headerRight?: React.ReactNode; email?: string; children: React.ReactNode;
+  sections?: { id: string; label: string }[]; headerRight?: React.ReactNode;
+  email?: string; role?: string; children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const allMobile = [...NAV, ...EMP_CHILDREN];
+  const isExec = role === 'executive';
+  const [previewAsEmployee, setPreviewAsEmployee] = useState(false);
+  useEffect(() => {
+    try { if (window.localStorage.getItem(PREVIEW_KEY) === '1') setPreviewAsEmployee(true); } catch { /* */ }
+  }, []);
+  const effectiveRole = isExec && previewAsEmployee ? 'employee' : role;
+  const visibleNav = NAV.filter(c => !c.execOnly || effectiveRole === 'executive');
+  const allMobile = [...visibleNav, ...EMP_CHILDREN];
 
   // Collapse state — persisted to localStorage so the user's choice survives
   // page navigation, matching production's ExecSidebar UX. Initial render
@@ -274,7 +299,7 @@ export function ConceptShell({
             <div className="my-2 w-8">{goldRule}</div>
             {/* Top-level rail items + sub-items as single-letter initials. */}
             <div className="flex flex-col items-center gap-1">
-              {NAV.map((c) => railItem(c.href, c.label, c.id === active, c.label.charAt(0)))}
+              {visibleNav.map((c) => railItem(c.href, c.label, c.id === active, c.label.charAt(0)))}
               {EMP_CHILDREN.map((ch) => railItem(ch.href, ch.label, ch.id === active, ch.label.charAt(0)))}
             </div>
             {/* Footer — sign-out icon only */}
@@ -305,7 +330,7 @@ export function ConceptShell({
 
             {/* Nav */}
             <nav className="flex-1 flex flex-col gap-0.5 overflow-y-auto pt-5">
-              {NAV.map((c) => {
+              {visibleNav.map((c) => {
                 const on = c.id === active;
                 return (
                   <div key={c.id} className="flex flex-col">
@@ -335,12 +360,25 @@ export function ConceptShell({
               })}
             </nav>
 
-            {/* Footer — divider, identity, sign out */}
+            {/* Footer — divider, identity, sign out, employee preview toggle */}
             <div className="mt-4 px-5">
               {goldRule}
               {email && <div className="mt-4 c2ui text-[12.5px] uppercase tracking-[0.14em] font-semibold" style={{ color: FAINT }}>Signed in as</div>}
               {email && <div className="mt-1 c2ui text-[13px] truncate" style={{ color: INK }} title={email}>{email}</div>}
               <button onClick={doLogout} className="mt-3 c2ui text-[12px] transition" style={{ color: FAINT }}>Sign out</button>
+              {isExec && (
+                <button
+                  onClick={() => setPreviewAsEmployee(p => {
+                    const next = !p;
+                    try { window.localStorage.setItem(PREVIEW_KEY, next ? '1' : '0'); } catch { /* */ }
+                    return next;
+                  })}
+                  className="mt-2 c2ui text-[12px] transition flex items-center gap-1"
+                  style={{ color: previewAsEmployee ? '#B5631F' : FAINT }}
+                >
+                  {previewAsEmployee ? '▶ Previewing as Employee' : 'Preview as Employee'}
+                </button>
+              )}
             </div>
           </aside>
         )}

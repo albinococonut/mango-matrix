@@ -303,12 +303,18 @@ export function projectShop(inp: ProjectInput): ShopProjection {
     // from this shop's history. Not "we're behind", just "this is the week".
     expected = baselineForPeriod * factor;
   } else {
-    // blend this shop's CURRENT pacing with its own historical baseline.
-    // Weight shifts toward pacing as the period fills in (compare current
-    // pacing vs historical pacing — spec requirement).
-    const paceProjection = inp.actuals.revenue / elapsedFrac;
-    const w = Math.pow(elapsedFrac, 0.7);
-    expected = (w * paceProjection + (1 - w) * baselineForPeriod) * (1 + predictorAdj);
+    // If the period is fully elapsed (≥99% of working days done) the week is
+    // over — actuals ARE the final number; no predictor or blend needed.
+    if (elapsedFrac >= 0.99) {
+      expected = inp.actuals.revenue;
+    } else {
+      // blend this shop's CURRENT pacing with its own historical baseline.
+      // Weight shifts toward pacing as the period fills in (compare current
+      // pacing vs historical pacing — spec requirement).
+      const paceProjection = inp.actuals.revenue / elapsedFrac;
+      const w = Math.pow(elapsedFrac, 0.7);
+      expected = (w * paceProjection + (1 - w) * baselineForPeriod) * (1 + predictorAdj);
+    }
   }
   expected = Math.max(0, expected);
 
@@ -355,7 +361,8 @@ export function projectShop(inp: ProjectInput): ShopProjection {
   confidence = Math.round(clamp(confidence, 5, 97));
   const confidenceLabel = confidence >= 80 ? 'High' : confidence >= 60 ? 'Moderate' : confidence >= 40 ? 'Low' : 'Very Low';
 
-  const sigmaEff = periodSigma * observedShrink * (1 + (100 - confidence) / 120);
+  // Period fully elapsed → no uncertainty remains; best/worst = actuals.
+  const sigmaEff = elapsedFrac >= 0.99 ? 0 : periodSigma * observedShrink * (1 + (100 - confidence) / 120);
   const bestCase = Math.round(expected + sigmaEff);
   const worstCase = Math.round(Math.max(0, expected - sigmaEff));
 

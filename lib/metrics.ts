@@ -31,6 +31,13 @@ export interface ShopKpi {
   // Approved Sales — sum of AUTHORIZED job subtotals only. Matches the
   // "Approved Sales" line in the corporate weekly review spreadsheet.
   approvedDollars: number;
+  // Comeback / internal-warranty detection — authorized jobs whose name or
+  // category signals rework at no customer cost (not inspections).
+  comebackJobs: number;
+  comebackHours: number;   // labor hours consumed by those jobs
+  // Effective customer billing rate = laborSales / laborHours.
+  // Significantly below the shop's typical rate → rate-capped (ext. warranty) work.
+  effectiveLaborRate: number;  // $/hr; 0 when no labor hours
 }
 
 export interface ChainKpi {
@@ -248,6 +255,8 @@ export function shopKpi(shop: Shop, orders: RepairOrder[]): ShopKpi {
   let approvedJobs = 0;
   let totalJobs = 0;
   let laborHours = 0; // sum of hours on authorized jobs (drives labor cost)
+  let comebackJobCount = 0;
+  let comebackHourCount = 0;
   let subletSalesCents = 0; // sublet cost proxy (Tekmetric Total Cost includes sublet cost)
   let presentedDollarsCents = 0; // sum of every job's subtotal — authorized OR declined (drives AWRO)
   let approvedDollarsCents = 0;  // sum of AUTHORIZED job subtotals only (drives "Approved Sales")
@@ -255,23 +264,43 @@ export function shopKpi(shop: Shop, orders: RepairOrder[]): ShopKpi {
   for (const o of orders) {
     if (!isCountedRO(o)) continue;
     roCount++;
-    // ex-tax revenue
+    // ex-tax revenue — RO-level totals (o.partsSales etc.) include ALL jobs,
+    // so use them as-is for revenue (discountTotal applies across the whole RO).
     revenueCents += (o.laborSales + o.partsSales + o.subletSales + o.feeTotal - o.discountTotal);
     subletSalesCents += o.subletSales;
-    laborSalesCents += o.laborSales;
-    partsSalesCents += o.partsSales;
     discountCents += o.discountTotal;
     for (const j of o.jobs) {
       totalJobs++;
       // AWRO counts every job presented to the customer, regardless of approval.
       presentedDollarsCents += j.subtotal || 0;
       if (j.authorized) approvedJobs++;
-      // Only count parts cost and labor hours on AUTHORIZED jobs. Declined-job parts
-      // never get billed to the customer and never get sold, so they don't belong in cost.
+      // Only count parts/labor for AUTHORIZED jobs.
+      // IMPORTANT: use p.retail (not o.partsSales) for parts sales so the GP%
+      // denominator matches the authorized-only cost denominator. o.partsSales
+      // is the RO-level sum which includes declined-job parts and inflates
+      // the denominator, making parts GP% appear ~10–15 pts lower than reality.
       if (!j.authorized) continue;
       approvedDollarsCents += j.subtotal || 0;
-      for (const p of j.parts) partsCostCents += p.cost * p.quantity;
+      for (const p of j.parts) {
+        partsCostCents  += p.cost   * p.quantity;
+        partsSalesCents += p.retail * p.quantity;
+      }
+      laborSalesCents += j.laborTotal || 0;
       laborHours += j.laborHours || 0;
+      // Detect comeback / internal-warranty work.
+      // Pattern covers "comeback", "come back", "warranty", "goodwill", "redo",
+      // "rework", "no charge" in the job name, or a category of "Warranty" or
+      // "Internal". Complimentary inspections (isFreeByDesign) are excluded —
+      // they are also labor-hours-with-no-revenue but are a different phenomenon.
+      if (!isFreeByDesign(j.name, j.jobCategoryName)) {
+        const n = j.name.toLowerCase(), cat = (j.jobCategoryName ?? '').toLowerCase();
+        const isCb = /\b(come.?back|warranty|goodwill|redo\b|rework|no[ -]charge)\b/.test(n)
+          || cat === 'warranty' || cat === 'internal';
+        if (isCb) {
+          comebackJobCount++;
+          comebackHourCount += j.laborHours || 0;
+        }
+      }
     }
   }
   const revenue = c2d(revenueCents);
@@ -309,6 +338,9 @@ export function shopKpi(shop: Shop, orders: RepairOrder[]): ShopKpi {
     awro: roCount ? presentedDollars / roCount : 0,
     presentedDollars,
     approvedDollars: c2d(approvedDollarsCents),
+    comebackJobs: comebackJobCount,
+    comebackHours: Math.round(comebackHourCount * 10) / 10,
+    effectiveLaborRate: laborHours > 0 ? laborSales / laborHours : 0,
   };
 }
 

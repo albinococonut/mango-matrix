@@ -2,17 +2,22 @@
 // and PnLReview rolling files (Aug 2024 – Apr 2026).
 // 2024 Jan-Jul: from individual shop "Profit and Loss by Month" xlsx files.
 // 2024 Aug-Dec: from those same monthly files (more accurate than PnLReview).
-// 2025-2026:    from PnLReview rolling 12-month files.
+// 2025-Apr 2026: from PnLReview rolling 12-month files.
+// May-Jul 2026: from per-entity QB "Profit and Loss by Month" xlsx (Marketing expense.xlsx).
+//               Shops 004 and 009 also back-filled Jan-Jul 2026 from the same file.
 //
 // GL codes:
-//   6814 = Google Ads
-//   6819 = Advertising & Marketing (includes postcards, direct mail, other)
-//   6812 = Listing Fees
+//   6814 = Google Ads + LSA (Local Services Ads) — intent capture, near-instantaneous lag
+//   6819 = Advertising & Marketing — postcards (UpSwell direct mail) + other advertising; demand-gen, 2–6 wk lag
+//   6812 = Listing Fees — referral network placement: RepairPal, Costco Auto, AAA AAR;
+//          fixed monthly cost, no decay curve; analyze as cohort (GP/RO + retention), not adstock
+//   6816 = SEO fees — $1,000/shop/month flat retainer; tracked from Jan 2026 onward
 
 export interface MonthSpend {
   googleAds: number;   // 6814
   advertising: number; // 6819 — postcards + other
   listing: number;     // 6812
+  seo?: number;        // 6816 — SEO retainer ($1,000/shop/mo); present Jan 2026+
 }
 
 export interface PostcardCampaign {
@@ -21,6 +26,10 @@ export interface PostcardCampaign {
   inHomeEnd?: string;
   pieces: number;
 }
+
+// Last month for which complete P&L spend data has been imported.
+// Update this after each new QB export is imported.
+export const MARKETING_DATA_CUTOFF = '2026-07';
 
 // Monthly spend by shop. Keys are YYYY-MM.
 // Shops 004 and 009 had no marketing spend in the covered periods.
@@ -51,10 +60,13 @@ export const MONTHLY_SPEND: Record<string, Record<string, MonthSpend>> = {
     '2025-10': { googleAds: 9893, advertising:  1785, listing:  417 },
     '2025-11': { googleAds: 10088, advertising: 4991, listing:  417 },
     '2025-12': { googleAds: 4835, advertising:  3707, listing:  417 },
-    '2026-01': { googleAds: 4955, advertising:  2588, listing:  417 },
-    '2026-02': { googleAds: 4979, advertising:  3909, listing:  417 },
-    '2026-03': { googleAds: 4280, advertising:  3780, listing:  417 },
-    '2026-04': { googleAds: 4653, advertising:  5077, listing:  417 },
+    '2026-01': { googleAds: 4955, advertising:  2588, listing:  417, seo: 1000 },
+    '2026-02': { googleAds: 4979, advertising:  3909, listing:  417, seo: 1000 },
+    '2026-03': { googleAds: 4280, advertising:  3780, listing:  417, seo: 1000 },
+    '2026-04': { googleAds: 4653, advertising:  5077, listing:  417, seo: 1000 },
+    '2026-05': { googleAds: 5126, advertising:  1883, listing:  667, seo: 1000 },
+    '2026-06': { googleAds: 6286, advertising:  5184, listing:  667, seo: 1000 },
+    '2026-07': { googleAds: 5687, advertising:  3432, listing:  667, seo: 1000 },
   },
   '002': {
     '2024-01': { googleAds: 3622, advertising:  6329, listing:  667 },
@@ -81,10 +93,13 @@ export const MONTHLY_SPEND: Record<string, Record<string, MonthSpend>> = {
     '2025-10': { googleAds: 6105, advertising:  1391, listing:  584 },
     '2025-11': { googleAds: 5088, advertising:  5448, listing:  584 },
     '2025-12': { googleAds: 5363, advertising:  1126, listing:  584 },
-    '2026-01': { googleAds: 5654, advertising:  2887, listing:  584 },
-    '2026-02': { googleAds: 5684, advertising:  3142, listing:  584 },
-    '2026-03': { googleAds: 5423, advertising:  4029, listing:  584 },
-    '2026-04': { googleAds: 5922, advertising:  1564, listing:  584 },
+    '2026-01': { googleAds: 5654, advertising:  2887, listing:  584, seo: 1000 },
+    '2026-02': { googleAds: 5684, advertising:  3142, listing:  584, seo: 1000 },
+    '2026-03': { googleAds: 5423, advertising:  4029, listing:  584, seo: 1000 },
+    '2026-04': { googleAds: 5922, advertising:  1564, listing:  584, seo: 1000 },
+    '2026-05': { googleAds: 5710, advertising:  1435, listing:  667, seo: 1000 },
+    '2026-06': { googleAds: 8501, advertising:  5123, listing:  667, seo: 1000 },
+    '2026-07': { googleAds: 6497, advertising:  1846, listing:  667, seo: 1000 },
   },
   '003': {
     '2024-01': { googleAds: 3599, advertising:  3138, listing: 0 },
@@ -111,10 +126,23 @@ export const MONTHLY_SPEND: Record<string, Record<string, MonthSpend>> = {
     '2025-10': { googleAds: 6152, advertising:  1259, listing: 0 },
     '2025-11': { googleAds: 5214, advertising:  5837, listing: 0 },
     '2025-12': { googleAds: 5209, advertising:  2763, listing: 0 },
-    '2026-01': { googleAds: 6146, advertising:   951, listing: 0 },
-    '2026-02': { googleAds: 5650, advertising:  4180, listing: 0 },
-    '2026-03': { googleAds: 5488, advertising:  2620, listing: 0 },
-    '2026-04': { googleAds: 5828, advertising:  3409, listing: 0 },
+    '2026-01': { googleAds: 6146, advertising:   951, listing: 0, seo: 1000 },
+    '2026-02': { googleAds: 5650, advertising:  4180, listing: 0, seo: 1000 },
+    '2026-03': { googleAds: 5488, advertising:  2620, listing: 0, seo: 1000 },
+    '2026-04': { googleAds: 5828, advertising:  3409, listing: 0, seo: 1000 },
+    '2026-05': { googleAds: 5356, advertising:   976, listing: 667, seo: 1000 },
+    '2026-06': { googleAds: 7844, advertising:  2990, listing: 667, seo: 1000 },
+    '2026-07': { googleAds: 6336, advertising:  1850, listing: 667, seo: 1000 },
+  },
+  '004': {
+    // Four Squared LLC — Jan-Jul 2026 from QB P&L by month (Marketing expense.xlsx)
+    '2026-01': { googleAds: 4175, advertising:   825, listing: 667, seo: 1000 },
+    '2026-02': { googleAds: 2959, advertising:  2913, listing: 667, seo: 1000 },
+    '2026-03': { googleAds: 4941, advertising:  3122, listing: 667, seo: 1000 },
+    '2026-04': { googleAds: 4192, advertising:   854, listing: 667, seo: 1000 },
+    '2026-05': { googleAds: 4186, advertising:  1052, listing: 667, seo: 1000 },
+    '2026-06': { googleAds: 4893, advertising:  2398, listing: 667, seo: 1000 },
+    '2026-07': { googleAds: 5369, advertising:   399, listing: 667, seo: 1000 },
   },
   '005': {
     // Opened Apr 2024 — Jan-Mar are zeroes
@@ -139,10 +167,13 @@ export const MONTHLY_SPEND: Record<string, Record<string, MonthSpend>> = {
     '2025-10': { googleAds: 3737, advertising:  4047, listing: 0 },
     '2025-11': { googleAds: 2561, advertising:  4982, listing: 0 },
     '2025-12': { googleAds: 3026, advertising:  1771, listing: 0 },
-    '2026-01': { googleAds: 2919, advertising:  3036, listing: 0 },
-    '2026-02': { googleAds: 2395, advertising:  2493, listing: 0 },
-    '2026-03': { googleAds: 2938, advertising:  2444, listing: 0 },
-    '2026-04': { googleAds: 3419, advertising:  2483, listing: 0 },
+    '2026-01': { googleAds: 2919, advertising:  3036, listing: 0, seo: 1000 },
+    '2026-02': { googleAds: 2395, advertising:  2493, listing: 0, seo: 1000 },
+    '2026-03': { googleAds: 2938, advertising:  2444, listing: 0, seo: 1000 },
+    '2026-04': { googleAds: 3419, advertising:  2483, listing: 0, seo: 1000 },
+    '2026-05': { googleAds: 3068, advertising:  3024, listing: 667, seo: 1000 },
+    '2026-06': { googleAds: 3363, advertising:  3255, listing: 667, seo: 1000 },
+    '2026-07': { googleAds: 3905, advertising:  1276, listing: 667, seo: 1000 },
   },
   '006': {
     '2024-01': { googleAds: 2761, advertising:  4653, listing:  667 },
@@ -169,10 +200,13 @@ export const MONTHLY_SPEND: Record<string, Record<string, MonthSpend>> = {
     '2025-10': { googleAds: 4601, advertising:  3985, listing:  917 },
     '2025-11': { googleAds: 4131, advertising:  1382, listing:  917 },
     '2025-12': { googleAds: 5066, advertising:   429, listing:  917 },
-    '2026-01': { googleAds: 4492, advertising:  1237, listing:  917 },
-    '2026-02': { googleAds: 5438, advertising:  2120, listing:  917 },
-    '2026-03': { googleAds: 6149, advertising:  1626, listing:  917 },
-    '2026-04': { googleAds: 5374, advertising:   837, listing:  917 },
+    '2026-01': { googleAds: 4492, advertising:  1237, listing:  917, seo: 1000 },
+    '2026-02': { googleAds: 5438, advertising:  2120, listing:  917, seo: 1000 },
+    '2026-03': { googleAds: 6149, advertising:  1626, listing:  917, seo: 1000 },
+    '2026-04': { googleAds: 5374, advertising:   837, listing:  917, seo: 1000 },
+    '2026-05': { googleAds: 4336, advertising:  1043, listing:  667, seo: 1000 },
+    '2026-06': { googleAds: 6504, advertising:  2620, listing:  667, seo: 1000 },
+    '2026-07': { googleAds: 5734, advertising:  1210, listing:  667, seo: 1000 },
   },
   '007': {
     // Opened Oct 2024 — first meaningful spend in Dec 2024
@@ -189,10 +223,23 @@ export const MONTHLY_SPEND: Record<string, Record<string, MonthSpend>> = {
     '2025-10': { googleAds: 3128, advertising:  5209, listing: 0 },
     '2025-11': { googleAds: 2829, advertising:  1681, listing: 0 },
     '2025-12': { googleAds: 2810, advertising:     0, listing: 0 },
-    '2026-01': { googleAds: 3527, advertising:   537, listing: 0 },
-    '2026-02': { googleAds: 2901, advertising:   790, listing: 0 },
-    '2026-03': { googleAds: 3938, advertising:  6444, listing: 0 },
-    '2026-04': { googleAds: 3353, advertising:   682, listing: 0 },
+    '2026-01': { googleAds: 3527, advertising:   537, listing: 0, seo: 1000 },
+    '2026-02': { googleAds: 2901, advertising:   790, listing: 0, seo: 1000 },
+    '2026-03': { googleAds: 3938, advertising:  6444, listing: 0, seo: 1000 },
+    '2026-04': { googleAds: 3353, advertising:   682, listing: 0, seo: 1000 },
+    '2026-05': { googleAds: 3456, advertising:  2387, listing: 667, seo: 1000 },
+    '2026-06': { googleAds: 4264, advertising:  2880, listing: 667, seo: 1000 },
+    '2026-07': { googleAds: 4023, advertising:  1637, listing: 667, seo: 1000 },
+  },
+  '009': {
+    // Nine Squared LLC — Jan-Jul 2026 from QB P&L by month (Marketing expense.xlsx)
+    '2026-01': { googleAds: 2110, advertising:  2949, listing: 667, seo: 1000 },
+    '2026-02': { googleAds: 2796, advertising:  2828, listing: 667, seo: 1000 },
+    '2026-03': { googleAds: 3996, advertising:  1732, listing: 667, seo: 1000 },
+    '2026-04': { googleAds: 4719, advertising:   905, listing: 667, seo: 1000 },
+    '2026-05': { googleAds: 3979, advertising:  2564, listing: 667, seo: 1000 },
+    '2026-06': { googleAds: 5202, advertising:  4264, listing: 667, seo: 1000 },
+    '2026-07': { googleAds: 5226, advertising:   833, listing: 667, seo: 1000 },
   },
 };
 
@@ -220,23 +267,37 @@ export const POSTCARD_CAMPAIGNS: PostcardCampaign[] = [
   { name: 'Jul 2026 #141',      inHomeStart: '2026-08-13', inHomeEnd: '2026-08-17', pieces: 21064 },
 ];
 
-/** All YYYY-MM keys present in MONTHLY_SPEND across any shop, sorted. */
+/** All YYYY-MM keys present in MONTHLY_SPEND across any shop, sorted.
+ *  Always extends through the current calendar month so NC and Upswell charts
+ *  show recent data even when P&L spend hasn't been imported for those months. */
 export function allMonthlyMonths(): string[] {
   const s = new Set<string>();
   for (const shopData of Object.values(MONTHLY_SPEND)) {
     for (const m of Object.keys(shopData)) s.add(m);
+  }
+  const now = new Date();
+  const curYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const sorted = [...s].sort();
+  let cursor = sorted[sorted.length - 1];
+  while (cursor < curYM) {
+    const [y, mo] = cursor.split('-').map(Number);
+    const next = mo === 12
+      ? `${y + 1}-01`
+      : `${y}-${String(mo + 1).padStart(2, '0')}`;
+    s.add(next);
+    cursor = next;
   }
   return [...s].sort();
 }
 
 /** Chain-wide total spend for a given month. */
 export function chainSpendForMonth(month: string): MonthSpend {
-  let googleAds = 0, advertising = 0, listing = 0;
+  let googleAds = 0, advertising = 0, listing = 0, seo = 0;
   for (const shopData of Object.values(MONTHLY_SPEND)) {
     const d = shopData[month];
-    if (d) { googleAds += d.googleAds; advertising += d.advertising; listing += d.listing; }
+    if (d) { googleAds += d.googleAds; advertising += d.advertising; listing += d.listing; seo += d.seo ?? 0; }
   }
-  return { googleAds, advertising, listing };
+  return { googleAds, advertising, listing, seo };
 }
 
 /** Per-shop spend for a given month (zeros for shops with no data). */

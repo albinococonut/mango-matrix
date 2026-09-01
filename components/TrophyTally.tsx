@@ -22,13 +22,15 @@ import { TrophyIcon } from './Trophy';
  */
 function trophyPhase(now: Date = new Date()): 'pending' | 'awarded' {
   const mt = toZonedTime(now, 'America/Denver');
-  const dow = mt.getDay();      // 0 = Sun, 1 = Mon, 2 = Tue
+  const dow = mt.getDay();      // 0=Sun, 1=Mon, 2=Tue, 5=Fri, 6=Sat
   const minutes = mt.getHours() * 60 + mt.getMinutes();
-  // Monday from 6 PM onward → awarded
-  if (dow === 1 && minutes >= 18 * 60) return 'awarded';
-  // Tuesday before 7:30 AM → still in the post-ceremony window
-  if (dow === 2 && minutes < 7 * 60 + 30) return 'awarded';
-  // Everything else (Tue 7:30 AM → next Mon 6 PM) → pending
+  // Awarded window: Fri 6 PM → Tue 7:30 AM MT (trophy ceremony is Friday evening)
+  if (dow === 5 && minutes >= 18 * 60) return 'awarded'; // Fri 6 PM onward
+  if (dow === 6) return 'awarded';                        // All Saturday
+  if (dow === 0) return 'awarded';                        // All Sunday
+  if (dow === 1) return 'awarded';                        // All Monday
+  if (dow === 2 && minutes < 7 * 60 + 30) return 'awarded'; // Tue before 7:30 AM
+  // Competing window: Tue 7:30 AM → Fri 6 PM
   return 'pending';
 }
 
@@ -39,7 +41,7 @@ interface ComebackRow { shopNum: string; shopName: string; comebackJobs: number 
 interface GoogleRow { shopNum: string; shopName: string; fiveStar: number; recentTotal: number }
 interface ConversionRow { shopNum: string; shopName: string; bookedRatePct: number }
 
-type Category = 'revenue' | 'gp' | 'tech' | 'rebook' | 'comebacks' | 'reviews' | 'conversion' | 'todo';
+type Category = 'revenue' | 'gp' | 'tech' | 'rebook' | 'comebacks' | 'reviews' | 'conversion' | 'todo' | 'sales_eff';
 // Pending Trophies uses Mon→today MT only. Re-Books and Call Conversion are
 // now fetched from dedicated week-to-date endpoints (cron-derived from the
 // SAME trailing-7 raw fetches, no extra Tekmetric/WhatConverts cost). Reviews
@@ -53,8 +55,10 @@ const CATEGORIES: { key: Category; label: string }[] = [
   { key: 'comebacks',       label: 'Fewest Comebacks' },
   { key: 'conversion',      label: 'Highest Call Conversion' },
   { key: 'todo',            label: 'Most To-Do Items Checked Off' },
+  { key: 'sales_eff',       label: 'Sales Effectiveness' },
 ];
 interface TodoRecRow { shopNum: string; shopName: string; count: number }
+interface SalesEffRow { shopNum: string; shopName: string; avgScore: number; totalGraded: number }
 
 export default function TrophyTally() {
   const [metrics, setMetrics] = useState<ShopMetrics[] | null>(null);
@@ -64,6 +68,7 @@ export default function TrophyTally() {
   const [reviews, setReviews] = useState<GoogleRow[] | null>(null);
   const [conversion, setConversion] = useState<ConversionRow[] | null>(null);
   const [todoRec, setTodoRec] = useState<TodoRecRow[] | null>(null);
+  const [salesEff, setSalesEff] = useState<SalesEffRow[] | null>(null);
   const [selectedShop, setSelectedShop] = useState<string | null>(null);
   // Phase ticks each minute so the page flips at the 7:30 AM / 6 PM Mon
   // boundaries without a manual refresh.
@@ -91,10 +96,11 @@ export default function TrophyTally() {
     safe<any>('/api/extras?view=google-ratings').then(d => setReviews(d?.shops || []));
     safe<any>('/api/extras?view=booked-rate&wtd=1').then(d => setConversion(d?.shops || []));
     safe<any>('/api/extras?view=todo-recoveries&window=this_week').then(d => setTodoRec(d?.shops || []));
+    safe<any>('/api/extras?view=sales-effectiveness').then(d => setSalesEff(d?.shops || []));
   }, []);
 
   const rankings = useMemo(() => {
-    const r: Record<Category, string[]> = { revenue: [], gp: [], tech: [], rebook: [], comebacks: [], reviews: [], conversion: [], todo: [] };
+    const r: Record<Category, string[]> = { revenue: [], gp: [], tech: [], rebook: [], comebacks: [], reviews: [], conversion: [], todo: [], sales_eff: [] };
     if (metrics)    r.revenue   = [...metrics].sort((a, b) => b.revenue - a.revenue).map(x => x.shopNum);
     if (metrics)    r.gp        = [...metrics].sort((a, b) => b.gpPct - a.gpPct).map(x => x.shopNum);
     if (techs)      r.tech      = [...techs].sort((a, b) => b.efficiency - a.efficiency).map(x => x.shopNum);
@@ -110,8 +116,9 @@ export default function TrophyTally() {
     // To-Do recoveries — rank DESC by count, drop shops with 0 so a fully
     // empty cohort doesn't back into bronze.
     if (todoRec) r.todo = [...todoRec].filter(x => (x.count ?? 0) > 0).sort((a, b) => (b.count ?? 0) - (a.count ?? 0)).map(x => x.shopNum);
+    if (salesEff) r.sales_eff = [...salesEff].filter(x => (x.totalGraded ?? 0) > 0).sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0)).map(x => x.shopNum);
     return r;
-  }, [metrics, techs, fbr, comebacks, reviews, conversion, todoRec]);
+  }, [metrics, techs, fbr, comebacks, reviews, conversion, todoRec, salesEff]);
 
   const trophies = useMemo(() => {
     const out: Record<string, { gold: number; silver: number; bronze: number; by: Partial<Record<Category, 1 | 2 | 3>> }> = {};

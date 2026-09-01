@@ -46,9 +46,8 @@ export default function LineChartBlock({
     return row;
   });
   return (
-    <div style={{ height }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={merged} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={merged} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
           <CartesianGrid stroke="#F0F1F3" strokeDasharray="2 5" vertical={false} />
           <XAxis
             dataKey="x"
@@ -99,7 +98,6 @@ export default function LineChartBlock({
             />
           ))}
         </LineChart>
-      </ResponsiveContainer>
-    </div>
+    </ResponsiveContainer>
   );
 }

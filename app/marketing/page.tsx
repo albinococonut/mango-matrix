@@ -7,10 +7,14 @@ import MarketingDashboard from '@/components/concept2/MarketingDashboard';
 export const dynamic = 'force-dynamic';
 
 const SECTIONS = [
-  { id: 'new-customers',  label: 'New Customers' },
-  { id: 'spend',          label: 'Marketing Spend' },
-  { id: 'postcards',      label: 'Postcard Campaigns' },
-  { id: 'attribution',    label: 'Attribution (coming soon)' },
+  { id: 'channel-roi',       label: 'Return on Marketing' },
+  { id: 'new-customers',     label: 'New Customers' },
+  { id: 'spend',             label: 'Marketing Spend' },
+  { id: 'referral-cohort',   label: 'Cohort Analysis' },
+  { id: 'dm-shop-roas',      label: 'Direct Mail by Shop' },
+  { id: 'lag-model',         label: 'Lag Model' },
+  { id: 'attribution',       label: 'Cost per New Customer' },
+  { id: 'channel-attribution', label: 'Channel Attribution' },
 ];
 
 export default async function MarketingPage() {

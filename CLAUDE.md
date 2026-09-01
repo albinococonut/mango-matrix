@@ -2,7 +2,8 @@
 
 This is the **Mango Matrix** dashboard (Next.js 14 App Router) for Mango
 Automotive — an 8-shop automotive repair chain. Live at
-<https://mango-matrix.vercel.app>.
+<https://matrix.mangoautomotive.com> (custom domain — Vercel alias is
+<https://mango-matrix.vercel.app>).
 
 ## ⚠ Critical: working-directory drift
 
@@ -57,7 +58,8 @@ non-technical and won't think to do it themselves.
 
 ## Live site
 
-- Production: <https://mango-matrix.vercel.app>
+- Production (custom domain): <https://matrix.mangoautomotive.com>
+- Production (Vercel alias): <https://mango-matrix.vercel.app>
 - Vercel project: `mango-matrix` under team `jannepacific-6328s-projects`
 
 ## Architecture (high-level)
@@ -85,3 +87,34 @@ non-technical and won't think to do it themselves.
   `/Users/theminiqueenbook/Desktop/Pink Pill`. If you see references to
   Pink Pill or Supabase `pledges` table, that's the OTHER project — don't
   mix them up.
+
+## Working with the Mango Intranet instance
+
+A second Claude Code instance manages the Mango Intranet
+(`~/Desktop/MangoIntranet`, intranet.mangoautomotive.com), which consumes
+this app's ticker API and mirrors its design language. **Read
+`INTRANET_INTEGRATION.md` before changing anything under `/api/ticker`,
+`lib/ticker.ts`, `middleware.ts` public routes, or `/admin/ticker`** — it
+lists the exact cross-repo contracts. When you change a shared contract,
+say so explicitly in your reply so Jesse can relay it.
+
+## Daily Ticker system (added 2026-07-28)
+
+The intranet's scrolling ticker (intranet.mangoautomotive.com) reads from
+this app. Full spec: `TICKER_SYSTEM.md` in this repo.
+
+- Storage: Upstash Redis via `lib/cache.ts` — keys `ticker:override`
+  (admin override row) and `ticker:history` (last 50 lines). No Postgres.
+- API: `app/api/ticker/route.ts` (public GET; POST with Bearer
+  TICKER_CRON_SECRET to publish; PUT executive-only to manage the
+  override; `?context=1` with the secret returns generation context).
+  `/api/ticker` is exempted in `middleware.ts`.
+- Admin UI: `/admin/ticker` (executive role only) — Ticker Override form:
+  enable toggle, message (shown verbatim, never rewritten), optional
+  start/end schedule, priority, live preview. Active override always wins
+  over the generated ticker; when disabled/expired the automatic ticker
+  resumes.
+- Generation: a Claude scheduled task on this Mac
+  (`mango-matrix-daily-ticker`, 6:30 AM daily) follows TICKER_SYSTEM.md:
+  GET context → compose one line → POST. Secret lives in
+  `.env.ticker.local` (gitignored) and in Vercel prod env.

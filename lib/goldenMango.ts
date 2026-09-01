@@ -18,6 +18,7 @@ import { readCache, writeCache } from '@/lib/cache';
 import { SHOPS, SHOP_BY_TEKMETRIC_ID } from '@/lib/shops';
 import { recoveredCountsByWindow } from '@/lib/recoveredLedger';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import type { WeekRankings } from '@/lib/trophyHistory';
 
 export interface GoldenMango {
   periodStart: string;        // ISO of the Friday 18:00 MT this crown is locked for
@@ -37,9 +38,20 @@ export interface GoldenMango {
   tiedShopNames: string[];     // all co-champions (length 1 when no tie)
   standings: Array<{ shopNum: string; shopName: string; score: number; rank: number }>;
   categoryVersion?: string;    // tracks the category-set rules used to compute this crown — bump on rule changes so stale caches get re-computed by the self-heal handler
+  categoryRankings?: WeekRankings; // per-category sorted shop arrays, added alongside standings
 }
 
 const CACHE_KEY = 'golden_mango';
+const TROPHY_WEEKS_KEY = 'trophy_recent_weeks';
+const TROPHY_WEEKS_MAX = 8;
+
+export interface WeeklyTrophyEntry {
+  weekStart: string;    // YYYY-MM-DD Monday of the crowned week
+  periodStart: string;  // ISO of the Friday crown boundary
+  champion: string;     // shopNum
+  rankings: WeekRankings;
+}
+
 // Permanent "last successfully computed crown" mirror — never period-checked.
 // Whenever maybeCrown writes the period-stamped CACHE_KEY, it also writes
 // this key. The read handler falls back to it when CACHE_KEY is missing,
@@ -142,7 +154,7 @@ interface Standing { shopNum: string; shopName: string; score: number; gold: num
  *                        with the top two techs in the chain gets BOTH gold
  *                        and silver in this category, same as the Tally.
  */
-async function computeStandings(period?: Date): Promise<Standing[]> {
+async function computeStandings(period?: Date): Promise<{ standings: Standing[]; categoryRankings: WeekRankings }> {
   // The crown represents the work week ENDING at the Friday-6pm-MT period
   // boundary. Window = Monday-of-period's-week → period itself. Without this,
   // calling computeStandings after the boundary rolled over (e.g. Monday
@@ -304,11 +316,27 @@ async function computeStandings(period?: Date): Promise<Standing[]> {
   // map already dedupes by shop).
   award([...todoByShop].map(([shopNum, v]) => ({ shopNum, v })));
 
+  // Per-category rankings for the context API — mirrors the order award() uses.
+  // Tech dedupes by shop (same heuristic as the backfill script: first occurrence wins).
+  const seenTechShops = new Set<string>();
+  const categoryRankings: WeekRankings = {
+    revenue: [...kpi.byShop].sort((a, b) => b.revenue - a.revenue).map(s => s.shopNum),
+    gp: [...kpi.byShop].sort((a, b) => b.gpPct - a.gpPct).map(s => s.shopNum),
+    tech: topTechRanking.reduce<string[]>((acc, { shopNum }) => {
+      if (!seenTechShops.has(shopNum)) { seenTechShops.add(shopNum); acc.push(shopNum); }
+      return acc;
+    }, []),
+    comebacks: [...comebacksByShop.entries()].sort((a, b) => a[1] - b[1]).map(([n]) => n),
+  };
+
   // Champion order: most gold, then most silver, then most bronze. Revenue is
   // only a final display tiebreak for the lower ranks — it does NOT decide the
   // crown (a true gold/silver/bronze tie at the top is declared a shared title).
-  return [...base.values()].sort((a, b) =>
-    b.gold - a.gold || b.silver - a.silver || b.bronze - a.bronze || b.revenue - a.revenue);
+  return {
+    standings: [...base.values()].sort((a, b) =>
+      b.gold - a.gold || b.silver - a.silver || b.bronze - a.bronze || b.revenue - a.revenue),
+    categoryRankings,
+  };
 }
 
 /**
@@ -351,7 +379,7 @@ export async function maybeCrown(now: Date = new Date()): Promise<string> {
   // Pass `period` so the standings reflect the work week ENDING at that
   // Friday boundary — not "now's this_week" which on Monday morning would
   // give the crown to whichever shop happens to have opened first today.
-  const standings = await computeStandings(period);
+  const { standings, categoryRankings } = await computeStandings(period);
   if (standings.length === 0) return 'golden mango: no standings computed (no RO data)';
   const winner = standings[0];
   // Co-champions: every shop matching the leader's exact gold/silver/bronze.
@@ -392,6 +420,7 @@ export async function maybeCrown(now: Date = new Date()): Promise<string> {
     isTie,
     tiedShopNames,
     standings: standings.map((s, i) => ({ shopNum: s.shopNum, shopName: s.shopName, score: s.score, rank: i + 1 })),
+    categoryRankings,
     categoryVersion: CURRENT_CATEGORY_VERSION,
   };
   await writeCache(CACHE_KEY, payload);
@@ -404,8 +433,26 @@ export async function maybeCrown(now: Date = new Date()): Promise<string> {
   const isLegitimateLock = sinceBoundaryMs >= 0 && sinceBoundaryMs < 2 * 60 * 60 * 1000;
   if (isLegitimateLock) {
     await writeCache(LATEST_KEY, payload);
+    // Append to weekly trophy history for the ticker context API.
+    const periodMtn = toZonedTime(period, CHAIN_TZ);
+    const dow = periodMtn.getDay();
+    const mondayMtn = new Date(periodMtn);
+    mondayMtn.setDate(periodMtn.getDate() - ((dow + 6) % 7));
+    mondayMtn.setHours(0, 0, 0, 0);
+    const mm = mondayMtn.getMonth() + 1;
+    const dd = mondayMtn.getDate();
+    const weekStart = `${mondayMtn.getFullYear()}-${mm < 10 ? '0' : ''}${mm}-${dd < 10 ? '0' : ''}${dd}`;
+    const weekEntry: WeeklyTrophyEntry = { weekStart, periodStart: periodISO, champion: winner.shopNum, rankings: categoryRankings };
+    const existingWeeks = (await readCache<WeeklyTrophyEntry[]>(TROPHY_WEEKS_KEY)) ?? [];
+    const deduped = existingWeeks.filter(w => w.periodStart !== periodISO);
+    await writeCache(TROPHY_WEEKS_KEY, [weekEntry, ...deduped].slice(0, TROPHY_WEEKS_MAX));
   }
   return `golden mango ${isTie ? `TIE between ${tiedShopNames.join(', ')}` : `crowned ${winner.shopName}`} (g${winner.gold}/s${winner.silver}/b${winner.bronze}) period ${periodISO.slice(0, 10)}${isNewChampion ? ' — NEW' : ' — defended'}`;
+}
+
+/** Last n weeks of trophy history from Redis, newest first. Empty if none stored yet. */
+export async function readRecentTrophyWeeks(n: number = 4): Promise<WeeklyTrophyEntry[]> {
+  return ((await readCache<WeeklyTrophyEntry[]>(TROPHY_WEEKS_KEY)) ?? []).slice(0, n);
 }
 
 /** Read the current locked champion (or null if never crowned yet). */

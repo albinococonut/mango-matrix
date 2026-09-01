@@ -415,7 +415,7 @@ export default function Concept2Employee({ role }: { role?: string }) {
         <div id="leaderboard" className="scroll-mt-6"><WeeklyLeaderboard /></div>
       </div>
       <div id="operations" className="scroll-mt-6">
-        <SectionOpener kicker="Operations" title="The Numbers Behind the Numbers" sub="Calls answered, jobs re-booked, comebacks avoided, hours billed. The unglamorous engine room of the chain." accent={INK2} />
+        <SectionOpener kicker="Operations" title="The Numbers Behind the Numbers" sub="Calls answered, jobs re-booked, comebacks avoided, hours billed. The unglamorous engine room of Mango." accent={INK2} />
         {/* Ordering matches production /employee Dashboard.tsx — Tech first,
             then loss-tracking (Comebacks, FBR), then operational levers (Reviews
             exec-only, Call Conversion, To-Do), then chain-wide comparison. */}
@@ -1122,7 +1122,7 @@ function HighestLeverage() {
         }}>
               <div className="grid grid-cols-1 md:grid-cols-[1.15fr_1fr] gap-x-8 gap-y-4 items-end">
                 <div>
-                  <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: BAD }}>Biggest leak across the chain</div>
+                  <div className="c2ui text-[12.5px] font-semibold uppercase tracking-[0.18em]" style={{ color: BAD }}>Biggest leak across Mango</div>
                   <div className="c2disp leading-none mt-2.5" style={{ color: INK, fontSize: 30, letterSpacing: '-0.025em' }}>{top.label}</div>
                   <div className="c2ui text-[12.5px] mt-2" style={{ color: INK2 }}>
                     <span className="c2disp tabular-nums font-bold" style={{ color: BAD }}>{top.weak} of 8 shops</span> below the company median this week

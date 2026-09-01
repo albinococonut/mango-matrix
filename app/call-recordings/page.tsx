@@ -10,7 +10,7 @@ export default async function CallRecordingsPage() {
   const session = await verifySession(cookies().get(COOKIE_NAME)?.value);
   if (!session) redirect('/login');
   return (
-    <ConceptShell active="call-recordings" title="Call Recordings" sub="Trailing 7 days · inbound & outbound · by shop" email={session.email}>
+    <ConceptShell active="call-recordings" title="Call Recordings" sub="Trailing 7 days · inbound & outbound · by shop" email={session.email} role={session.role}>
       <CallRecordingsSection />
     </ConceptShell>
   );

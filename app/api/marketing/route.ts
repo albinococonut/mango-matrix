@@ -8,6 +8,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readCache } from '@/lib/cache';
 import { computeAndCacheNewCustomers, MARKETING_NC_CACHE_KEY, ShopMonthNewCustomers } from '@/lib/marketingNewCustomers';
+import { readAttributionCache } from '@/lib/marketingAttribution';
+import { readRepairPalCache } from '@/lib/repairPalData';
+import { readUpswellCache } from '@/lib/upswellData';
+import { readReferralCostsCache } from '@/lib/referralCostsData';
 import {
   MONTHLY_SPEND,
   POSTCARD_CAMPAIGNS,
@@ -38,7 +42,13 @@ export async function GET(req: NextRequest) {
   }
 
   // Always return spend immediately — never block on Tekmetric
-  const cached = await readCache<ShopMonthNewCustomers[]>(MARKETING_NC_CACHE_KEY);
+  const [cached, attrCached, repairPalCached, upswellCached, referralCostsCached] = await Promise.all([
+    readCache<ShopMonthNewCustomers[]>(MARKETING_NC_CACHE_KEY),
+    readAttributionCache(),
+    readRepairPalCache(),
+    readUpswellCache(),
+    readReferralCostsCache(),
+  ]);
 
   return NextResponse.json({
     spend:             MONTHLY_SPEND,
@@ -46,6 +56,10 @@ export async function GET(req: NextRequest) {
     months:            allMonthlyMonths(),
     newCustomers:      cached ?? [],
     newCustomersReady: (cached?.length ?? 0) > 0,
+    attribution:       attrCached ?? null,
+    repairPal:         repairPalCached ?? null,
+    upswell:           upswellCached ?? null,
+    referralCosts:     referralCostsCached ?? null,
     computedAt:        new Date().toISOString(),
   });
 }

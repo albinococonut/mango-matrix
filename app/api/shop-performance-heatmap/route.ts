@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   if ((await getRole(req)) !== 'executive') {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
-  const weeks = Math.max(1, Math.min(26, Number(req.nextUrl.searchParams.get('weeks') || 12)));
+  const weeks = Math.max(1, Math.min(52, Number(req.nextUrl.searchParams.get('weeks') || 12)));
   // v6: week-end fixed to include full Sunday (was start-of-Sunday, now start-of-next-Monday).
   const cacheKey = `heatmap_v6_${weeks}w`;
   const cached = await readCache(cacheKey);
@@ -94,9 +94,10 @@ async function applyLiveCurrentWeek(payload: any) {
     const idx = payload.weeks.indexOf(curWk);
     if (idx < 0) return payload;
     const rebook: Record<string, number> = {};
-    for (const s of SHOPS) {
-      const fb = await readCache<any>(`fbr_shop_wtd_${s.num}`);
-      if (fb?.fbr && typeof fb.fbr.fbrPct === 'number') rebook[s.num] = Math.round(fb.fbr.fbrPct * 1000) / 10;
+    const fbResults = await Promise.all(SHOPS.map(s => readCache<any>(`fbr_shop_wtd_${s.num}`)));
+    for (let i = 0; i < SHOPS.length; i++) {
+      const fb = fbResults[i];
+      if (fb?.fbr && typeof fb.fbr.fbrPct === 'number') rebook[SHOPS[i].num] = Math.round(fb.fbr.fbrPct * 1000) / 10;
     }
     const conv: Record<string, number> = {};
     const br = await readCache<any>('booked_rate_week_to_date_strict');
@@ -189,9 +190,10 @@ async function compute(weeks: number, cacheKey: string) {
   const liveRebook: Record<string, number> = {};
   const liveConv: Record<string, number> = {};
   try {
-    for (const s of SHOPS) {
-      const fb = await readCache<any>(`fbr_shop_wtd_${s.num}`);
-      if (fb?.fbr) liveRebook[s.num] = Math.round((fb.fbr.fbrPct ?? 0) * 1000) / 10;
+    const fbComputeResults = await Promise.all(SHOPS.map(s => readCache<any>(`fbr_shop_wtd_${s.num}`)));
+    for (let i = 0; i < SHOPS.length; i++) {
+      const fb = fbComputeResults[i];
+      if (fb?.fbr) liveRebook[SHOPS[i].num] = Math.round((fb.fbr.fbrPct ?? 0) * 1000) / 10;
     }
     const br = await readCache<any>('booked_rate_week_to_date_strict');
     for (const sh of (br?.shops || [])) liveConv[sh.shopNum] = sh.bookedRatePct;

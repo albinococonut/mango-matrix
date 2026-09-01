@@ -16,8 +16,9 @@ import { nameFromEmail } from '@/lib/format';
 
 const MOBILE_CATEGORIES = [
   { href: '/diagnostic', label: 'Diagnostic' },
-  { href: '/review',     label: 'Weekly Review' },
-  { href: '/employee',   label: 'Employee View' },
+  { href: '/review',        label: 'Weekly Review' },
+  { href: '/admin/ticker',  label: 'Daily Ticker' },
+  { href: '/employee',      label: 'Employee View' },
   { href: '/todo',       label: 'To Do' },
   { href: '/tv',         label: 'TV' },
 ];

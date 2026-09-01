@@ -245,30 +245,32 @@ export async function checkDriftByUpdatedDate(weekStart: string): Promise<DriftR
   const w = customRange(weekStart, weekEnd);
   const orders = await rosForChain(w);
 
-  // Cutoff: Tuesday 07:00 UTC (≈ Monday 11 PM MST / Yuma time).
-  // Using an explicit UTC timestamp prevents the server's local timezone from
-  // pulling Yuma's normal Sunday-evening close activity into the diff list.
-  // weekEnd is always a Sunday; ed+1 = Monday.
-  // Originally set to Tuesday (ed+2) to avoid Tekmetric batch updates, but the
-  // per-minute frequency filter below already handles those — lowering to Monday
-  // so same-day post-close edits (Monday) are caught.
+  // Load the Friday-close snapshot so we can use it as the baseline for any
+  // ROs that were edited after close. If the snapshot exists, we get real
+  // before/after deltas instead of "No baseline".
+  const snap = await readCache<WeeklySnapshot>(SNAPSHOT_KEY(weekStart));
+  const snapByRoId = new Map<number, ROSnapshot>();
+  if (snap?.ros) {
+    for (const r of snap.ros) snapByRoId.set(r.id, r);
+  }
+
+  // Cutoff: Mon 07:00 UTC after the week ends (≈ Mon midnight MST / Yuma time).
   const [ey, em, ed] = weekEnd.split('-').map(Number);
-  const firstDayAfter = new Date(Date.UTC(ey, em - 1, ed + 1, 7)); // Mon 07:00 UTC
+  const firstDayAfter = new Date(Date.UTC(ey, em - 1, ed + 1, 7));
 
   // Count how many ROs share each updatedDate minute — Tekmetric batch-processes
   // tickets and stamps dozens of ROs within the same minute (not necessarily the
-  // exact same second). Truncate to the minute so the frequency check catches
-  // these batches even when individual seconds differ.
-  // Any minute shared by 3+ ROs is a system batch update, not a human edit.
+  // exact same second). Any minute shared by 3+ ROs is a system batch update.
   const updateFreq = new Map<string, number>();
   for (const o of orders) {
     if (!COUNTED.has(o.repairOrderStatus?.code)) continue;
-    const minKey = (o.updatedDate ?? '').slice(0, 16); // "2026-06-24T18:34"
+    const minKey = (o.updatedDate ?? '').slice(0, 16);
     updateFreq.set(minKey, (updateFreq.get(minKey) ?? 0) + 1);
   }
 
   const diffs: RODiff[] = [];
   let chainCents = 0;
+  let anySnapshotBased = false;
 
   for (const o of orders) {
     if (!COUNTED.has(o.repairOrderStatus?.code)) continue;
@@ -278,45 +280,53 @@ export async function checkDriftByUpdatedDate(weekStart: string): Promise<DriftR
     const updatedAt = new Date(o.updatedDate);
     if (updatedAt < firstDayAfter) continue;
 
-    // Skip batch system updates — 3+ tickets within the same minute is
-    // Tekmetric's automated nightly processing, not a manual post-close edit.
+    // Skip batch system updates — 3+ tickets within the same minute.
     const minKey = (o.updatedDate ?? '').slice(0, 16);
     if ((updateFreq.get(minKey) ?? 0) >= 3) continue;
 
     const meta = SHOP_BY_TEKMETRIC_ID[o.shopId];
     if (!meta) continue;
 
+    const snapRO = snapByRoId.get(o.id);
+    const revBefore  = snapRO ? c2d(snapRO.revenueCents) : 0;
+    const revAfter   = c2d(rev);
+    const hasDelta   = !!snapRO;
+    if (hasDelta) anySnapshotBased = true;
+
     diffs.push({
       roId: o.id,
       roNumber: o.repairOrderNumber,
       shopNum: meta.num,
       shopName: meta.name,
-      revenueBefore: 0,
-      revenueAfter: c2d(rev),
-      delta: 0,
-      statusBefore: '',
+      revenueBefore: revBefore,
+      revenueAfter: revAfter,
+      delta: hasDelta ? revAfter - revBefore : 0,
+      statusBefore: snapRO?.status ?? '',
       statusAfter: o.repairOrderStatus.code,
       updatedAt: o.updatedDate,
+      breakdownBefore: snapRO?.breakdown
+        ? { labor: c2d(snapRO.breakdown.labor), parts: c2d(snapRO.breakdown.parts), sublet: c2d(snapRO.breakdown.sublet), fee: c2d(snapRO.breakdown.fee), discount: c2d(snapRO.breakdown.discount) }
+        : undefined,
       breakdownAfter: { labor: c2d(o.laborSales), parts: c2d(o.partsSales), sublet: c2d(o.subletSales), fee: c2d(o.feeTotal), discount: c2d(o.discountTotal) },
     });
   }
 
-  // Sort by most recently updated first
   diffs.sort((a, b) => new Date(b.updatedAt!).getTime() - new Date(a.updatedAt!).getTime());
 
   const now = new Date().toISOString();
   const report: DriftReport = {
     weekStart,
-    snappedAt: now,
+    snappedAt: snap?.snappedAt ?? now,
     checkedAt: now,
-    chainRevenueBefore: 0,
+    chainRevenueBefore: snap?.chainRevenue ?? 0,
     chainRevenueAfter: c2d(chainCents),
-    chainDelta: 0,
+    chainDelta: snap ? c2d(chainCents) - snap.chainRevenue : 0,
     diffs,
-    snapshotBased: false,
+    // Mark snapshot-based when at least one diff had a real baseline from the Friday snap.
+    snapshotBased: anySnapshotBased,
   };
 
-  await writeCache(DRIFT_KEY(weekStart), report, { ttlSeconds: 30 * 60 }); // 30-min cache (no snapshot baseline)
+  await writeCache(DRIFT_KEY(weekStart), report, { ttlSeconds: 30 * 60 });
   return report;
 }
 

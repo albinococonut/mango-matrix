@@ -70,23 +70,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
 
-  // Only show tickets from last week — don't go further back for now.
-  const lastWeek = recentWeekStarts(1);
-  const weekFilter = lastWeek[0];
+  // Accept ?weekStart=YYYY-MM-DD to support back-navigation on the Review page.
+  // Defaults to last completed week.
+  const param = req.nextUrl.searchParams.get('weekStart');
+  const weekFilter = param && /^\d{4}-\d{2}-\d{2}$/.test(param) ? param : recentWeekStarts(1)[0];
+  const weekArr = [weekFilter];
 
   let entries = await getDriftLog();
 
-  // Seed last week in the background (or await if log is empty).
+  // Seed the requested week in the background (or await if log is empty for it).
   if (entries.filter(e => e.weekStart === weekFilter).length === 0) {
-    await seedFromSnapshots(lastWeek);
-    await seedFromLiveScan(lastWeek);
+    await seedFromSnapshots(weekArr);
+    await seedFromLiveScan(weekArr);
     entries = await getDriftLog();
   } else {
-    // Run snapshot seeder first so it can upgrade any existing non-snapshot
-    // entries before the live scan runs (avoids a race where updatedDate scan
-    // seeds an entry as snapshotBased:false and then the snapshot data is ignored).
-    seedFromSnapshots(lastWeek)
-      .then(() => seedFromLiveScan(lastWeek))
+    seedFromSnapshots(weekArr)
+      .then(() => seedFromLiveScan(weekArr))
       .catch(() => {});
   }
 
@@ -98,20 +97,21 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ entries: sorted });
 }
 
-// Force-refresh: clears pending entries for last week and re-scans Tekmetric.
+// Force-refresh: clears pending entries for the requested week and re-scans Tekmetric.
 export async function POST(req: NextRequest) {
   if ((await getRole(req)) !== 'executive') {
     return NextResponse.json({ error: 'executive role required' }, { status: 403 });
   }
 
-  const lastWeek = recentWeekStarts(1);
-  const weekFilter = lastWeek[0];
+  const param = req.nextUrl.searchParams.get('weekStart');
+  const weekFilter = param && /^\d{4}-\d{2}-\d{2}$/.test(param) ? param : recentWeekStarts(1)[0];
+  const weekArr = [weekFilter];
 
   // Clear pending entries so the re-scan starts clean (preserves approved/rejected).
-  await clearPendingEntriesForWeeks(lastWeek);
+  await clearPendingEntriesForWeeks(weekArr);
 
-  await seedFromSnapshots(lastWeek);
-  const added = await seedFromLiveScan(lastWeek);
+  await seedFromSnapshots(weekArr);
+  const added = await seedFromLiveScan(weekArr);
 
   const entries = await getDriftLog();
   const filtered = entries.filter(e => e.weekStart === weekFilter);

@@ -30,8 +30,7 @@ import { fetchAllLeads as fetchAllLeadsRC } from '@/lib/ringcentral';
 import { fetchAllLeads as fetchAllLeadsWC, isEligibleCall } from '@/lib/whatconverts';
 import { warmSalesEffectivenessForShop, SE_WARM_IDX_KEY } from '@/lib/salesEffectiveness';
 import { CR_SHOP_CACHE_KEY, CR_URIS_KEY, CR_WARM_IDX_KEY, type CallRecordingsShopCache } from '@/lib/handlers/callRecordings';
-import { fetchCallRecordingsForShop, prefetchCallLog } from '@/lib/ringcentral';
-export { prefetchCallLog };
+import { fetchCallRecordingsForShop, fillCallRecordingTranscripts, prefetchRCCallLog } from '@/lib/ringcentral';
 import { classifyBatch, scoreSalvageabilityBatch } from '@/lib/classify';
 import { MISSED_CALLBACKS_KEY, type MissedCallbacksShopCache } from '@/lib/handlers/missedCallbacks';
 import { reopenStaleResolutions } from '@/lib/callbackStore';
@@ -548,6 +547,11 @@ const warmSalesEffectiveness: SyncJob = {
 // days. Round-robin one shop per cron tick. Client-safe entries (no contentUri)
 // go to CR_SHOP_CACHE_KEY; a separate callId→URI map goes to CR_URIS_KEY for
 // the recording proxy.
+// Pre-warm the RC call log + phone map caches so parallel shop processing hits cache.
+export async function prefetchCallLog(): Promise<void> {
+  await prefetchRCCallLog();
+}
+
 export async function warmCallRecordingsForShop(shopNum: string): Promise<string> {
   const shop = SHOPS.find(s => s.num === shopNum);
   if (!shop) throw new Error(`unknown shop ${shopNum}`);
@@ -558,6 +562,11 @@ export async function warmCallRecordingsForShop(shopNum: string): Promise<string
   const startDate = start.toISOString().slice(0, 10);
 
   const fullEntries = await fetchCallRecordingsForShop(shopNum as any, startDate, endDate);
+
+  // Transcribe any new calls that have recordings but no cached transcript yet.
+  // Covers both inbound and outbound — outbound is also handled by
+  // warmSalesEffectiveness but inbound has no other transcription path.
+  await fillCallRecordingTranscripts(fullEntries);
 
   // Store URI lookup separately — never exposed to the client
   const uris: Record<string, string> = {};
@@ -588,14 +597,10 @@ const warmCallRecordings: SyncJob = {
   name: 'warm-call-recordings',
   isEnabled: () => !!process.env.RINGCENTRAL_JWT,
   async run() {
-    // Warm all shops every tick — the RC call log (inbound + outbound) is fetched
-    // once and shared via a 5-minute Redis cache, so this costs only 2 RC API
-    // calls regardless of how many shops we process.
-    const results: string[] = [];
-    for (const shop of SHOPS) {
-      results.push(await warmCallRecordingsForShop(shop.num));
-    }
-    return { message: results.join(' | ') };
+    // Warm all shops concurrently — they share the same cached RC call log,
+    // so the first shop populates the cache and the rest read from it.
+    const results = await Promise.allSettled(SHOPS.map(s => warmCallRecordingsForShop(s.num)));
+    return { message: results.map((r, i) => r.status === 'fulfilled' ? r.value : `${SHOPS[i].num} ERR`).join(' | ') };
   },
 };
 
@@ -1092,56 +1097,40 @@ const warmGoogleRatings: SyncJob = {
 // Exported so an operator can trigger a specific range via the admin route:
 // POST /api/cron/run-syncs?job=warm-parts-matrix[&start=YYYY-MM-DD&end=YYYY-MM-DD&mode=all]
 export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mode = 'all'): Promise<string> {
-  const cacheKey = `parts_matrix_usage_v2_all_${startYmd}_${endYmd}_${mode}`;
+  // Key matches the API route's v3 format so the warm job actually serves the page.
+  const cacheKey = `parts_matrix_usage_v3_all_${startYmd}_${endYmd}_${mode}`;
   const startISO = `${startYmd}T00:00:00Z`;
   const endISO   = `${endYmd}T23:59:59Z`;
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
 
+  // Process shops SEQUENTIALLY to avoid Tekmetric rate limiting.
+  // Concurrent was 8 shops × 2 calls = 16 simultaneous Tekmetric streams → all hit
+  // 429 simultaneously → exponential backoff on all 16 → 5-9 min total runtime →
+  // Vercel 504 or unrecognised connection errors → GH Actions failure emails.
+  // With the 7-day sweep, each shop completes in ~5-20s, so 8 shops ≈ 1-3 min total.
+  // Range + sweep within each shop still run in parallel (2 concurrent, fine).
   const lines: any[] = [];
-  // Hard deadline: curl's --max-time is 750s, so we must respond by then.
-  // Return partial results if we've been running for more than 620s so the
-  // function always replies before the GitHub Actions curl times out.
-  const warmStart = Date.now();
-  const DEADLINE_MS = 620_000;
-
-  // Sequential (not Promise.all) to prevent 16 concurrent Tekmetric requests
-  // from triggering 429 rate-limit storms and exponential backoff cascades that
-  // push the total wall-clock time past Vercel's 800s function limit.
-  //
-  // deadlineAt is also threaded into every fetchROsByCreatedDate/fetchAllRepairOrders
-  // call below (not just checked between shops here). Without that, a single
-  // shop whose Tekmetric requests are getting 429'd could burn through its
-  // retry/backoff budget across many paginated pages and blow past this
-  // per-shop check entirely — that's what was producing the bare curl
-  // timeouts (0 bytes received) in the GH Actions logs even with the
-  // between-shop check in place, since the check never got a chance to run
-  // again once a single shop's fetch call started stalling.
-  const deadlineAt = warmStart + DEADLINE_MS;
   for (const shop of SHOPS) {
-    if (Date.now() - warmStart > DEADLINE_MS) {
-      console.warn(`[parts-matrix] deadline reached after ${Math.round((Date.now() - warmStart) / 1000)}s — returning partial results`);
-      break;
-    }
     try {
       let ros: any[];
       if (mode === 'posted') {
-        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO }, deadlineAt);
+        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO });
       } else if (mode === 'open') {
-        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadlineAt);
+        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
         ros = all.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
           return !CLOSED.has(s);
         });
       } else {
-        // 'all' mode: current range + 60-day open-estimate sweep (same logic as API cold path)
-        // Fetches are sequential (not Promise.all) to halve Tekmetric pressure
-        // and reduce 429 storms that can add 30s per retry.
+        // 'all' mode: current range + 7-day open-estimate sweep (in parallel within shop)
         const sweepStartDate = new Date(startISO);
-        sweepStartDate.setDate(sweepStartDate.getDate() - 60);
+        sweepStartDate.setDate(sweepStartDate.getDate() - 7);
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
-        const rangeRos = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadlineAt);
-        const sweepRos = await fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString(), deadlineAt);
+        const [rangeRos, sweepRos] = await Promise.all([
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
+          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
+        ]);
         const openFromSweep = sweepRos.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
           return !CLOSED.has(s);
@@ -1175,7 +1164,10 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
           }
         }
       }
-    } catch { /* skip shop on error; cron continues with remaining shops */ }
+    } catch (err: any) {
+      // Skip this shop — partial data is better than no data. The next tick retries.
+      console.error(`[warmPartsMatrix] shop ${shop.num} failed:`, err?.message ?? err);
+    }
   }
 
   const counts = { total: lines.length, canned: 0, matrix: 0, manual: 0, no_charge: 0 };

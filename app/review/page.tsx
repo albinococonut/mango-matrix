@@ -20,7 +20,7 @@ export default async function ReviewPage() {
   if (!session) redirect('/login');
   if (session.role !== 'executive') redirect('/employee');
   return (
-    <ConceptShell active="review" title="Weekly Review" sub="Corporate finance review · frozen weekly · A/R live" sections={REVIEW_SECTIONS} email={session.email}>
+    <ConceptShell active="review" title="Weekly Review" sub="Corporate finance review · frozen weekly · A/R live" sections={REVIEW_SECTIONS} email={session.email} role={session.role}>
       <Concept2Review />
     </ConceptShell>
   );
