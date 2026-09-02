@@ -1103,6 +1103,15 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
   const endISO   = `${endYmd}T23:59:59Z`;
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
 
+  // Hard wall-clock cutoff for the whole sweep. The GH Actions caller uses
+  // `curl --max-time 750`; without a deadline, Tekmetric 429 backoff across
+  // 8 shops can still run past that with zero bytes ever sent back, which
+  // curl reports as its own connection timeout (exit 28) — a failure the
+  // route's try/catch never even sees, since no response was ever returned.
+  // 650s leaves ~100s of margin under curl's 750s cutoff for the remaining
+  // shops' partial results to be assembled and the response written.
+  const deadlineAt = Date.now() + 650_000;
+
   // Process shops SEQUENTIALLY to avoid Tekmetric rate limiting.
   // Concurrent was 8 shops × 2 calls = 16 simultaneous Tekmetric streams → all hit
   // 429 simultaneously → exponential backoff on all 16 → 5-9 min total runtime →
@@ -1111,12 +1120,16 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
   // Range + sweep within each shop still run in parallel (2 concurrent, fine).
   const lines: any[] = [];
   for (const shop of SHOPS) {
+    if (Date.now() > deadlineAt) {
+      console.warn(`[warmPartsMatrix] deadline exceeded before shop ${shop.num} — returning partial results`);
+      break;
+    }
     try {
       let ros: any[];
       if (mode === 'posted') {
-        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO });
+        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO }, deadlineAt);
       } else if (mode === 'open') {
-        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadlineAt);
         ros = all.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
           return !CLOSED.has(s);
@@ -1128,8 +1141,8 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
         const [rangeRos, sweepRos] = await Promise.all([
-          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
-          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadlineAt),
+          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString(), deadlineAt),
         ]);
         const openFromSweep = sweepRos.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
