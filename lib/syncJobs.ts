@@ -29,7 +29,7 @@ import { writeCache, readCache } from '@/lib/cache';
 import { fetchAllLeads as fetchAllLeadsRC } from '@/lib/ringcentral';
 import { fetchAllLeads as fetchAllLeadsWC, isEligibleCall } from '@/lib/whatconverts';
 import { warmSalesEffectivenessForShop, SE_WARM_IDX_KEY } from '@/lib/salesEffectiveness';
-import { CR_SHOP_CACHE_KEY, CR_URIS_KEY, CR_WARM_IDX_KEY, type CallRecordingsShopCache } from '@/lib/handlers/callRecordings';
+import { CR_SHOP_CACHE_KEY, CR_URIS_KEY, CR_WARM_IDX_KEY, maybeSnapshotWeeks, type CallRecordingsShopCache } from '@/lib/handlers/callRecordings';
 import { fetchCallRecordingsForShop, fillCallRecordingTranscripts, prefetchRCCallLog } from '@/lib/ringcentral';
 import { classifyBatch, scoreSalvageabilityBatch } from '@/lib/classify';
 import { MISSED_CALLBACKS_KEY, type MissedCallbacksShopCache } from '@/lib/handlers/missedCallbacks';
@@ -47,6 +47,7 @@ import { computeAndStoreCalibration } from '@/lib/projCalibration';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { maybeCrown } from '@/lib/goldenMango';
 import { isCountedRO, isPostOfficeName } from '@/lib/metrics';
+import { warmWipForShop, WIP_IDX_KEY } from '@/lib/wipTracker';
 import { RC_SHOP_KEY, type ReturnCustomersShop } from '@/lib/handlers/returnCustomers';
 
 // Call conversions use WhatConverts. RC inbound ingestion is disabled here —
@@ -587,6 +588,9 @@ export async function warmCallRecordingsForShop(shopNum: string): Promise<string
   };
   await writeCache(CR_SHOP_CACHE_KEY(shopNum), payload, { ttlSeconds: 8 * 24 * 60 * 60 });
 
+  // Snapshot any fully-completed Mon–Sun weeks inside the fetch window.
+  await maybeSnapshotWeeks(shop.num, shop.name, entries, startDate, endDate, now.toISOString());
+
   const inbound = entries.filter(e => e.direction === 'Inbound').length;
   const outbound = entries.filter(e => e.direction === 'Outbound').length;
   const withRec = entries.filter(e => e.hasRecording).length;
@@ -1096,12 +1100,18 @@ const warmGoogleRatings: SyncJob = {
 //
 // Exported so an operator can trigger a specific range via the admin route:
 // POST /api/cron/run-syncs?job=warm-parts-matrix[&start=YYYY-MM-DD&end=YYYY-MM-DD&mode=all]
-export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mode = 'all'): Promise<string> {
+export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mode = 'all', deadlineMs?: number): Promise<string> {
   // Key matches the API route's v3 format so the warm job actually serves the page.
   const cacheKey = `parts_matrix_usage_v3_all_${startYmd}_${endYmd}_${mode}`;
   const startISO = `${startYmd}T00:00:00Z`;
   const endISO   = `${endYmd}T23:59:59Z`;
   const CLOSED = new Set(['POSTED', 'ACCRECV', 'INVOICED', 'CLOSED']);
+
+  // Hard deadline: abort pagination and 429-retries at this wall-clock time.
+  // Without a deadline, a sustained Tekmetric 429 storm (30s backoff × N retries × 8 shops)
+  // easily exceeds the 750s curl ceiling and causes GH Actions failures every tick.
+  // 660s gives each of 8 shops ~82s max, returning partial results rather than hanging.
+  const deadline = deadlineMs ?? (Date.now() + 660_000);
 
   // Process shops SEQUENTIALLY to avoid Tekmetric rate limiting.
   // Concurrent was 8 shops × 2 calls = 16 simultaneous Tekmetric streams → all hit
@@ -1110,13 +1120,18 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
   // With the 7-day sweep, each shop completes in ~5-20s, so 8 shops ≈ 1-3 min total.
   // Range + sweep within each shop still run in parallel (2 concurrent, fine).
   const lines: any[] = [];
+  let processedShops = 0;
   for (const shop of SHOPS) {
+    if (Date.now() > deadline) {
+      console.warn(`[warmPartsMatrix] deadline exceeded after ${processedShops}/${SHOPS.length} shops — writing partial cache`);
+      break;
+    }
     try {
       let ros: any[];
       if (mode === 'posted') {
-        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO });
+        ros = await fetchAllRepairOrders({ shopId: shop.tekmetricId, postedDateStart: startISO, postedDateEnd: endISO }, deadline);
       } else if (mode === 'open') {
-        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO);
+        const all = await fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadline);
         ros = all.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
           return !CLOSED.has(s);
@@ -1128,8 +1143,8 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
         const sweepEnd = new Date(startISO);
         sweepEnd.setSeconds(sweepEnd.getSeconds() - 1);
         const [rangeRos, sweepRos] = await Promise.all([
-          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO),
-          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString()),
+          fetchROsByCreatedDate(shop.tekmetricId, startISO, endISO, deadline),
+          fetchROsByCreatedDate(shop.tekmetricId, sweepStartDate.toISOString(), sweepEnd.toISOString(), deadline),
         ]);
         const openFromSweep = sweepRos.filter((ro: any) => {
           const s = (ro.repairOrderStatus as any)?.code ?? String(ro.repairOrderStatus ?? '');
@@ -1168,6 +1183,7 @@ export async function warmPartsMatrixRange(startYmd: string, endYmd: string, mod
       // Skip this shop — partial data is better than no data. The next tick retries.
       console.error(`[warmPartsMatrix] shop ${shop.num} failed:`, err?.message ?? err);
     }
+    processedShops++;
   }
 
   const counts = { total: lines.length, canned: 0, matrix: 0, manual: 0, no_charge: 0 };
@@ -1199,10 +1215,23 @@ const warmPartsMatrix: SyncJob = {
     const dow = now.getDay() || 7;
     const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1 - dow);
     const start = fmt(mon);
-    // Warm both posted (default on page, served from rosForShop cache) and all
-    const msgPosted = await warmPartsMatrixRange(start, end, 'posted');
-    const msgAll = await warmPartsMatrixRange(start, end, 'all');
+    // Share one 660s deadline across both passes so the pair never exceeds the
+    // 750s curl ceiling regardless of how slow Tekmetric is on a given tick.
+    const deadline = Date.now() + 660_000;
+    const msgPosted = await warmPartsMatrixRange(start, end, 'posted', deadline);
+    const msgAll = await warmPartsMatrixRange(start, end, 'all', deadline);
     return { message: `parts-matrix warmed: ${msgPosted} | ${msgAll}` };
+  },
+};
+
+const trackWipStarts: SyncJob = {
+  name: 'track-wip-starts',
+  isEnabled: () => !!process.env.TEKMETRIC_CLIENT_ID,
+  async run() {
+    const idx = (await readCache<number>(WIP_IDX_KEY)) ?? 0;
+    const shop = SHOPS[idx % SHOPS.length];
+    await writeCache(WIP_IDX_KEY, (idx + 1) % SHOPS.length);
+    return { message: await warmWipForShop(shop.num) };
   },
 };
 
@@ -1230,6 +1259,7 @@ export const JOBS: SyncJob[] = [
   snapshotAR,
   snapshotWeeklyMetrics,
   reconcileWeekly,
+  trackWipStarts,
 ];
 
 export interface JobResult {
