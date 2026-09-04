@@ -5,7 +5,24 @@ import { ChevronDown, ChevronUp, Star, TrendingUp, MessageSquare, PlayCircle } f
 import { TrophyIcon } from './Trophy';
 
 interface OmittedItem { name: string; severity: string; amount: string }
-interface DimScores { openingRapport?: number | null; ticketCompleteness?: number | null; prioritization?: number | null; explanationPerItem?: number | null; warrantyPitch?: number | null; totalPresentation?: number | null; objectionHandling?: number | null; authorizationAsk?: number | null; personalization?: number | null }
+interface DimScores {
+  // New rubric (7 dimensions, 0-4 each)
+  completeRecommendation?: number | null;
+  explanationUnderstanding?: number | null;
+  prioritizationUrgency?: number | null;
+  valueTrust?: number | null;
+  investmentPresentation?: number | null;
+  authorizationAsk?: number | null;
+  objectionHandling?: number | null;
+  // Legacy rubric names (old cached grades)
+  openingRapport?: number | null;
+  ticketCompleteness?: number | null;
+  prioritization?: number | null;
+  explanationPerItem?: number | null;
+  warrantyPitch?: number | null;
+  totalPresentation?: number | null;
+  personalization?: number | null;
+}
 
 interface Grade {
   callId: string;
@@ -18,9 +35,17 @@ interface Grade {
   summary: string;
   ticketCoverage: { totalItems: number; mentionedItems: number; omittedItems: OmittedItem[] };
   dimensionScores: DimScores;
-  improvements: string[];
-  strongestMoment: string;
-  weakestMoment: string;
+  // New fields
+  hospitality?: 'Exceptional' | 'Strong' | 'Inconsistent' | 'Poor';
+  outcome?: string;
+  coachingOpportunity?: string;
+  naturalExample?: string;
+  transcriptConfidence?: 'high' | 'medium' | 'low';
+  managerReviewNeeded?: boolean;
+  managerReviewReason?: string;
+  // Legacy fields (old cached grades only)
+  improvements?: string[];
+  weakestMoment?: string;
   needsCoaching: boolean;
   handled?: boolean;
   transcript?: string;
@@ -45,33 +70,45 @@ interface Snap {
 }
 
 const SCORE_COLOR = (s: number) => {
-  if (s >= 4) return '#5BAA59';
-  if (s >= 3) return '#A8CE5A';
-  if (s >= 2) return '#F5E580';
-  if (s >= 1) return '#F4B65C';
+  if (s >= 80) return '#5BAA59';
+  if (s >= 60) return '#A8CE5A';
+  if (s >= 40) return '#F5E580';
+  if (s >= 20) return '#F4B65C';
   return '#C9412A';
 };
 
 const DIM_LABELS: Record<string, string> = {
-  openingRapport: 'A. Opening',
-  ticketCompleteness: 'B. Ticket completeness',
-  prioritization: 'C. Prioritization',
-  explanationPerItem: 'D. Explanation',
-  warrantyPitch: 'E. Warranty pitch',
-  totalPresentation: 'F. Total presented',
-  objectionHandling: 'G. Objections',
-  authorizationAsk: 'H. Authorization ask',
-  personalization: 'I. Personalization',
+  // New rubric
+  completeRecommendation: 'Complete recommendation',
+  explanationUnderstanding: 'Explanation & understanding',
+  prioritizationUrgency: 'Prioritization & urgency',
+  valueTrust: 'Value & trust',
+  investmentPresentation: 'Investment presentation',
+  authorizationAsk: 'Authorization ask',
+  objectionHandling: 'Objection handling',
+  // Legacy labels (old cached grades)
+  openingRapport: 'Opening rapport',
+  ticketCompleteness: 'Ticket completeness',
+  prioritization: 'Prioritization',
+  explanationPerItem: 'Explanation per item',
+  warrantyPitch: 'Warranty pitch',
+  totalPresentation: 'Total presented',
+  personalization: 'Personalization',
 };
 
-function ScoreBar({ score, max = 5 }: { score: number; max?: number }) {
+const NEW_DIM_KEYS = new Set([
+  'completeRecommendation', 'explanationUnderstanding', 'prioritizationUrgency',
+  'valueTrust', 'investmentPresentation', 'authorizationAsk', 'objectionHandling',
+]);
+
+function ScoreBar({ score, max = 100 }: { score: number; max?: number }) {
   const pct = Math.round((score / max) * 100);
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-1.5 rounded-full bg-mango-line overflow-hidden">
         <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: SCORE_COLOR(score) }} />
       </div>
-      <span className="text-[11px] font-semibold tabular-nums w-6 text-right" style={{ color: SCORE_COLOR(score) }}>{score.toFixed(1)}</span>
+      <span className="text-[11px] font-semibold tabular-nums w-8 text-right" style={{ color: SCORE_COLOR(score) }}>{Math.round(score)}</span>
     </div>
   );
 }
@@ -197,13 +234,48 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
           )}
 
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-            {Object.entries(grade.dimensionScores ?? {}).filter(([, v]) => v != null).map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between gap-1">
-                <span className="text-[10.5px] text-mango-muted truncate">{DIM_LABELS[k] ?? k}</span>
-                <span className="text-[10.5px] font-bold tabular-nums" style={{ color: SCORE_COLOR(v as number) }}>{(v as number).toFixed(0)}/5</span>
-              </div>
-            ))}
+            {Object.entries(grade.dimensionScores ?? {}).filter(([, v]) => v != null).map(([k, v]) => {
+              const isNew = NEW_DIM_KEYS.has(k);
+              const dimMax = isNew ? 4 : 5;
+              const displayColor = isNew
+                ? SCORE_COLOR(Math.round(((v as number) / 4) * 100))
+                : SCORE_COLOR(((v as number) / 5) * 100);
+              return (
+                <div key={k} className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] text-mango-muted truncate">{DIM_LABELS[k] ?? k}</span>
+                  <span className="text-[10.5px] font-bold tabular-nums" style={{ color: displayColor }}>
+                    {(v as number).toFixed(0)}/{dimMax}
+                  </span>
+                </div>
+              );
+            })}
           </div>
+
+          {grade.hospitality && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted">Hospitality:</span>
+              <span className="text-[11.5px] font-semibold" style={{
+                color: grade.hospitality === 'Exceptional' ? '#5BAA59'
+                  : grade.hospitality === 'Strong' ? '#A8CE5A'
+                  : grade.hospitality === 'Inconsistent' ? '#F4B65C'
+                  : '#C9412A'
+              }}>{grade.hospitality}</span>
+            </div>
+          )}
+
+          {grade.coachingOpportunity && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Coaching opportunity</div>
+              <p className="text-[11.5px] text-mango-ink bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">{grade.coachingOpportunity}</p>
+            </div>
+          )}
+
+          {grade.naturalExample && (
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Example phrasing</div>
+              <p className="text-[11.5px] italic text-mango-ink bg-green-50 border border-green-100 rounded-lg px-2.5 py-1.5">"{grade.naturalExample}"</p>
+            </div>
+          )}
 
           {(grade.improvements?.length ?? 0) > 0 && (
             <div>
@@ -218,6 +290,13 @@ function CallCard({ grade, shopNum, onHandled }: { grade: Grade; shopNum: string
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-wide text-mango-muted mb-1">Weakest moment</div>
               <p className="text-[11.5px] italic text-mango-ink bg-red-50 border border-red-100 rounded-lg px-2.5 py-1.5">{grade.weakestMoment}</p>
+            </div>
+          )}
+
+          {grade.managerReviewNeeded && (
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-red-600">
+              <span>⚑</span>
+              <span>Manager review needed{grade.managerReviewReason ? ` — ${grade.managerReviewReason}` : ''}</span>
             </div>
           )}
 
@@ -294,8 +373,8 @@ export default function SalesEffectiveness() {
         <div>
           <h2 className="text-lg font-semibold">Sales Effectiveness — Rolling 7 Days</h2>
           <p className="text-[12.5px] text-mango-muted mt-0.5">
-            Outbound inspection-result calls graded by AI on 9 dimensions: ticket completeness, warranty pitch, authorization ask, and more.
-            Calls scoring below 3/5 appear in the Needs Guava coaching queue.
+            Outbound inspection-result calls graded by AI on 7 dimensions: complete recommendation, explanation, prioritization, authorization ask, and more.
+            Calls scoring below 60/100 appear in the Needs Guava coaching queue.
           </p>
         </div>
       </div>
@@ -309,9 +388,9 @@ export default function SalesEffectiveness() {
           {/* Chain summary */}
           <div className="flex items-center gap-6 mb-4 text-[13px]">
             <div>
-              <div className="text-[11px] uppercase tracking-wide text-mango-muted">Chain avg score</div>
+              <div className="text-[11px] uppercase tracking-wide text-mango-muted">Avg score</div>
               <div className="text-2xl font-bold tabular-nums" style={{ color: SCORE_COLOR(snap.chain.avgScore) }}>
-                {snap.chain.avgScore.toFixed(1)}<span className="text-base font-normal text-mango-muted">/5</span>
+                {Math.round(snap.chain.avgScore)}<span className="text-base font-normal text-mango-muted">/100</span>
               </div>
             </div>
             <div>
@@ -331,6 +410,7 @@ export default function SalesEffectiveness() {
             {sorted.map((shop, i) => {
               const rank = i + 1;
               const isExpanded = expandedShop === shop.shopNum;
+              // Old-format shop: grades exist but none have hospitality → pre-rubric cache, scores are 0-5 not 0-100
               const coachingCount = shop.grades.filter(g => g.needsCoaching && !g.handled).length;
               // Sort: coaching first (unhandled), then by score desc
               const sortedGrades = [...shop.grades].sort((a, b) => {
