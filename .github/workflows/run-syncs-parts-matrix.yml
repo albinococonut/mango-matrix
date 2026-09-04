@@ -25,23 +25,37 @@ jobs:
           SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          set -e
+          # Not `set -e` here: with `X=$(curl ...)`, errexit treats a nonzero curl
+          # exit (e.g. exit 28 on --max-time timeout) as the whole assignment
+          # failing and kills the script before the HTTP_CODE checks below ever
+          # run — that's what turned every slow-but-not-actually-broken Tekmetric
+          # cycle into a hard job failure and an email to Jessica.
+          set +e
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
             -X POST "${SYNC_CRON_URL}?job=warm-parts-matrix" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
             --max-time 750)
-          echo "HTTP $HTTP_CODE"
-          cat /tmp/sync.out
+          CURL_EXIT=$?
+          echo "curl exit $CURL_EXIT, HTTP $HTTP_CODE"
+          cat /tmp/sync.out 2>/dev/null
           echo
-          # 401 = mis-configured secret — that's worth a hard failure.
-          # 5xx = transient Tekmetric/Vercel error; the next tick retries automatically.
-          # We log a warning but don't exit 1 so GitHub doesn't send failure emails
-          # for recoverable issues (the sequential shop processing means this is now rare).
+
+          # Transport-level failure (timeout, DNS, connection reset — no HTTP
+          # response at all). Warn but don't fail the job: the endpoint has its
+          # own internal deadline and retries every 30 min, so a single slow
+          # Tekmetric cycle self-heals before the 2h cache TTL expires.
+          if [ "$CURL_EXIT" -ne 0 ]; then
+            echo "::warning::Parts-matrix warm request failed at the transport level (curl exit $CURL_EXIT), not a code error — not failing the job"
+            exit 0
+          fi
+          # CRON_SECRET misconfigured — this needs a human, fail loudly.
           if [ "$HTTP_CODE" = "401" ]; then
-            echo "::error::Parts-matrix warm: unauthorized (check CRON_SECRET secret)"
+            echo "::error::Parts-matrix warm endpoint returned HTTP 401 — CRON_SECRET misconfigured"
             exit 1
           fi
+          # Any other server error: log it but don't hard-fail the job.
           if [ "$HTTP_CODE" -ge 500 ]; then
-            echo "::warning::Parts-matrix warm returned HTTP $HTTP_CODE — transient error, will retry next tick"
+            echo "::warning::Parts-matrix warm endpoint returned HTTP $HTTP_CODE"
+            exit 0
           fi
