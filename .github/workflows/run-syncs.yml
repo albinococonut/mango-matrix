@@ -21,12 +21,15 @@ jobs:
           set -e
           # Capture body + status. --fail-with-body keeps the body even on non-2xx
           # so the GH Actions log shows the error JSON, not just "curl: (22)".
-          # Skip the heavy jobs (run by run-syncs-heavy.yml on a separate schedule).
-          # curl timeout is 750s — the run-syncs Vercel function has maxDuration 800
-          # (set in both the route export and vercel.json). The GH Actions job timeout
-          # is 14 min = 840s so we have 90s of headroom.
+          # Skip jobs that have their own dedicated workflows so the main sweep
+          # stays well under the 750s curl / 800s Vercel caps:
+          #   warm-return-customers      → run-syncs-heavy.yml
+          #   refresh-booked-rate-strict → run-syncs-conversion.yml
+          #   warm-parts-matrix          → run-syncs-parts-matrix.yml
+          #   warm-sales-effectiveness   → run-syncs-sales-eff.yml   (runs every 30 min)
+          #   warm-call-recordings       → run-syncs-call-recordings.yml (runs every 5 min)
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
-            -X POST "${SYNC_CRON_URL}?skip=warm-return-customers,refresh-booked-rate-strict,warm-parts-matrix" \
+            -X POST "${SYNC_CRON_URL}?skip=warm-return-customers,refresh-booked-rate-strict,warm-parts-matrix,warm-sales-effectiveness,warm-call-recordings" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
             --max-time 750)
