@@ -18,22 +18,39 @@ on:
 jobs:
   warm-parts-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 15
     steps:
       - name: Trigger parts-matrix warm
         env:
           SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          set -e
+          set +e
+          # --max-time must exceed the route's own maxDuration (800s, see
+          # vercel.json) with margin. It was previously 750s — LOWER than
+          # Vercel's 800s cap — so curl gave up and killed the connection
+          # client-side before Vercel could finish (or itself time out and
+          # send back a proper 5xx). That client-side kill is curl exit 28
+          # with 0 bytes received, which `set -e` turned into a hard job
+          # failure, bypassing the HTTP_CODE handling below entirely (see
+          # runs 865/866 on 2026-09-09 — 12.5min runtime, "0 bytes received").
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
             -X POST "${SYNC_CRON_URL}?job=warm-parts-matrix" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            --max-time 750)
-          echo "HTTP $HTTP_CODE"
+            --max-time 820)
+          CURL_EXIT=$?
+          echo "curl exit $CURL_EXIT, HTTP $HTTP_CODE"
           cat /tmp/sync.out
           echo
+          # A non-zero curl exit with no HTTP_CODE means the connection never
+          # got a response at all (client-side timeout, DNS, reset, etc). Same
+          # class of transient issue as a 5xx below — the round-robin design
+          # self-heals on the next tick, so warn rather than hard-fail.
+          if [ "$CURL_EXIT" -ne 0 ]; then
+            echo "::warning::Parts-matrix warm: curl exited $CURL_EXIT before getting a response — transient, will retry next tick"
+            exit 0
+          fi
           # 401 = mis-configured secret — that's worth a hard failure.
           # 5xx = transient Tekmetric/Vercel error; the next tick retries automatically.
           # We log a warning but don't exit 1 so GitHub doesn't send failure emails
