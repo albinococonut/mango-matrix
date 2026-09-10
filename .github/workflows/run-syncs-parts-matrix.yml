@@ -25,23 +25,23 @@ jobs:
           SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          set -e
           HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
             -X POST "${SYNC_CRON_URL}?job=warm-parts-matrix" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            --max-time 750)
-          echo "HTTP $HTTP_CODE"
-          cat /tmp/sync.out
+            --max-time 750) || CURL_EXIT=$?
+          CURL_EXIT=${CURL_EXIT:-0}
+          echo "HTTP $HTTP_CODE (curl exit $CURL_EXIT)"
+          cat /tmp/sync.out 2>/dev/null || true
           echo
-          # 401 = mis-configured secret — that's worth a hard failure.
-          # 5xx = transient Tekmetric/Vercel error; the next tick retries automatically.
-          # We log a warning but don't exit 1 so GitHub doesn't send failure emails
-          # for recoverable issues (the sequential shop processing means this is now rare).
+          # 401 = mis-configured secret — hard failure so we get an alert.
           if [ "$HTTP_CODE" = "401" ]; then
             echo "::error::Parts-matrix warm: unauthorized (check CRON_SECRET secret)"
             exit 1
           fi
-          if [ "$HTTP_CODE" -ge 500 ]; then
+          # Timeout (curl exit 28) or 5xx = transient; next tick retries automatically.
+          if [ "$CURL_EXIT" = "28" ]; then
+            echo "::warning::Parts-matrix warm: curl timed out after 750s — transient, will retry next tick"
+          elif [ "${HTTP_CODE:-0}" -ge 500 ] 2>/dev/null; then
             echo "::warning::Parts-matrix warm returned HTTP $HTTP_CODE — transient error, will retry next tick"
           fi
