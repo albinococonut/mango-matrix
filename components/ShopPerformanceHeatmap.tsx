@@ -19,10 +19,10 @@ interface Cell {
   revenue: number; cars: number; aro: number; closeRate: number;
   gpDollars: number; gpPct: number; partsGpPct: number; laborGpPct: number;
   discounts: number; comebacks?: number; comebackDollars?: number; billedHours?: number;
-  rebook?: number; conversion?: number; rating?: number;
+  rebook?: number; conversion?: number; rating?: number; adCalls?: number;
 }
 interface ShopRow { shopNum: string; shopName: string; cells: (Cell | null)[] }
-type Metric = 'revenue' | 'gpPct' | 'cars' | 'aro' | 'gpDollars' | 'closeRate' | 'comebacks' | 'billedHours' | 'rebook' | 'conversion' | 'rating';
+type Metric = 'revenue' | 'gpPct' | 'cars' | 'aro' | 'gpDollars' | 'closeRate' | 'comebacks' | 'billedHours' | 'rebook' | 'conversion' | 'rating' | 'adCalls';
 const METRICS: { key: Metric; label: string }[] = [
   { key: 'revenue', label: 'Revenue' },
   { key: 'gpPct', label: 'GP %' },
@@ -31,6 +31,7 @@ const METRICS: { key: Metric; label: string }[] = [
   { key: 'aro', label: 'ARO' },
   { key: 'closeRate', label: 'Close Rate' },
   { key: 'conversion', label: 'Call Conversion' },
+  { key: 'adCalls', label: 'Ad Call Volume' },
   { key: 'rebook', label: 'Re-Book' },
   { key: 'comebacks', label: 'Comebacks' },
   { key: 'billedHours', label: 'Hours' },
@@ -39,16 +40,30 @@ const METRICS: { key: Metric; label: string }[] = [
 
 const fmtK = (n: number) => '$' + Math.round(n / 1000) + 'k';
 
+// adCallsMap[weekISO][shopNum] = call count; 'all' = total across all shops
+type AdCallsMap = Record<string, Record<string, number>>;
+
 export default function ShopPerformanceHeatmap() {
   const [data, setData] = useState<{ weeks: string[]; shops: ShopRow[] } | null>(null);
   const [metric, setMetric] = useState<Metric>('revenue');
   const [goals, setGoals] = useState<GoalsByShop>({});
+  const [adCallsMap, setAdCallsMap] = useState<AdCallsMap>({});
 
   useEffect(() => { setGoals(loadGoals()); }, []);
   useEffect(() => {
     fetch('/api/shop-performance-heatmap?weeks=12').then((r) => r.json()).then((d) => {
       if (d?.shops) setData(d);
     });
+    fetch('/api/google-ads/calls?weeks=12').then((r) => r.json()).then((d) => {
+      if (d?.data) {
+        // d.data = { [weekISO]: WeekCallMap | null }
+        const map: AdCallsMap = {};
+        for (const [wk, val] of Object.entries(d.data as Record<string, Record<string, number> | null>)) {
+          if (val) map[wk] = val;
+        }
+        setAdCallsMap(map);
+      }
+    }).catch(() => {});
   }, []);
 
   const now = useMemo(() => new Date(), []);
@@ -97,7 +112,7 @@ export default function ShopPerformanceHeatmap() {
 
   const allShopsRow = useMemo<ShopRow | null>(() => {
     if (!data) return null;
-    const cells: (Cell | null)[] = data.weeks.map((_, wi) => {
+    const cells: (Cell | null)[] = data.weeks.map((wkISO, wi) => {
       const sc = data.shops.map((s) => s.cells[wi]).filter((c): c is Cell => !!c);
       if (!sc.length) return null;
       const revenue = sc.reduce((a, c) => a + c.revenue, 0);
@@ -107,6 +122,7 @@ export default function ShopPerformanceHeatmap() {
       const rebookVals = sc.map((c) => c.rebook).filter((v): v is number => v != null && v >= 0);
       const convVals = sc.map((c) => c.conversion).filter((v): v is number => v != null && v >= 0);
       const ratingVals = sc.map((c) => c.rating).filter((v): v is number => v != null && v > 0);
+      const wkCalls = adCallsMap[wkISO];
       return {
         revenue,
         cars,
@@ -123,14 +139,21 @@ export default function ShopPerformanceHeatmap() {
         rebook: rebookVals.length ? rebookVals.reduce((a, v) => a + v, 0) / rebookVals.length : undefined,
         conversion: convVals.length ? convVals.reduce((a, v) => a + v, 0) / convVals.length : undefined,
         rating: ratingVals.length ? ratingVals.reduce((a, v) => a + v, 0) / ratingVals.length : undefined,
+        adCalls: wkCalls?.all ?? undefined,
       };
     });
     return { shopNum: 'all', shopName: 'All Shops', cells };
-  }, [data]);
+  }, [data, adCallsMap]);
 
   // Returns { tier, big, small } for one cell under the active metric.
   function render(row: ShopRow, c: Cell | null, wkISO: string): { tier: Tier | null; big: string; small: string } {
     if (!c) return { tier: null, big: '—', small: '' };
+    // Merge ad call data from the separate fetch (not in heatmap API payload)
+    const resolvedAdCalls: number | undefined =
+      c.adCalls ??
+      (row.shopNum === 'all'
+        ? adCallsMap[wkISO]?.all
+        : adCallsMap[wkISO]?.[row.shopNum]);
     switch (metric) {
       case 'revenue': {
         const g = revGoal(row.shopNum, wkISO);
@@ -189,23 +212,47 @@ export default function ShopPerformanceHeatmap() {
         const v = c.rating == null || c.rating <= 0 ? null : c.rating;
         return { tier: ratingTier(v), big: v == null ? '—' : v.toFixed(2) + '★', small: v == null ? 'no data' : 'google rating' };
       }
+      case 'adCalls': {
+        const v = resolvedAdCalls == null || resolvedAdCalls <= 0 ? null : resolvedAdCalls;
+        if (v == null) return { tier: null, big: '—', small: 'no data' };
+        // Build a pseudo-cell array using adCallsMap for this shop to get a trailing median
+        const shopCells = row.cells.map((cell, wi) => {
+          if (!cell) return null;
+          const calls = row.shopNum === 'all'
+            ? adCallsMap[data!.weeks[wi]]?.all
+            : adCallsMap[data!.weeks[wi]]?.[row.shopNum];
+          return calls != null ? { adCalls: calls } : null;
+        });
+        const xs = shopCells
+          .filter((x): x is { adCalls: number } => x != null && x.adCalls > 0)
+          .map((x) => x.adCalls)
+          .sort((a, b) => a - b);
+        const med = xs.length ? xs[Math.floor(xs.length / 2)] : 0;
+        const r = med ? v / med : null;
+        return {
+          tier: pctTier(r),
+          big: String(v),
+          small: r != null ? Math.round(r * 100) + '% of typ.' : 'ad calls',
+        };
+      }
       default:
         return { tier: null, big: '—', small: '' };
     }
   }
 
   const hint: Record<Metric, string> = {
-    revenue: 'Revenue in dollars. Cell color shows percent of weekly goal. Current week is prorated by working-days elapsed.',
-    gpPct: 'Gross-profit % against the 58% target.',
-    gpDollars: 'GP dollars vs each shop’s typical week.',
-    cars: 'Car count vs each shop’s typical week.',
-    aro: 'Average RO vs each shop’s typical week.',
-    closeRate: 'Job close rate against an 85% excellent / 55% critical scale.',
-    conversion: 'Inbound calls booked (Claude-classified). Blank weeks predate tracking.',
-    rebook: 'Customers who re-booked a future visit. Low visual aggression by design.',
-    comebacks: 'Comeback $ — revenue the redo/warranty hours displaced. Lower is better; only elevated amounts darken. Count shown below.',
-    billedHours: 'Tech hours produced vs each shop’s typical week.',
-    rating: 'Cumulative Google rating, captured weekly. History accumulates from when tracking began.',
+    revenue: "Revenue in dollars. Cell color shows percent of weekly goal. Current week is prorated by working-days elapsed.",
+    gpPct: "Gross-profit % against the 58% target.",
+    gpDollars: "GP dollars vs each shop’s typical week.",
+    cars: "Car count vs each shop’s typical week.",
+    aro: "Average RO vs each shop’s typical week.",
+    closeRate: "Job close rate against an 85% excellent / 55% critical scale.",
+    conversion: "Inbound calls booked (Claude-classified). Blank weeks predate tracking.",
+    adCalls: "Phone calls driven by Google Ads, cached permanently. Run the backfill endpoint once to load history back to 2022. Blank = not yet cached.",
+    rebook: "Customers who re-booked a future visit. Low visual aggression by design.",
+    comebacks: "Comeback $ — revenue the redo/warranty hours displaced. Lower is better; only elevated amounts darken. Count shown below.",
+    billedHours: "Tech hours produced vs each shop’s typical week.",
+    rating: "Cumulative Google rating, captured weekly. History accumulates from when tracking began.",
   };
 
   return (
@@ -254,13 +301,13 @@ export default function ShopPerformanceHeatmap() {
             </colgroup>
             <thead>
               <tr>
-                <th className="text-left text-[10px] font-medium text-mango-faint px-2 pb-2"></th>
+                <th className="text-left text-[12.5px] font-medium text-mango-faint px-2 pb-2"></th>
                 {data.weeks.map((w, i) => (
                   <th key={i} className="px-0.5 pb-2 align-bottom" style={{ opacity: i === currentIdx ? 0.4 : 1 }}>
                     {i === currentIdx && (
                       <div className="mb-0.5 text-[8px] font-semibold uppercase tracking-wide text-mango-info leading-tight">Partial</div>
                     )}
-                    <div className="text-[10px] font-medium text-mango-faint">{format(new Date(w + 'T12:00:00'), 'M/d')}</div>
+                    <div className="text-[12.5px] font-medium text-mango-faint">{format(new Date(w + 'T12:00:00'), 'M/d')}</div>
                   </th>
                 ))}
               </tr>
