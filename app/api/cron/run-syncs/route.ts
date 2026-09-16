@@ -13,6 +13,7 @@ import { warmReturnCustomersForShop, warmFbrForShop, warmMissedCallbacksForShop,
 import { SHOPS } from '@/lib/shops';
 import { takeWeeklySnapshot, checkWeeklyDrift, currentSnapshotWeekStart } from '@/lib/weeklySnapshot';
 import { warmSalesEffectivenessForShop, SE_SHOP_CACHE_KEY } from '@/lib/salesEffectiveness';
+import { warmCallConversionsForShop, CC_SHOP_CACHE_KEY } from '@/lib/callConversionGrader';
 import { computeAndCacheNewCustomers } from '@/lib/marketingNewCustomers';
 import { computeAndCacheAttribution, computeAndCacheAttributionForShop, aggregateAttributionShops } from '@/lib/marketingAttribution';
 import { readCache } from '@/lib/cache';
@@ -113,6 +114,31 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'rate-limited', shop: shopNum, durationMs: Date.now() - t0, message: 'RC rate limited — will retry next tick' });
       }
       return NextResponse.json({ job: 'warm-sales-effectiveness', status: 'error', shop: shopNum, durationMs: Date.now() - t0, error: errMsg }, { status: 500 });
+    }
+  }
+
+  if (targetJob === 'warm-call-conversions') {
+    const shopParam = url.searchParams.get('shop') || '';
+    let shopNum: string;
+    if (shopParam && shopParam !== 'auto') {
+      shopNum = shopParam;
+    } else {
+      const ages = await Promise.all(
+        SHOPS.map(async s => {
+          const c = await readCache<{ computedAt?: string }>(CC_SHOP_CACHE_KEY(s.num));
+          const ts = c?.computedAt ? new Date(c.computedAt).getTime() : 0;
+          return { num: s.num, ts };
+        })
+      );
+      shopNum = ages.sort((a, b) => a.ts - b.ts)[0].num;
+    }
+    const bust = url.searchParams.get('bust') === '1';
+    const t0 = Date.now();
+    try {
+      const msg = await warmCallConversionsForShop(shopNum, { bust });
+      return NextResponse.json({ job: 'warm-call-conversions', status: 'ok', shop: shopNum, bust, durationMs: Date.now() - t0, message: msg });
+    } catch (e: any) {
+      return NextResponse.json({ job: 'warm-call-conversions', status: 'error', shop: shopNum, durationMs: Date.now() - t0, error: e?.message }, { status: 500 });
     }
   }
 

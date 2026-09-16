@@ -1,0 +1,42 @@
+name: Re-grade All Shops (Call Conversions)
+
+# One-shot workflow to bust cached call grades and re-score all 8 shops.
+# Trigger manually via workflow_dispatch when a rubric change requires
+# all shops to be re-graded with the new scoring criteria.
+# Each shop takes ~5–10 min; all 8 run sequentially in a single job.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  regrade-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - name: Re-grade all shops with bust=1 (8 sequential passes)
+        env:
+          SYNC_CRON_URL: ${{ secrets.SYNC_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -e
+          SHOPS=(001 002 003 004 005 006 007 008)
+          for shop in "${SHOPS[@]}"; do
+            echo "=== Regrading shop $shop ==="
+            HTTP_CODE=$(curl -sS -o /tmp/sync.out -w "%{http_code}" \
+              -X POST "${SYNC_CRON_URL}?job=warm-call-conversions&shop=${shop}&bust=1" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Content-Type: application/json" \
+              --max-time 750)
+            echo "HTTP $HTTP_CODE"
+            cat /tmp/sync.out
+            echo
+            if [ "$HTTP_CODE" = "401" ]; then
+              echo "::error::Unauthorized — check CRON_SECRET"
+              exit 1
+            fi
+            if [ "$HTTP_CODE" -ge 500 ]; then
+              echo "::warning::Shop $shop returned HTTP $HTTP_CODE — continuing"
+            fi
+            if [ "$shop" != "008" ]; then sleep 15; fi
+          done
+          echo "=== All 8 shops re-graded ==="
